@@ -1,0 +1,20 @@
+# Local secrets and credentials
+.env
+.env.*
+*.key
+*.pem
+*credentials*
+*secret*
+*token*
+
+# Local runtime/cache artifacts
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# Temporary exports and archives
+*.zip
+*.7z
+*.tar
+*.tgz
