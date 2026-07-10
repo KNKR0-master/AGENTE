@@ -1,9 +1,13 @@
 # Registro de Skills do Agente TikTok Shop
 
-Última atualização: 2026-07-09  
+Última atualização: 2026-07-10  
 Projeto: estruturação de múltiplos perfis de afiliados no TikTok Shop
 
 Este arquivo serve como memória operacional das skills disponíveis/úteis para o agente. Sempre que uma tarefa puder se beneficiar de uma função executável de uma dessas skills, devemos considerar usá-la em vez de fazer tudo manualmente.
+
+Artefato atual de validação do projeto:
+
+- `VALIDACAO_ETAPAS.md`: checklist vivo para validar dicionário de dados, fontes, MVP manual, relatórios visuais, automações e recalibração antes de escalar coleta ou alertas.
 
 ## Regra prática de uso
 
@@ -20,6 +24,7 @@ Antes de executar uma tarefa importante, verificar se alguma skill abaixo se enc
 9. Se a tarefa envolve criar, inspecionar ou editar documentos Word/DOCX: considerar `word-docx`.
 10. Se a tarefa envolve Excel, XLSX, XLSM, XLS, CSV, TSV, fórmulas ou planilhas operacionais: considerar `excel-xlsx`.
 11. Se a tarefa envolve pesquisa de anúncios, criativos, apps, rankings, downloads, receita estimada, mercado ou concorrentes: considerar `admapix`.
+12. Se a tarefa envolve validar etapas do projeto de inteligência TikTok Shop, automações ou relatórios visuais: usar `VALIDACAO_ETAPAS.md` como roteiro operacional.
 
 ## Skills principais para o projeto
 
