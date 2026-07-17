@@ -621,6 +621,33 @@ Política obrigatória de uso inicial:
 - Fechar sessões e túneis ao final do uso.
 - Quando `browser:control-in-app-browser` ou `playwright` forem suficientes, preferir essas opções por padrão.
 
+---
+
+### `google-flow`
+
+Nao e uma skill local instalada. E uma ferramenta externa do Google que fara parte do projeto como camada de criacao e edicao de videos para produtos selecionados.
+
+Fonte oficial lida:
+
+- `https://support.google.com/flow/?hl=en#topic=16908930`
+
+Arquivo operacional:
+
+- `GOOGLE_FLOW.md`
+
+Quando usar:
+
+- Depois que um produto for classificado como `testar` ou `produzir`.
+- Para transformar briefing de produto em clipes curtos, cenas, frames, variacoes de gancho e assets de video.
+- Para editar clipes enviados ou gerados, montar sequencias no Scenebuilder e salvar frames como referencias.
+
+Cuidados:
+
+- Verificar creditos/modelo antes de gerar.
+- Nao enviar dados confidenciais ou estrategia sensivel desnecessaria nos prompts.
+- Em suplementos, saude e beleza, evitar claims medicos, antes/depois enganoso e promessas nao comprovadas.
+- Registrar prompts, assets, produto_id, modelo, output e restricoes de compliance para aprendizado posterior.
+
 ## Decisão operacional
 
 Sempre que uma nova tarefa aparecer, o agente deve perguntar internamente:

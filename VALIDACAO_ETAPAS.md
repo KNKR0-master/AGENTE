@@ -128,6 +128,12 @@ Fluxo minimo:
 5. Resultados sao medidos em 24h, 72h, 7d, 14d e 30d.
 6. O resultado volta para o historico da conta.
 
+Quando Google Flow for usado na producao:
+
+- Registrar produto_id, prompt, modelo, assets/ingredientes, creditos estimados, arquivo exportado e restricoes de compliance.
+- Tratar cada variacao de video como experimento ligado a uma hipotese: gancho, avatar, demonstracao, prova, oferta ou CTA.
+- Em categorias sensiveis, como suplementos, gerar somente roteiros e cenas sem promessa medica ou alegacao nao comprovada.
+
 Relatorios visuais:
 
 - Ranking de mercado.
@@ -248,4 +254,3 @@ So avancar para automacao quando:
 - Os dados tiverem origem rastreavel.
 - O usuario concordar que os top produtos parecem razoaveis.
 - As lacunas estiverem marcadas em vez de escondidas.
-
