@@ -37,6 +37,10 @@ Revisao economica de qualidade:
 
 - `conteudo/google-flow/REVISAO_ECONOMICA_AUDIO_VIDEO.md`
 
+Gera Frames:
+
+- `conteudo/google-flow/MULTIPLICACAO_FRAMES.md`
+
 ## Workflow real do usuario
 
 ```text
@@ -48,6 +52,8 @@ Imagem de ambiente como referencia
 > subir no CapCut
 > remover ruidos sonoros e cortar fim de cena/fala
 > salvar arquivo final
+> usar Gera Frames para multiplicar variacoes por frames
+> armazenar no Drive o lote exportado do Gera Frames
 > repetir com 2 ambientes por produto
 > edicoes finais
 > publicar no TikTok Shop
@@ -161,7 +167,9 @@ Nao iniciar agora.
 | Tempo do briefing ao primeiro output | ate 20 min |
 | Prompts gerados por produto | 3 a 5 |
 | Ambientes por produto | 2 |
+| Videos planejados por lote | aproximadamente 18 |
 | Variacoes uteis por produto | pelo menos 1 por ambiente |
+| Aproveitamento do lote | registrar aprovados / gerados |
 | Retrabalho por video | no maximo 2 edicoes |
 | Modo de geracao | registrar `low priority`, pago ou outro |
 | Creditos por video utilizavel | registrar somente quando houver custo |
@@ -237,6 +245,8 @@ hipotese:
 angulo:
 ambiente:
 referencia_ambiente:
+lote_id:
+variante_num:
 prompt:
 assets_usados:
 modelo:

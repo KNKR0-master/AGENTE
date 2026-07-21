@@ -23,6 +23,9 @@ Esta camada transforma o projeto em rotina operacional:
 ```text
 Produtos validados
 > videos gerados/editados
+> Gera Frames
+> lotes de videos por produto
+> Drive como armazenamento dos outputs
 > calendario de publicacao
 > posts publicados
 > metricas reais da conta
@@ -41,6 +44,7 @@ Hoje temos blocos, nao um agente unico completo:
 - `proactive-agent`: opcao futura para check-ins, lembretes e continuidade, com cautela.
 - `VALIDACAO_ETAPAS.md`: define como cruzar mercado com resultado real.
 - `GOOGLE_FLOW.md` e `conteudo/google-flow/`: fluxo de criacao e edicao de videos.
+- `conteudo/google-flow/MULTIPLICACAO_FRAMES.md`: etapa do Gera Frames, ferramenta separada que multiplica videos por frames.
 
 Decisao: antes de criar um agente autonomo, validar a rotina em planilha + Drive.
 
@@ -96,8 +100,10 @@ Controla produtos selecionados:
 Controla cada video criado:
 
 - conteudo_id;
+- lote_id;
 - produto_id;
 - conta_id;
+- variante_num;
 - ambiente;
 - hipotese;
 - gancho;
@@ -108,6 +114,38 @@ Controla cada video criado:
 - arquivo CapCut;
 - arquivo final;
 - checks visual/audio/compliance.
+
+### `lotes_gera_frames`
+
+Controla cada rodada no Gera Frames, normalmente com aproximadamente 18 videos:
+
+- lote_id;
+- produto_id;
+- ferramenta (`Gera Frames`);
+- quantidade_planejada;
+- quantidade_gerada;
+- quantidade_aprovada;
+- quantidade_descartada;
+- aproveitamento;
+- imagem_base_version;
+- prompt_padrao_version;
+- frame_set_id;
+- ambiente_base;
+- pasta_drive_url, apenas para armazenar o resultado exportado;
+- status.
+
+### `frames_prompts`
+
+Controla os ativos que podem ser reaproveitados:
+
+- frame_set_id;
+- produto_id;
+- imagem_base_version;
+- prompt_padrao_version;
+- ambiente;
+- status;
+- motivo_atualizacao;
+- observacoes.
 
 Status recomendados:
 
@@ -224,6 +262,19 @@ TikTok Shop Operacao/
 
 Regra: nao apagar videos postados. Mover para `05_postados` e registrar na aba `arquivos_drive`.
 
+Quando um produto entrar em producao, criar uma pasta propria dentro da operacao:
+
+```text
+produto-{produto_id}_{slug}/
+  00_referencias/
+  01_frames_base/
+  02_lotes_gerados/
+  03_capcut/
+  04_finais/
+  05_postados/
+  06_descartados/
+```
+
 ## Coleta de dados da propria conta
 
 Fontes candidatas:
@@ -258,9 +309,9 @@ Campos minimos:
 
 Diario:
 
-- Registrar videos gerados/finalizados/postados.
+- Registrar lotes gerados, videos aprovados/finalizados/postados.
 - Atualizar calendario do dia seguinte.
-- Mover arquivos no Drive conforme status.
+- Armazenar no Drive os outputs exportados do Gera Frames e mover arquivos conforme status.
 
 2 a 3 vezes por semana:
 
@@ -279,11 +330,12 @@ Semanal:
 
 1. Mapear arquivos atuais do Drive e preencher `arquivos_drive`.
 2. Criar primeiras linhas em `produtos` a partir das analises locais.
-3. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes.
-4. Definir padrao de `conteudo_id` e `publicacao_id`.
-5. Importar primeiro export real do TikTok Shop para `import_tiktok`.
-6. Normalizar esse export para `metricas_diarias`.
-7. Criar formulas/graficos no `dashboard`.
+3. Criar primeiras linhas em `lotes_gera_frames` para os lotes ja produzidos no Gera Frames.
+4. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes.
+5. Definir padrao de `lote_id`, `conteudo_id` e `publicacao_id`.
+6. Importar primeiro export real do TikTok Shop para `import_tiktok`.
+7. Normalizar esse export para `metricas_diarias`.
+8. Criar formulas/graficos no `dashboard`.
 
 ## Regras de seguranca
 

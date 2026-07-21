@@ -18,9 +18,11 @@ Este e o fluxo real ja usado pelo usuario para dar continuidade em produtos vali
    - remover trechos ruins;
    - ajustar continuidade.
 8. Salvar arquivo final.
-9. Normalmente gerar 2 ambientes diferentes por produto para otimizar e criar 2 videos diferentes.
-10. Fazer edicoes finais.
-11. Publicar no TikTok Shop.
+9. Usar o Gera Frames para gerar aproximadamente 18 videos por rodada.
+10. Salvar no Drive apenas o resultado exportado do Gera Frames, dentro da pasta do produto.
+11. Normalmente gerar 2 ambientes diferentes por produto para otimizar e criar videos diferentes.
+12. Fazer edicoes finais.
+13. Publicar no TikTok Shop.
 
 ## Principio do fluxo
 
@@ -31,6 +33,8 @@ O ganho vem de padronizar o que ja funciona:
 - prompts validados;
 - filtro humano de qualidade;
 - CapCut como acabamento final;
+- Gera Frames como ferramenta separada de multiplicacao por frames;
+- Drive apenas como armazenamento e rastreio dos arquivos exportados;
 - 2 variacoes por produto para aumentar aprendizado sem dobrar todo o trabalho.
 
 ## Mapa de automacao
@@ -42,6 +46,7 @@ O ganho vem de padronizar o que ja funciona:
 | Preparar prompts padrao | Sim | Gerar prompts com variaveis de produto, ambiente e restricoes. |
 | Criar checklist de qualidade | Sim | Aplicar lista fixa de interferencias e riscos. |
 | Gerar frames no Flow | Parcial | Codex prepara prompt e pode disparar `low priority` sem credito quando assets/ambiente ja estiverem aprovados. |
+| Gera Frames | Parcial | Registrar lote, prompt padrao, imagem base e quantidade gerada/aprovada. |
 | Filtrar outputs ruins | Parcial | Checklist assistido; revisao visual humana ainda necessaria. |
 | Baixar outputs | Semi-manual | Confirmar download/export; depois registrar arquivos. |
 | Subir no CapCut | Manual no inicio | Pode virar assistido depois, mas envolve app/arquivos. |
@@ -59,6 +64,8 @@ O ganho vem de padronizar o que ja funciona:
 - Criar checklist de revisao visual/audio.
 - Criar nomes de arquivos e pastas.
 - Criar registro dos outputs gerados.
+- Criar registro de lotes de aproximadamente 18 videos.
+- Armazenar no Drive os resultados exportados pelo Gera Frames.
 - Gerar pauta de edicao para CapCut.
 - Registrar quais videos foram publicados e acompanhar metricas.
 
@@ -82,6 +89,14 @@ Produto:
 Ambiente A:
 Ambiente B:
 Prompt base:
+Prompt padrao version:
+Imagem base version:
+Frame set:
+Lote A:
+Lote B:
+Quantidade gerada:
+Quantidade aprovada:
+Quantidade descartada:
 Prompt ambiente A:
 Prompt ambiente B:
 Output A:
@@ -95,6 +110,10 @@ Status publicacao B:
 Metricas A:
 Metricas B:
 ```
+
+Arquivo detalhado:
+
+- `MULTIPLICACAO_FRAMES.md`
 
 ## Checklist de filtro visual
 

@@ -8,7 +8,21 @@
   "spreadsheet": {
     "name": "Operacao TikTok Shop - Planilha Mae",
     "id": "12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48",
-    "url": "https://docs.google.com/spreadsheets/d/12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48/edit"
+    "url": "https://docs.google.com/spreadsheets/d/12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48/edit",
+    "sheets": {
+      "lotes_gera_frames": {
+        "sheet_id": 1012,
+        "role": "Controle das rodadas feitas no Gera Frames."
+      },
+      "frames_prompts": {
+        "sheet_id": 1013,
+        "role": "Controle das imagens base, frame sets e prompts padrao reaproveitaveis."
+      },
+      "conteudo": {
+        "sheet_id": 1004,
+        "gera_frames_columns": "W:AC"
+      }
+    }
   },
   "folders": {
     "01_produtos_validados": {
