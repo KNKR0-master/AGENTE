@@ -1,0 +1,39 @@
+{
+  "created_at": "2026-07-21",
+  "drive_root": {
+    "name": "TikTok Shop Operacao",
+    "id": "1EBc8qmZcDHoF7et-2ZzK3qY8CMWnKDsU",
+    "url": "https://drive.google.com/drive/folders/1EBc8qmZcDHoF7et-2ZzK3qY8CMWnKDsU"
+  },
+  "spreadsheet": {
+    "name": "Operacao TikTok Shop - Planilha Mae",
+    "id": "12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48",
+    "url": "https://docs.google.com/spreadsheets/d/12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48/edit"
+  },
+  "folders": {
+    "01_produtos_validados": {
+      "id": "17iq18fNUnloZKjhrtuOJuLns-ZZFiEA6",
+      "url": "https://drive.google.com/drive/folders/17iq18fNUnloZKjhrtuOJuLns-ZZFiEA6"
+    },
+    "02_videos_gerados": {
+      "id": "1iLzi1m2-agi5357TNqV0vQtxH6jo6_kj",
+      "url": "https://drive.google.com/drive/folders/1iLzi1m2-agi5357TNqV0vQtxH6jo6_kj"
+    },
+    "03_capcut_em_edicao": {
+      "id": "1cXPny5CK8Gx7erPgEiK8y23jACs6y0E-",
+      "url": "https://drive.google.com/drive/folders/1cXPny5CK8Gx7erPgEiK8y23jACs6y0E-"
+    },
+    "04_prontos_para_postar": {
+      "id": "1KpjJiby--74m3yshmsrstjzcf-d7zGOL",
+      "url": "https://drive.google.com/drive/folders/1KpjJiby--74m3yshmsrstjzcf-d7zGOL"
+    },
+    "05_postados": {
+      "id": "1LPEPnEmGYOYnXAvqv2PswbvLD3xfKcEN",
+      "url": "https://drive.google.com/drive/folders/1LPEPnEmGYOYnXAvqv2PswbvLD3xfKcEN"
+    },
+    "06_descartados": {
+      "id": "1C19hC4IXdiN6tV72W0MlUOfD7_Do0Xgl",
+      "url": "https://drive.google.com/drive/folders/1C19hC4IXdiN6tV72W0MlUOfD7_Do0Xgl"
+    }
+  }
+}

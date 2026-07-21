@@ -37,6 +37,7 @@ Entradas esperadas:
 - Exportacao CSV/XLSX ou captura estruturada de Echo Data, Kalodata ou fonte equivalente.
 - Exportacao ou registro manual dos resultados reais da conta.
 - Lista de campos disponiveis por fonte.
+- Planilha operacional `Operacao TikTok Shop - Planilha Mae`, quando a rotina de conta estiver em uso.
 
 Checklist:
 
@@ -227,19 +228,21 @@ Tarefas:
 
 1. Separar uma exportacao ou captura da fonte candidata com produtos.
 2. Separar uma exportacao ou registro da propria conta com videos e pedidos.
-3. Criar dicionario de campos disponiveis.
-4. Montar uma planilha ou tabela local de snapshots.
-5. Calcular 5 a 8 indicadores essenciais.
-6. Gerar primeira tabela executiva.
-7. Gerar grafico de quadrantes.
-8. Revisar manualmente os top produtos.
-9. Registrar decisao e justificativa.
-10. Definir o que faltou para automatizar.
+3. Registrar os videos atuais na planilha operacional, mesmo que inicialmente de forma manual.
+4. Criar dicionario de campos disponiveis.
+5. Montar uma planilha ou tabela local de snapshots.
+6. Calcular 5 a 8 indicadores essenciais.
+7. Gerar primeira tabela executiva.
+8. Gerar grafico de quadrantes.
+9. Revisar manualmente os top produtos.
+10. Registrar decisao e justificativa.
+11. Definir o que faltou para automatizar.
 
 ## Dados que precisamos pedir/obter primeiro
 
 - Exportacao CSV/XLSX de produtos da fonte escolhida, mesmo que pequena.
 - Exportacao CSV/XLSX dos resultados da conta, se disponivel.
+- Lista ou pasta dos videos atuais no Google Drive.
 - Print ou lista das colunas disponiveis em Echo Data/Kalodata.
 - Exemplos de 3 produtos que voce considera bons.
 - Exemplos de 3 produtos que parecem bons, mas voce nao produziria.

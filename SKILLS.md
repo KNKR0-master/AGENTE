@@ -8,6 +8,7 @@ Este arquivo serve como memória operacional das skills disponíveis/úteis para
 Artefato atual de validação do projeto:
 
 - `VALIDACAO_ETAPAS.md`: checklist vivo para validar dicionário de dados, fontes, MVP manual, relatórios visuais, automações e recalibração antes de escalar coleta ou alertas.
+- `OPERACAO_TIKTOK_SHOP.md`: estrutura operacional para contas, produtos, vídeos, Drive, publicações, calendário e métricas reais.
 
 ## Regra prática de uso
 
@@ -25,6 +26,7 @@ Antes de executar uma tarefa importante, verificar se alguma skill abaixo se enc
 10. Se a tarefa envolve Excel, XLSX, XLSM, XLS, CSV, TSV, fórmulas ou planilhas operacionais: considerar `excel-xlsx`.
 11. Se a tarefa envolve pesquisa de anúncios, criativos, apps, rankings, downloads, receita estimada, mercado ou concorrentes: considerar `admapix`.
 12. Se a tarefa envolve validar etapas do projeto de inteligência TikTok Shop, automações ou relatórios visuais: usar `VALIDACAO_ETAPAS.md` como roteiro operacional.
+13. Se a tarefa envolve rotina de contas, produtos em producao, calendario, videos no Drive, publicacoes ou metricas reais da conta: usar `OPERACAO_TIKTOK_SHOP.md` como roteiro operacional.
 
 ## Skills principais para o projeto
 
