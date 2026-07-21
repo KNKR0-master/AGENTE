@@ -1,10 +1,10 @@
-# Gera Frames - multiplicacao de videos por frames
+# Gera Videos / Gera Frames - multiplicacao de videos por frames
 
 Data de registro: 2026-07-21
 
-Objetivo: registrar a etapa em que o Gera Frames reaproveita frames/imagens base para gerar aproximadamente 18 videos por rodada, alterando frames e mantendo a logica criativa do produto.
+Objetivo: registrar a etapa em que o Gera Videos/Gera Frames reaproveita frames/imagens base para gerar aproximadamente 18 videos por rodada, alterando frames e mantendo a logica criativa do produto.
 
-Nota operacional: Gera Frames e Drive sao coisas diferentes. O Gera Frames gera/multiplica os videos; o Drive apenas armazena, organiza e rastreia o resultado exportado.
+Nota operacional: Gera Videos/Gera Frames e Drive sao coisas diferentes. O Gera gera/multiplica os videos; o Drive apenas armazena, organiza e rastreia o resultado exportado.
 
 ## Onde entra no fluxo
 
@@ -14,7 +14,7 @@ Fluxo atualizado:
 Mercado/EchoTik
 > produto aprovado
 > Google Flow / CapCut / video-base
-> Gera Frames
+> Gera Videos / Gera Frames
 > lote de videos gerados
 > armazenar resultado exportado no Drive, na pasta do produto
 > publicacao
@@ -52,15 +52,15 @@ Campos essenciais:
 - risco_compliance;
 - status_producao.
 
-### Lote Gera Frames
+### Lote Gera Videos / Gera Frames
 
-Representa uma rodada feita no Gera Frames.
+Representa uma rodada feita no Gera Videos/Gera Frames.
 
 Campos essenciais:
 
 - lote_id;
 - produto_id;
-- ferramenta (`Gera Frames`);
+- ferramenta (`Gera Videos` ou `Gera Frames`);
 - quantidade_planejada;
 - quantidade_gerada;
 - quantidade_aprovada;
@@ -127,6 +127,42 @@ Leitura inicial:
 | 41% a 70% | Lote aceitavel para operacao inicial. |
 | acima de 70% | Prompt/frame set candidato a padrao reutilizavel. |
 
+## Padrao real identificado nos arquivos
+
+Os lotes validos no Drive usam nomes como:
+
+```text
+PRODUTO_G1C1A1_DDMM_ID.mp4
+PRODUTO_G3C2A2_DDMM_ID.mp4
+```
+
+Leitura dos codigos:
+
+- `G`: gancho.
+- `C`: corpo.
+- `A`: action/CTA.
+
+Exemplo:
+
+```text
+ESCORREDOR_G2C3A1_2007_1784562975785.mp4
+```
+
+Interpretacao:
+
+```text
+produto: ESCORREDOR
+gancho: G2
+corpo: C3
+action/CTA: A1
+data/lote: 2007
+id_export: 1784562975785
+```
+
+Esse padrao deve ser usado para identificar automaticamente videos do Gera Videos/Gera Frames, agrupar variacoes por produto e reconstruir a matriz criativa `gancho x corpo x action`.
+
+Observacao: alguns videos desses lotes podem ja ter sido postados e ainda nao apagados/movidos. Portanto, o inventario do Drive indica "arquivo encontrado", mas a disponibilidade real para publicacao precisa de uma conferencia manual antes de entrar no calendario.
+
 ## Pasta por produto no Drive
 
 Quando um produto entrar em producao, criar uma pasta propria:
@@ -157,13 +193,13 @@ lote-{produto_id}-{yyyymmdd}-{numero}
 Video individual:
 
 ```text
-produto-{produto_id}_{slug}_lote-{numero}_var-{variante}_amb-{ambiente}_{status}.mp4
+{produto_slug}_G{gancho}C{corpo}A{action}_{ddmm}_{id_export}.mp4
 ```
 
 Exemplo:
 
 ```text
-produto-1732849645859341976_tetra-magnesio_lote-001_var-07_amb-cozinha_final.mp4
+ESCORREDOR_G2C3A1_2007_1784562975785.mp4
 ```
 
 ## Regra de dashboard

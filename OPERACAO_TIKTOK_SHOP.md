@@ -23,12 +23,13 @@ Esta camada transforma o projeto em rotina operacional:
 ```text
 Produtos validados
 > videos gerados/editados
-> Gera Frames
+> Gera Videos / Gera Frames
 > lotes de videos por produto
 > Drive como armazenamento dos outputs
 > calendario de publicacao
 > posts publicados
 > metricas reais da conta
+> financeiro real: GMV, comissao concluida, saldos e saques
 > aprendizado por produto, conta, ambiente, gancho e formato
 ```
 
@@ -44,7 +45,9 @@ Hoje temos blocos, nao um agente unico completo:
 - `proactive-agent`: opcao futura para check-ins, lembretes e continuidade, com cautela.
 - `VALIDACAO_ETAPAS.md`: define como cruzar mercado com resultado real.
 - `GOOGLE_FLOW.md` e `conteudo/google-flow/`: fluxo de criacao e edicao de videos.
-- `conteudo/google-flow/MULTIPLICACAO_FRAMES.md`: etapa do Gera Frames, ferramenta separada que multiplica videos por frames.
+- `conteudo/google-flow/MULTIPLICACAO_FRAMES.md`: etapa do Gera Videos/Gera Frames, ferramenta separada que multiplica videos por frames.
+- `conteudo/google-flow/INVENTARIO_LOTES_GERA_VIDEOS.md`: inventario dos lotes ja identificados na pasta `FLOW`.
+- `VISAO_GERAL_PROJETO.md`: zoom out dos pilares, fluxo geral e estado atual.
 
 Decisao: antes de criar um agente autonomo, validar a rotina em planilha + Drive.
 
@@ -55,10 +58,16 @@ Decisao: antes de criar um agente autonomo, validar a rotina em planilha + Drive
 Resumo visual inicial:
 
 - GMV total.
-- Comissao total.
+- Comissao total estimada.
+- Comissao real/concluida.
+- Comissao pendente.
+- Saldo disponivel.
+- Saldo pendente.
+- Total sacado.
 - Videos postados.
 - Videos prontos.
 - Produtos em producao.
+- GMV por produto vendido.
 - Tendencias 7d/14d/30d.
 
 No primeiro momento, a aba fica como painel-base. Graficos e formulas entram depois que tivermos dados reais suficientes.
@@ -117,11 +126,11 @@ Controla cada video criado:
 
 ### `lotes_gera_frames`
 
-Controla cada rodada no Gera Frames, normalmente com aproximadamente 18 videos:
+Controla cada rodada no Gera Videos/Gera Frames, normalmente com aproximadamente 18 videos:
 
 - lote_id;
 - produto_id;
-- ferramenta (`Gera Frames`);
+- ferramenta (`Gera Videos` ou `Gera Frames`);
 - quantidade_planejada;
 - quantidade_gerada;
 - quantidade_aprovada;
@@ -133,6 +142,21 @@ Controla cada rodada no Gera Frames, normalmente com aproximadamente 18 videos:
 - ambiente_base;
 - pasta_drive_url, apenas para armazenar o resultado exportado;
 - status.
+
+Status de lote recomendados:
+
+```text
+inventariado
+pendente_limpeza_manual
+pendente_revisao
+pronto_para_postar
+em_publicacao
+postado
+pausado
+descartado
+```
+
+Observacao: a pasta `FLOW` contem lotes validos, mas alguns videos podem ja ter sido postados sem exclusao/movimentacao. Antes de entrar no calendario, o lote deve passar por limpeza/conferencia manual.
 
 ### `frames_prompts`
 
@@ -198,6 +222,63 @@ Recebe resultados da propria conta:
 - CTR;
 - conversao;
 - fonte_export.
+
+### `financeiro_conta`
+
+Concilia dinheiro real por conta e periodo:
+
+- periodo_inicio;
+- periodo_fim;
+- conta_id;
+- GMV_total;
+- pedidos_total;
+- comissao_estimada;
+- comissao_pendente;
+- comissao_concluida;
+- comissao_cancelada;
+- comissao_estornada;
+- saldo_disponivel;
+- saldo_pendente;
+- saldo_sacado;
+- ajustes;
+- fonte_export;
+- observacoes.
+
+### `vendas_produto`
+
+Mostra o resultado comercial por produto ja vendido:
+
+- data;
+- conta_id;
+- produto_id;
+- produto_nome;
+- pedidos;
+- unidades;
+- GMV;
+- comissao_estimada;
+- comissao_concluida;
+- comissao_pendente;
+- cancelamentos;
+- devolucoes;
+- ticket_medio;
+- comissao_por_pedido;
+- fonte_export.
+
+### `saldos_tiktok`
+
+Registra historico financeiro e saldos da conta:
+
+- data_snapshot;
+- conta_id;
+- saldo_disponivel;
+- saldo_pendente;
+- saldo_em_processamento;
+- total_sacado;
+- saque_id;
+- data_saque;
+- valor_saque;
+- status_saque;
+- observacoes.
 
 ### `calendario`
 
@@ -301,7 +382,12 @@ Campos minimos:
 - cliques;
 - pedidos;
 - GMV;
-- comissao;
+- comissao estimada;
+- comissao concluida/real;
+- comissao pendente;
+- saldo disponivel;
+- saldo pendente;
+- valor sacado;
 - cancelamentos/devolucoes;
 - status da publicacao.
 
@@ -311,18 +397,21 @@ Diario:
 
 - Registrar lotes gerados, videos aprovados/finalizados/postados.
 - Atualizar calendario do dia seguinte.
-- Armazenar no Drive os outputs exportados do Gera Frames e mover arquivos conforme status.
+- Armazenar no Drive os outputs exportados do Gera Videos/Gera Frames e mover arquivos conforme status.
 
 2 a 3 vezes por semana:
 
 - Importar export do TikTok Shop.
 - Atualizar metricas por video/produto.
+- Atualizar financeiro real: GMV, comissao concluida, pendente, saldo e saques.
 - Revisar produtos com melhor resposta.
 
 Semanal:
 
 - Fechar ranking de produtos.
 - Ver top videos por comissao/GMV.
+- Conciliar comissao estimada vs comissao real/concluida.
+- Ver top produtos por GMV vendido e por dinheiro realmente recebido.
 - Decidir quais produtos continuam, pausam ou escalam.
 - Atualizar aprendizados em `experimentos`.
 
@@ -330,12 +419,15 @@ Semanal:
 
 1. Mapear arquivos atuais do Drive e preencher `arquivos_drive`.
 2. Criar primeiras linhas em `produtos` a partir das analises locais.
-3. Criar primeiras linhas em `lotes_gera_frames` para os lotes ja produzidos no Gera Frames.
-4. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes.
-5. Definir padrao de `lote_id`, `conteudo_id` e `publicacao_id`.
-6. Importar primeiro export real do TikTok Shop para `import_tiktok`.
-7. Normalizar esse export para `metricas_diarias`.
-8. Criar formulas/graficos no `dashboard`.
+3. Criar primeiras linhas em `lotes_gera_frames` para os lotes ja produzidos no Gera Videos/Gera Frames.
+4. Marcar lotes vindos da pasta `FLOW` como `pendente_limpeza_manual` quando puderem conter videos ja postados.
+5. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes.
+6. Definir padrao de `lote_id`, `conteudo_id` e `publicacao_id`.
+7. Importar primeiro export real do TikTok Shop para `import_tiktok`.
+8. Normalizar esse export para `metricas_diarias`.
+9. Criar abas financeiras: `financeiro_conta`, `vendas_produto` e `saldos_tiktok`.
+10. Conciliar comissao estimada, comissao concluida, saldo disponivel e saques.
+11. Criar formulas/graficos no `dashboard`.
 
 ## Regras de seguranca
 

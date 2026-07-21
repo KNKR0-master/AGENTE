@@ -46,7 +46,7 @@ Checklist:
 - Mapear criadores: ativos, novos, historicos, top criadores, videos/lives recentes.
 - Mapear conteudo: video_id, criador, data, views, produto relacionado.
 - Mapear estoque: exato, informado, proxy ou desconhecido.
-- Mapear propria conta: views, cliques, pedidos, GMV, comissao, cancelamentos.
+- Mapear propria conta: views, cliques, pedidos, GMV, comissao estimada, comissao concluida, saldos, saques, cancelamentos.
 - Classificar cada campo como `exato`, `estimado`, `proxy`, `manual` ou `ausente`.
 - Definir IDs canonicos para produto, loja, criador e video.
 
@@ -78,6 +78,7 @@ Escopo recomendado:
 - 1 categoria ou grupo de categorias proximas.
 - 7 a 14 dias de snapshots, se possivel.
 - Resultados reais da conta mesmo que ainda sejam poucos.
+- Resultados financeiros reais: comissao concluida, saldo disponivel, saldo pendente e GMV por produto vendido.
 
 Calculos minimos:
 
@@ -94,6 +95,9 @@ Calculos minimos:
 - Market Opportunity Score inicial.
 - Execution Readiness Score manual.
 - Production Priority Score inicial.
+- Comissao real por produto.
+- GMV real por produto vendido.
+- Diferenca entre comissao estimada e comissao concluida.
 
 Relatorio visual minimo:
 
@@ -141,6 +145,9 @@ Relatorios visuais:
 - Ranking de producao.
 - Tela de produto individual.
 - Tela de desempenho por video.
+- Tela financeira por conta.
+- Tela de GMV e comissao por produto vendido.
+- Tela de saldos, pendencias e saques.
 - Tela de alertas.
 - Historico de decisoes e resultados.
 
@@ -202,6 +209,9 @@ Indicadores de aprendizado:
 - Produtos recomendados vs produtos produzidos.
 - Videos por produto.
 - Views, cliques, pedidos, GMV e comissao.
+- Comissao estimada vs comissao concluida.
+- Saldo disponivel, saldo pendente e total sacado.
+- GMV por produto efetivamente vendido.
 - Cancelamentos e devolucoes.
 - Comissao por 1000 views.
 - Hit rate por categoria, formato, gancho e avatar.

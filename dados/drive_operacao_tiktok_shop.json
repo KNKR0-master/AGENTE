@@ -5,6 +5,19 @@
     "id": "1EBc8qmZcDHoF7et-2ZzK3qY8CMWnKDsU",
     "url": "https://drive.google.com/drive/folders/1EBc8qmZcDHoF7et-2ZzK3qY8CMWnKDsU"
   },
+  "flow_source": {
+    "name": "FLOW",
+    "id": "1S_oe5YtvZ4QzQ_eTLJN2_MhG9-u9qt5_",
+    "url": "https://drive.google.com/drive/folders/1S_oe5YtvZ4QzQ_eTLJN2_MhG9-u9qt5_",
+    "role": "Historico atual de producao com prompts, imagens e outputs do Gera Videos/Gera Frames.",
+    "gera_videos_filename_pattern": "PRODUTO_GxCyAz_DDMM_ID.mp4",
+    "filename_components": {
+      "G": "gancho",
+      "C": "corpo",
+      "A": "action_cta"
+    },
+    "safety_rule": "Somente leitura ate autorizacao explicita; nao apagar, mover ou renomear arquivos automaticamente."
+  },
   "spreadsheet": {
     "name": "Operacao TikTok Shop - Planilha Mae",
     "id": "12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48",
@@ -12,7 +25,7 @@
     "sheets": {
       "lotes_gera_frames": {
         "sheet_id": 1012,
-        "role": "Controle das rodadas feitas no Gera Frames."
+        "role": "Controle das rodadas feitas no Gera Videos/Gera Frames."
       },
       "frames_prompts": {
         "sheet_id": 1013,
@@ -21,6 +34,18 @@
       "conteudo": {
         "sheet_id": 1004,
         "gera_frames_columns": "W:AC"
+      },
+      "financeiro_conta": {
+        "planned": true,
+        "role": "Resumo financeiro por conta e periodo: GMV, comissoes, saldos e saques."
+      },
+      "vendas_produto": {
+        "planned": true,
+        "role": "Resultado real por produto vendido: pedidos, GMV e comissao."
+      },
+      "saldos_tiktok": {
+        "planned": true,
+        "role": "Historico de saldo disponivel, pendente, em processamento e saques."
       }
     }
   },

@@ -37,9 +37,10 @@ Revisao economica de qualidade:
 
 - `conteudo/google-flow/REVISAO_ECONOMICA_AUDIO_VIDEO.md`
 
-Gera Frames:
+Gera Videos / Gera Frames:
 
 - `conteudo/google-flow/MULTIPLICACAO_FRAMES.md`
+- `conteudo/google-flow/INVENTARIO_LOTES_GERA_VIDEOS.md`
 
 ## Workflow real do usuario
 
@@ -52,8 +53,10 @@ Imagem de ambiente como referencia
 > subir no CapCut
 > remover ruidos sonoros e cortar fim de cena/fala
 > salvar arquivo final
-> usar Gera Frames para multiplicar variacoes por frames
-> armazenar no Drive o lote exportado do Gera Frames
+> usar Gera Videos/Gera Frames para multiplicar variacoes por frames
+> armazenar no Drive o lote exportado do Gera Videos/Gera Frames
+> identificar padrao G/C/A no nome dos arquivos
+> limpar manualmente os videos ja postados antes de agendar
 > repetir com 2 ambientes por produto
 > edicoes finais
 > publicar no TikTok Shop
@@ -170,6 +173,7 @@ Nao iniciar agora.
 | Videos planejados por lote | aproximadamente 18 |
 | Variacoes uteis por produto | pelo menos 1 por ambiente |
 | Aproveitamento do lote | registrar aprovados / gerados |
+| Disponibilidade real do lote | confirmar se nao ha videos ja postados |
 | Retrabalho por video | no maximo 2 edicoes |
 | Modo de geracao | registrar `low priority`, pago ou outro |
 | Creditos por video utilizavel | registrar somente quando houver custo |
