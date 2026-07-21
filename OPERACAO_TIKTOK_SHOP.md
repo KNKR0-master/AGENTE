@@ -104,6 +104,32 @@ Controla produtos selecionados:
 - risco de compliance;
 - link do relatorio local.
 
+### Pipelines por perfil
+
+Controlam os produtos que estao girando em cada perfil, sem misturar producao de conteudo com venda/financeiro.
+
+Abas atuais:
+
+- `pipeline_ceci`: perfil `Ceci`.
+- `pipeline_fe`: perfil `Fe`.
+
+Estrutura:
+
+- perfil;
+- produto_nome;
+- produto_normalizado;
+- marcador_lista (`OK GERA`, `NOVO`, `ANTIGO` ou vazio);
+- status_validacao;
+- status_gera_viral;
+- status_criativo;
+- status_venda;
+- status_financeiro;
+- drive_status;
+- proxima_acao;
+- observacoes.
+
+Regra: `OK GERA` indica producao/multiplicacao no Gera Viral, nao venda. `NOVO` indica produto validado que ainda precisa modelagem, roteiro e/ou imagens. Produtos sem `OK GERA` ainda podem estar vendendo ou ja ter vendido; essa confirmacao deve vir das abas financeiras/imports do TikTok Shop.
+
 ### `conteudo`
 
 Controla cada video criado:
@@ -419,15 +445,16 @@ Semanal:
 
 1. Mapear arquivos atuais do Drive e preencher `arquivos_drive`.
 2. Criar primeiras linhas em `produtos` a partir das analises locais.
-3. Criar primeiras linhas em `lotes_gera_frames` para os lotes ja produzidos no Gera Videos/Gera Frames.
-4. Marcar lotes vindos da pasta `FLOW` como `pendente_limpeza_manual` quando puderem conter videos ja postados.
-5. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes.
-6. Definir padrao de `lote_id`, `conteudo_id` e `publicacao_id`.
-7. Importar primeiro export real do TikTok Shop para `import_tiktok`.
-8. Normalizar esse export para `metricas_diarias`.
-9. Criar abas financeiras: `financeiro_conta`, `vendas_produto` e `saldos_tiktok`.
-10. Conciliar comissao estimada, comissao concluida, saldo disponivel e saques.
-11. Criar formulas/graficos no `dashboard`.
+3. Manter `pipeline_ceci` e `pipeline_fe` atualizados com status de Gera Viral, criativo, venda e financeiro.
+4. Criar primeiras linhas em `lotes_gera_frames` para os lotes ja produzidos no Gera Videos/Gera Frames.
+5. Marcar lotes vindos da pasta `FLOW` como `pendente_limpeza_manual` quando puderem conter videos ja postados.
+6. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes.
+7. Definir padrao de `lote_id`, `conteudo_id` e `publicacao_id`.
+8. Importar primeiro export real do TikTok Shop para `import_tiktok`.
+9. Normalizar esse export para `metricas_diarias`.
+10. Criar abas financeiras: `financeiro_conta`, `vendas_produto` e `saldos_tiktok`.
+11. Conciliar comissao estimada, comissao concluida, saldo disponivel e saques.
+12. Criar formulas/graficos no `dashboard`.
 
 ## Regras de seguranca
 

@@ -35,6 +35,16 @@
         "sheet_id": 1004,
         "gera_frames_columns": "W:AC"
       },
+      "pipeline_ceci": {
+        "sheet_id": 1014,
+        "role": "Produtos girando no perfil Ceci, separando status de Gera Viral, criativo, venda e financeiro.",
+        "rule": "OK GERA indica producao/multiplicacao no Gera Viral; nao confirma venda. Venda/GMV/comissao dependem de import financeiro do TikTok Shop."
+      },
+      "pipeline_fe": {
+        "sheet_id": 1015,
+        "role": "Produtos girando no perfil Fe, separando status de Gera Viral, criativo, venda e financeiro.",
+        "rule": "OK GERA indica producao/multiplicacao no Gera Viral; NOVO indica produto validado que ainda precisa modelagem/roteiro. Venda/GMV/comissao dependem de import financeiro do TikTok Shop."
+      },
       "financeiro_conta": {
         "planned": true,
         "role": "Resumo financeiro por conta e periodo: GMV, comissoes, saldos e saques."

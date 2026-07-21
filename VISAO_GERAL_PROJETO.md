@@ -163,6 +163,8 @@ Planilha-mae:
 - `dashboard`: visao geral.
 - `contas`: perfis TikTok Shop.
 - `produtos`: produtos aprovados/monitorados.
+- `pipeline_ceci`: produtos que estao girando no perfil Ceci, com status de Gera Viral, criativo, venda e financeiro.
+- `pipeline_fe`: produtos que estao girando no perfil Fe, com status de Gera Viral, criativo, venda e financeiro.
 - `conteudo`: videos individuais.
 - `lotes_gera_frames`: rodadas do Gera Videos/Gera Frames.
 - `frames_prompts`: imagens base, frame sets e prompts.
@@ -203,6 +205,22 @@ Tabelas essenciais:
 - ranking de videos por comissao real;
 - conciliacao entre comissao estimada e comissao concluida;
 - saldos por conta e por periodo.
+
+## Pipeline por perfil
+
+O pipeline por perfil separa producao de conteudo, venda e financeiro. Cada perfil deve ter uma aba propria quando a rotina operacional ou lista de produtos for diferente.
+
+Pipelines atuais:
+
+- `pipeline_ceci`: produtos girando no perfil `Ceci`.
+- `pipeline_fe`: produtos girando no perfil `Fe`.
+
+Regra de leitura:
+
+- `OK GERA`: conteudo ja produzido e multiplicado no Gera Viral/Gera Videos; normalmente existe lote no Drive.
+- `NOVO`: produto passou pela validacao inicial de interesse, mas ainda precisa modelar imagens, roteiro e/ou preparar producao.
+- Sem `OK GERA`: nao significa que o produto nao vendeu; significa apenas que ainda nao existe producao no Gera Viral desde o inicio desse processo.
+- Venda, GMV, comissao e saldo devem vir do import/financeiro TikTok Shop, nao do status de producao.
 
 ## Estado atual do estoque FLOW
 
