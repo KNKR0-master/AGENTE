@@ -318,6 +318,34 @@ Organiza a rotina:
 - status;
 - prioridade.
 
+### `estoque_videos`
+
+Snapshot de videos disponiveis por produto/pasta:
+
+- data_snapshot;
+- fonte;
+- produto_id;
+- produto_nome;
+- perfil_sugerido;
+- videos_disponiveis;
+- ritmo_postagens_dia;
+- dias_cobertura;
+- tipo_estoque;
+- pasta_drive_url;
+- observacoes.
+
+Regra: esta aba conta disponibilidade operacional, nao venda nem publicacao. Arquivos continuam no Drive e nao devem ser movidos, apagados ou renomeados sem autorizacao.
+
+### `calendario_postagens`
+
+Matriz diaria de postagem por produto. O primeiro calendario foi criado em 2026-07-22 com a regra:
+
+```text
+2 videos por produto com estoque disponivel por dia
+```
+
+A matriz usa uma linha por produto e uma coluna por data. Cada celula indica quantos videos daquele produto devem ser postados naquele dia. Quando o estoque e impar, o ultimo dia fica com 1 video.
+
 ### `arquivos_drive`
 
 Mapeia os arquivos no Drive:
@@ -424,6 +452,7 @@ Diario:
 - Registrar lotes gerados, videos aprovados/finalizados/postados.
 - Atualizar calendario do dia seguinte.
 - Armazenar no Drive os outputs exportados do Gera Videos/Gera Frames e mover arquivos conforme status.
+- Conferir `estoque_videos` e `calendario_postagens` pela automacao diaria, mantendo a regra de somente leitura no Drive.
 
 2 a 3 vezes por semana:
 

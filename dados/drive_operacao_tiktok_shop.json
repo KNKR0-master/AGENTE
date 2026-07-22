@@ -45,6 +45,16 @@
         "role": "Produtos girando no perfil Fe, separando status de Gera Viral, criativo, venda e financeiro.",
         "rule": "OK GERA indica producao/multiplicacao no Gera Viral; NOVO indica produto validado que ainda precisa modelagem/roteiro. Venda/GMV/comissao dependem de import financeiro do TikTok Shop."
       },
+      "estoque_videos": {
+        "sheet_id": 1016,
+        "role": "Snapshot de videos disponiveis por produto/pasta, com ritmo de postagem e cobertura estimada.",
+        "rule": "Somente contagem e planejamento; nao implica que os videos foram revisados, publicados, movidos ou apagados."
+      },
+      "calendario_postagens": {
+        "sheet_id": 1017,
+        "role": "Matriz diaria de postagem por produto, planejada inicialmente para 2 videos por produto com estoque disponivel por dia.",
+        "rule": "Usar como plano operacional; publicacao e limpeza de arquivos continuam manuais ate autorizacao explicita."
+      },
       "financeiro_conta": {
         "planned": true,
         "role": "Resumo financeiro por conta e periodo: GMV, comissoes, saldos e saques."

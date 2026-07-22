@@ -168,6 +168,8 @@ Planilha-mae:
 - `conteudo`: videos individuais.
 - `lotes_gera_frames`: rodadas do Gera Videos/Gera Frames.
 - `frames_prompts`: imagens base, frame sets e prompts.
+- `estoque_videos`: snapshot de videos disponiveis por produto/pasta.
+- `calendario_postagens`: matriz diaria de postagem por produto, no ritmo inicial de 2 videos por produto com estoque disponivel por dia.
 - `publicacoes`: calendario e posts publicados.
 - `metricas_diarias`: resultado real.
 - `financeiro_conta`: saldos, comissoes e valores concluidos por conta e periodo.
@@ -223,6 +225,14 @@ Regra de leitura:
 - Venda, GMV, comissao e saldo devem vir do import/financeiro TikTok Shop, nao do status de producao.
 
 ## Estado atual do estoque FLOW
+
+Snapshot operacional criado em 2026-07-22:
+
+- 18 produtos/pastas com videos disponiveis.
+- 241 videos mapeados no total.
+- Ritmo inicial do calendario: 2 videos por produto com estoque disponivel por dia.
+- Cobertura maxima atual: 14 dias, puxada pelo lote `ESCOVA ELETRICA`.
+- Abas de controle: `estoque_videos` e `calendario_postagens`.
 
 Lotes completos validados pelo usuario:
 
