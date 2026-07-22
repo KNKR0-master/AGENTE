@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agente TikTok Shop</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">TikTok Shop Intelligence</p>
+        <h1>Produtos em andamento</h1>
+      </div>
+      <div class="topbar-actions">
+        <button id="refreshButton" title="Atualizar painel" aria-label="Atualizar painel">↻</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="metrics-strip" id="summaryMetrics"></section>
+
+      <section class="layout">
+        <aside class="product-list">
+          <div class="section-heading">
+            <h2>Ranking</h2>
+            <span id="productCount">0</span>
+          </div>
+          <div id="products"></div>
+        </aside>
+
+        <section class="detail" id="detail">
+          <div class="empty-state">Selecione um produto para ver criadores, vídeos e produção.</div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

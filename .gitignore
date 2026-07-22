@@ -12,9 +12,12 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+data/*.db
+data/*.db-*
 
 # Temporary exports and archives
 *.zip
 *.7z
 *.tar
 *.tgz
+exports/
