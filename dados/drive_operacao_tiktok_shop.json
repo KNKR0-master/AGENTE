@@ -1,9 +1,18 @@
 {
   "created_at": "2026-07-21",
+  "last_observed_at": "2026-07-28",
   "drive_root": {
     "name": "TikTok Shop Operacao",
     "id": "1EBc8qmZcDHoF7et-2ZzK3qY8CMWnKDsU",
-    "url": "https://drive.google.com/drive/folders/1EBc8qmZcDHoF7et-2ZzK3qY8CMWnKDsU"
+    "url": "https://drive.google.com/drive/folders/1EBc8qmZcDHoF7et-2ZzK3qY8CMWnKDsU",
+    "children_observed": [
+      "01_produtos_validados",
+      "02_videos_gerados",
+      "03_capcut_em_edicao",
+      "04_prontos_para_postar",
+      "05_postados",
+      "06_descartados"
+    ]
   },
   "flow_source": {
     "name": "FLOW",
@@ -22,51 +31,110 @@
     "name": "Operacao TikTok Shop - Planilha Mae",
     "id": "12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48",
     "url": "https://docs.google.com/spreadsheets/d/12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48/edit",
+    "created_at": "2026-07-21T17:46:30.030Z",
+    "modified_at": "2026-07-24T08:09:24.811Z",
+    "locale": "pt_BR",
+    "time_zone": "America/Sao_Paulo",
     "sheets": {
-      "lotes_gera_frames": {
-        "sheet_id": 1012,
-        "role": "Controle das rodadas feitas no Gera Videos/Gera Frames."
+      "README": {
+        "sheet_id": 502562993,
+        "role": "Instrucoes da planilha-mae e regra de nao apagar videos postados."
       },
-      "frames_prompts": {
-        "sheet_id": 1013,
-        "role": "Controle das imagens base, frame sets e prompts padrao reaproveitaveis."
+      "dashboard": {
+        "sheet_id": 1001,
+        "role": "Painel-base: GMV, comissao, videos postados, videos prontos e produtos em producao."
+      },
+      "contas": {
+        "sheet_id": 1002,
+        "role": "Cadastro de perfis TikTok Shop."
+      },
+      "produtos": {
+        "sheet_id": 1003,
+        "role": "Produtos selecionados, scores, decisao, status de producao e relatorio local.",
+        "observed_rows": 2
       },
       "conteudo": {
         "sheet_id": 1004,
-        "gera_frames_columns": "W:AC"
+        "role": "Videos/conteudos individuais gerados ou planejados.",
+        "gera_frames_columns": "W:AC",
+        "observed_rows": 1
+      },
+      "publicacoes": {
+        "sheet_id": 1005,
+        "role": "Posts programados ou publicados.",
+        "observed_rows": 0
+      },
+      "metricas_diarias": {
+        "sheet_id": 1006,
+        "role": "Resultados reais por data, conta, produto, conteudo e publicacao.",
+        "observed_rows": 0
+      },
+      "calendario": {
+        "sheet_id": 1007,
+        "role": "Calendario operacional por data/horario.",
+        "observed_rows": 0
+      },
+      "arquivos_drive": {
+        "sheet_id": 1008,
+        "role": "Mapa de arquivos do Drive.",
+        "observed_rows": 0
+      },
+      "experimentos": {
+        "sheet_id": 1009,
+        "role": "Aprendizados por hipotese, variavel, gancho e janela de resultado.",
+        "observed_rows": 0
+      },
+      "import_tiktok": {
+        "sheet_id": 1010,
+        "role": "Area de pouso para exports brutos TikTok Shop.",
+        "observed_rows": 0
+      },
+      "import_echotik": {
+        "sheet_id": 1011,
+        "role": "Area de pouso para exports/API EchoTik.",
+        "observed_rows": 0
+      },
+      "lotes_gera_frames": {
+        "sheet_id": 1012,
+        "role": "Controle das rodadas feitas no Gera Videos/Gera Frames.",
+        "observed_rows": 0
+      },
+      "frames_prompts": {
+        "sheet_id": 1013,
+        "role": "Controle das imagens base, frame sets e prompts padrao reaproveitaveis.",
+        "observed_rows": 0
       },
       "pipeline_ceci": {
         "sheet_id": 1014,
         "role": "Produtos girando no perfil Ceci, separando status de Gera Viral, criativo, venda e financeiro.",
+        "observed_rows": 23,
         "rule": "OK GERA indica producao/multiplicacao no Gera Viral; nao confirma venda. Venda/GMV/comissao dependem de import financeiro do TikTok Shop."
       },
       "pipeline_fe": {
         "sheet_id": 1015,
         "role": "Produtos girando no perfil Fe, separando status de Gera Viral, criativo, venda e financeiro.",
+        "observed_rows": 10,
         "rule": "OK GERA indica producao/multiplicacao no Gera Viral; NOVO indica produto validado que ainda precisa modelagem/roteiro. Venda/GMV/comissao dependem de import financeiro do TikTok Shop."
       },
       "estoque_videos": {
         "sheet_id": 1016,
         "role": "Snapshot de videos disponiveis por produto/pasta, com ritmo de postagem e cobertura estimada.",
+        "observed_rows": 21,
+        "observed_total_videos": 303,
         "rule": "Somente contagem e planejamento; nao implica que os videos foram revisados, publicados, movidos ou apagados."
       },
       "calendario_postagens": {
         "sheet_id": 1017,
         "role": "Matriz diaria de postagem por produto, planejada inicialmente para 2 videos por produto com estoque disponivel por dia.",
+        "observed_rows": 21,
+        "date_horizon": "2026-07-22..2026-08-04",
         "rule": "Usar como plano operacional; publicacao e limpeza de arquivos continuam manuais ate autorizacao explicita."
-      },
-      "financeiro_conta": {
-        "planned": true,
-        "role": "Resumo financeiro por conta e periodo: GMV, comissoes, saldos e saques."
-      },
-      "vendas_produto": {
-        "planned": true,
-        "role": "Resultado real por produto vendido: pedidos, GMV e comissao."
-      },
-      "saldos_tiktok": {
-        "planned": true,
-        "role": "Historico de saldo disponivel, pendente, em processamento e saques."
       }
+    },
+    "planned_sheets_not_created": {
+      "financeiro_conta": "Resumo financeiro por conta e periodo: GMV, comissoes, saldos e saques.",
+      "vendas_produto": "Resultado real por produto vendido: pedidos, GMV e comissao.",
+      "saldos_tiktok": "Historico de saldo disponivel, pendente, em processamento e saques."
     }
   },
   "folders": {

@@ -1,6 +1,7 @@
 # Operacao TikTok Shop
 
-Data de criacao: 2026-07-21
+Data de criacao: 2026-07-21  
+Ultima leitura do Drive/Sheets: 2026-07-28
 
 Objetivo: organizar a rotina das contas TikTok Shop, os produtos em producao, o estoque de videos, a programacao de postagens e os resultados reais da conta.
 
@@ -52,6 +53,18 @@ Hoje temos blocos, nao um agente unico completo:
 Decisao: antes de criar um agente autonomo, validar a rotina em planilha + Drive.
 
 ## Abas da planilha
+
+Leitura atual da planilha-mae em 2026-07-28:
+
+- Abas reais observadas: 18.
+- `produtos`: 2 produtos com analise EchoTik registrada.
+- `conteudo`: 1 piloto registrado para Tetra Magnesio.
+- `pipeline_ceci`: 23 produtos em andamento.
+- `pipeline_fe`: 10 produtos em andamento.
+- `estoque_videos`: 21 produtos/pastas, 303 videos.
+- `calendario_postagens`: 21 linhas de planejamento, horizonte 2026-07-22 a 2026-08-04.
+- `publicacoes`, `metricas_diarias`, `arquivos_drive`, `experimentos`, `import_tiktok`, `import_echotik`, `lotes_gera_frames` e `frames_prompts`: apenas cabecalhos, sem linhas de dados nesta leitura.
+- `financeiro_conta`, `vendas_produto` e `saldos_tiktok`: planejadas na documentacao, mas ainda nao existem como abas reais observadas.
 
 ### `dashboard`
 
@@ -472,16 +485,16 @@ Semanal:
 
 ## Proximas automacoes
 
-1. Mapear arquivos atuais do Drive e preencher `arquivos_drive`.
-2. Criar primeiras linhas em `produtos` a partir das analises locais.
-3. Manter `pipeline_ceci` e `pipeline_fe` atualizados com status de Gera Viral, criativo, venda e financeiro.
-4. Criar primeiras linhas em `lotes_gera_frames` para os lotes ja produzidos no Gera Videos/Gera Frames.
-5. Marcar lotes vindos da pasta `FLOW` como `pendente_limpeza_manual` quando puderem conter videos ja postados.
-6. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes.
+1. Popular `lotes_gera_frames` a partir das 21 linhas atuais de `estoque_videos`.
+2. Marcar lotes vindos da pasta `FLOW` como `pendente_limpeza_manual` quando puderem conter videos ja postados.
+3. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes ou dos lotes revisados.
+4. Definir conta/perfil para `ESCOVA ELETRICA`, `BS ARABE AYRA + AMBER KIT` e `BODY SPLASH AGAPIS`.
+5. Mapear arquivos atuais do Drive e preencher `arquivos_drive`.
+6. Manter `pipeline_ceci` e `pipeline_fe` atualizados com status de Gera Viral, criativo, venda e financeiro.
 7. Definir padrao de `lote_id`, `conteudo_id` e `publicacao_id`.
 8. Importar primeiro export real do TikTok Shop para `import_tiktok`.
-9. Normalizar esse export para `metricas_diarias`.
-10. Criar abas financeiras: `financeiro_conta`, `vendas_produto` e `saldos_tiktok`.
+9. Normalizar esse export para `metricas_diarias`, `publicacoes` e resultado por produto.
+10. Criar abas financeiras reais: `financeiro_conta`, `vendas_produto` e `saldos_tiktok`.
 11. Conciliar comissao estimada, comissao concluida, saldo disponivel e saques.
 12. Criar formulas/graficos no `dashboard`.
 

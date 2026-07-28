@@ -1,6 +1,6 @@
 # Visao geral do projeto TikTok Shop
 
-Data de atualizacao: 2026-07-21
+Data de atualizacao: 2026-07-28
 
 Objetivo: construir uma operacao semi-automatizada para escolher produtos, produzir conteudos em escala, publicar com controle, acompanhar dinheiro real da conta e aprender com as metricas reais das contas TikTok Shop.
 
@@ -226,32 +226,30 @@ Regra de leitura:
 
 ## Estado atual do estoque FLOW
 
-Snapshot operacional criado em 2026-07-22:
+Snapshot operacional lido da planilha-mae em 2026-07-28:
 
-- 18 produtos/pastas com videos disponiveis.
-- 241 videos mapeados no total.
+- 21 produtos/pastas com videos disponiveis.
+- 303 videos mapeados no total.
 - Ritmo inicial do calendario: 2 videos por produto com estoque disponivel por dia.
-- Cobertura maxima atual: 14 dias, puxada pelo lote `ESCOVA ELETRICA`.
+- Horizonte do calendario: 2026-07-22 a 2026-08-04.
+- Cobertura maxima atual: 19 dias, puxada por `CEBO DE CARNEIRO / CREME MULHER`.
 - Abas de controle: `estoque_videos` e `calendario_postagens`.
 
-Lotes completos validados pelo usuario:
+Maiores estoques atuais:
 
-- `HEMORROIDA`: 18 videos.
-- `HIDRABENE / PROTETOR_HIDRABENE`: 18 videos.
-- `HIDRABENE / KIT BS + CREME HIDRABENE`: 18 videos.
-- `HIDRABENE / KIT 4 BODY CREAM`: 18 videos.
-- `HIDRABENE / KIT HIDRABENE`: 18 videos.
-- `BODY SPLASH AYRA`: 18 videos.
-- `travesseiro / kit 2 travesseiros`: 18 videos + 1 final.
-- `ESCORREDOR`: 18 videos.
-- `CREME / mulher`: 18 videos + 3 finais.
+- `CEBO DE CARNEIRO / CREME MULHER`: 38 videos, 19 dias.
+- `PRO 3 MAGNESIO`: 28 videos, 14 dias.
+- `MAQUININHA`: 28 videos, 14 dias.
+- `ESCOVA ELETRICA`: 24 videos, 12 dias, perfil pendente.
+- `KIT 2 TRAVESSEIROS`: 24 videos, 12 dias.
+- `BS BARBOUR'S MASC KIT2`: 16 videos, 8 dias.
+- `BS ARABE AYRA + AMBER KIT`: 14 videos, 7 dias, perfil pendente.
 
-Lotes parciais/candidatos validados pelo usuario:
+Pipelines atuais:
 
-- `CHINELO SLIDE`: 14 videos.
-- `BS ISLY FEM-KIT6 / GERAVIRAL`: 16 videos.
-- `PANO MICROFIBRA`: 13 videos.
-- `kit calca / geraviral / VIDEOS`: 16 videos.
+- `pipeline_ceci`: 23 produtos em andamento.
+- `pipeline_fe`: 10 produtos em andamento.
+- Produtos com status `OK GERA` indicam producao/multiplicacao, nao venda confirmada.
 
 Observacao: alguns videos podem ja ter sido postados e ainda nao excluidos/movidos. Esses lotes devem entrar como `pendente_limpeza_manual` antes de serem tratados como estoque publicavel.
 
