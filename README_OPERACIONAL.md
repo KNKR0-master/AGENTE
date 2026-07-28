@@ -104,3 +104,14 @@ Cada versao pode registrar:
 - data programada;
 - observacoes;
 - metricas posteriores.
+
+## Regra de contagem de estoque
+
+Para alerta diario e planejamento de postagem, estoque valido nao e qualquer `.mp4` na pasta.
+
+Contam apenas videos cujo nome tenha:
+
+- padrao Gera Viral/Gera Frames `G<number>C<number>A<number>`, por exemplo `G1C2A3`; ou
+- palavra `FINAL`, sem diferenciar maiusculas/minusculas.
+
+Todo outro `.mp4` deve ser tratado como arquivo auxiliar, antigo, rascunho ou pendente de verificacao, ate revisao manual.

@@ -229,7 +229,8 @@ Regra de leitura:
 Snapshot operacional lido da planilha-mae em 2026-07-28:
 
 - 21 produtos/pastas com videos disponiveis.
-- 303 videos mapeados no total.
+- 303 videos mapeados no total pela contagem bruta anterior.
+- A contagem valida de estoque deve ser recalculada pelo nome do arquivo: somente videos com `G<number>C<number>A<number>` ou `FINAL`.
 - Ritmo inicial do calendario: 2 videos por produto com estoque disponivel por dia.
 - Horizonte do calendario: 2026-07-22 a 2026-08-04.
 - Cobertura maxima atual: 19 dias, puxada por `CEBO DE CARNEIRO / CREME MULHER`.
@@ -252,6 +253,8 @@ Pipelines atuais:
 - Produtos com status `OK GERA` indicam producao/multiplicacao, nao venda confirmada.
 
 Observacao: alguns videos podem ja ter sido postados e ainda nao excluidos/movidos. Esses lotes devem entrar como `pendente_limpeza_manual` antes de serem tratados como estoque publicavel.
+
+Regra de estoque publicavel: contar apenas arquivos de video cujo nome contenha o padrao `G<number>C<number>A<number>` ou a palavra `FINAL`. Outros `.mp4` devem ser ignorados para fins de alerta de estoque.
 
 ## Decisoes de seguranca
 

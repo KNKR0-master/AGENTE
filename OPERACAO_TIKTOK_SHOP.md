@@ -61,7 +61,7 @@ Leitura atual da planilha-mae em 2026-07-28:
 - `conteudo`: 1 piloto registrado para Tetra Magnesio.
 - `pipeline_ceci`: 23 produtos em andamento.
 - `pipeline_fe`: 10 produtos em andamento.
-- `estoque_videos`: 21 produtos/pastas, 303 videos.
+- `estoque_videos`: 21 produtos/pastas, 303 videos em contagem bruta anterior.
 - `calendario_postagens`: 21 linhas de planejamento, horizonte 2026-07-22 a 2026-08-04.
 - `publicacoes`, `metricas_diarias`, `arquivos_drive`, `experimentos`, `import_tiktok`, `import_echotik`, `lotes_gera_frames` e `frames_prompts`: apenas cabecalhos, sem linhas de dados nesta leitura.
 - `financeiro_conta`, `vendas_produto` e `saldos_tiktok`: planejadas na documentacao, mas ainda nao existem como abas reais observadas.
@@ -349,6 +349,15 @@ Snapshot de videos disponiveis por produto/pasta:
 
 Regra: esta aba conta disponibilidade operacional, nao venda nem publicacao. Arquivos continuam no Drive e nao devem ser movidos, apagados ou renomeados sem autorizacao.
 
+Regra revisada de contagem de estoque:
+
+- A coluna `videos_disponiveis` pode estar inconsistente quando representar apenas quantidade bruta de `.mp4`.
+- Para estoque publicavel, contar somente arquivos de video cujo nome contenha:
+  - padrao Gera Viral/Gera Frames `G<number>C<number>A<number>`, por exemplo `G1C2A3`; ou
+  - a palavra `FINAL`, sem diferenciar maiusculas/minusculas.
+- Ignorar outros `.mp4`, rascunhos, previews, arquivos antigos e qualquer video sem `G<number>C<number>A<number>` ou `FINAL`.
+- Quando houver subpastas, a automacao deve contar tambem os arquivos elegiveis dentro delas, sem mover ou apagar nada.
+
 ### `calendario_postagens`
 
 Matriz diaria de postagem por produto. O primeiro calendario foi criado em 2026-07-22 com a regra:
@@ -485,7 +494,7 @@ Semanal:
 
 ## Proximas automacoes
 
-1. Popular `lotes_gera_frames` a partir das 21 linhas atuais de `estoque_videos`.
+1. Recontar `estoque_videos` pela regra estrita: somente nomes com `G<number>C<number>A<number>` ou `FINAL`.
 2. Marcar lotes vindos da pasta `FLOW` como `pendente_limpeza_manual` quando puderem conter videos ja postados.
 3. Criar primeiras linhas em `conteudo` a partir dos videos ja existentes ou dos lotes revisados.
 4. Definir conta/perfil para `ESCOVA ELETRICA`, `BS ARABE AYRA + AMBER KIT` e `BODY SPLASH AGAPIS`.

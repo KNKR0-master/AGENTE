@@ -12,7 +12,8 @@ Planilha: `https://docs.google.com/spreadsheets/d/12wEBjSpfBBqm0Zj4sncafhjnGnt6S
 - `financeiro_conta`, `vendas_produto` e `saldos_tiktok` ainda estao planejadas na documentacao, mas nao apareceram como abas reais nesta leitura.
 - Ha 2 produtos de mercado registrados na aba `produtos`.
 - Ha 33 produtos em pipelines por perfil: 23 em `pipeline_ceci` e 10 em `pipeline_fe`.
-- Ha 21 linhas de estoque de videos, somando 303 videos disponiveis/inventariados.
+- Ha 21 linhas de estoque de videos, somando 303 videos na contagem bruta anterior da planilha.
+- A contagem deve ser recalculada pela regra revisada: somente arquivos de video com `G<number>C<number>A<number>` ou `FINAL` no nome contam como estoque.
 - O calendario de postagens cobre o horizonte de 2026-07-22 a 2026-08-04, usando ritmo base de 2 videos por produto/dia.
 - Abas de publicacoes, metricas, arquivos, experimentos, import TikTok, import EchoTik, lotes e frames ainda estao sem linhas de dados alem dos cabecalhos.
 
@@ -107,7 +108,9 @@ Outros produtos no pipeline:
 
 ## Estoque de videos
 
-Total: 21 produtos/pastas, 303 videos.
+Total bruto anterior: 21 produtos/pastas, 303 videos.
+
+Importante: estes numeros vieram da coluna/contagem anterior da planilha. Para alerta operacional, o estoque valido deve ser recontado diretamente nas pastas do Drive, considerando apenas nomes com `G<number>C<number>A<number>` ou `FINAL`.
 
 | Produto/pasta | Perfil | Videos | Cobertura | Observacao |
 |---|---|---:|---:|---|
@@ -138,6 +141,7 @@ Total: 21 produtos/pastas, 303 videos.
 - Nao ha dados reais nas abas `publicacoes`, `metricas_diarias`, `arquivos_drive` e `experimentos`.
 - `import_tiktok` e `import_echotik` seguem vazias.
 - `lotes_gera_frames` e `frames_prompts` ainda nao foram populadas apesar de haver estoque inventariado.
+- Quantidades de estoque precisam de recontagem estrita por padrao de nome antes de gerar alertas ou calendario.
 - O financeiro real ainda precisa de abas efetivas ou importacao para entrar no painel.
 - Produtos com `OK GERA` nao devem ser tratados como vendidos; indicam apenas producao/multiplicacao.
 - Produtos com perfil `pendente_conta` ou `pendente_perfil` precisam de decisao antes de publicar.

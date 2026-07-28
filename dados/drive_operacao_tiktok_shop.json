@@ -27,6 +27,16 @@
     },
     "safety_rule": "Somente leitura ate autorizacao explicita; nao apagar, mover ou renomear arquivos automaticamente."
   },
+  "stock_counting_rule": {
+    "last_updated_at": "2026-07-28",
+    "valid_video_name_patterns": [
+      "G<number>C<number>A<number>",
+      "FINAL"
+    ],
+    "regex_hint": "(?i)(G\\d+C\\d+A\\d+|FINAL)",
+    "rule": "Para estoque publicavel, contar apenas arquivos de video cujo nome contenha padrao Gera Viral/Gera Frames G<number>C<number>A<number> ou a palavra FINAL. Ignorar outros .mp4.",
+    "previous_sheet_counts_are_raw": true
+  },
   "spreadsheet": {
     "name": "Operacao TikTok Shop - Planilha Mae",
     "id": "12wEBjSpfBBqm0Zj4sncafhjnGnt6SH_YWZUtbQDIq48",
@@ -120,7 +130,8 @@
         "sheet_id": 1016,
         "role": "Snapshot de videos disponiveis por produto/pasta, com ritmo de postagem e cobertura estimada.",
         "observed_rows": 21,
-        "observed_total_videos": 303,
+        "observed_total_videos_raw_sheet": 303,
+        "strict_recount_required": true,
         "rule": "Somente contagem e planejamento; nao implica que os videos foram revisados, publicados, movidos ou apagados."
       },
       "calendario_postagens": {

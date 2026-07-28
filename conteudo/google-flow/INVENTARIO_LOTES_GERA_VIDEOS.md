@@ -89,6 +89,20 @@ Alguns videos podem ja ter sido postados e ainda permanecerem no Drive. Por isso
 3. A automacao deve registrar o lote como `inventariado` ou `pendente_limpeza_manual` ate essa conferencia.
 4. So depois da limpeza/revisao o status deve virar `pronto_para_postar`.
 
+## Regra revisada de contagem
+
+Para evitar inflar estoque com arquivos que nao sao variacoes reais de publicacao, a contagem valida deve considerar somente:
+
+1. Arquivos de video cujo nome contenha o padrao `G<number>C<number>A<number>`, por exemplo `G1C2A3` ou `G12C4A8`.
+2. Arquivos de video cujo nome contenha a palavra `FINAL`, sem diferenciar maiusculas/minusculas.
+
+Nao contam como estoque:
+
+- `.mp4` sem padrao `G<number>C<number>A<number>` e sem `FINAL`;
+- previews, rascunhos ou arquivos antigos;
+- imagens, prompts, textos, thumbnails ou arquivos auxiliares;
+- duplicatas que nao representem uma variacao publicavel.
+
 ## Classificacao recomendada
 
 | Status operacional | Uso |
@@ -105,7 +119,7 @@ Alguns videos podem ja ter sido postados e ainda permanecerem no Drive. Por isso
 Criar uma rotina de inventario que:
 
 - percorre a pasta `FLOW`;
-- identifica arquivos `.mp4` com padrao `GxCyAz`;
+- identifica arquivos `.mp4` com padrao `G<number>C<number>A<number>` ou palavra `FINAL`;
 - agrupa por produto, data/lote e id export;
 - calcula quantidade por lote;
 - marca lote completo quando houver 18 variacoes;
