@@ -1,6 +1,6 @@
 # Visao geral do projeto TikTok Shop
 
-Data de atualizacao: 2026-07-28
+Data de atualizacao: 2026-07-29
 
 Objetivo: construir uma operacao semi-automatizada para escolher produtos, produzir conteudos em escala, publicar com controle, acompanhar dinheiro real da conta e aprender com as metricas reais das contas TikTok Shop.
 
@@ -257,6 +257,10 @@ Observacao: alguns videos podem ja ter sido postados e ainda nao excluidos/movid
 Regra de estoque publicavel: contar apenas arquivos de video cujo nome contenha o padrao `G<number>C<number>A<number>` ou a palavra `FINAL`. Outros `.mp4` devem ser ignorados para fins de alerta de estoque.
 
 ## Decisoes de seguranca
+
+## Estoque estrito em 2026-07-29
+
+O inventario diario leu as 21 pastas de estoque e encontrou 188 videos validos. A regra aplicada foi: arquivo de video com `G<number>C<number>A<number>` ou `FINAL` no nome; demais `.mp4` nao entram no estoque. Nao houve pasta inacessivel nem alteracao no Drive ou na planilha.
 
 - Nao apagar arquivos sem autorizacao explicita.
 - Nao mover arquivos sem autorizacao explicita.

@@ -1,7 +1,7 @@
 # Operacao TikTok Shop
 
 Data de criacao: 2026-07-21  
-Ultima leitura do Drive/Sheets: 2026-07-28
+Ultima leitura do Drive/Sheets: 2026-07-29
 
 Objetivo: organizar a rotina das contas TikTok Shop, os produtos em producao, o estoque de videos, a programacao de postagens e os resultados reais da conta.
 
@@ -493,6 +493,13 @@ Semanal:
 - Atualizar aprendizados em `experimentos`.
 
 ## Proximas automacoes
+
+## Snapshot estrito de 2026-07-29
+
+- 21 produtos/pastas lidos com sucesso no Drive; nenhuma pendencia de permissao.
+- 188 videos validos pela regra estrita, contra 303 `.mp4`/videos da contagem bruta registrada na planilha.
+- O alerta diario deve priorizar os produtos abaixo de 8 videos validos: Hemorroida, Hidrabene (protetor e kits), Body Splash Ayra, Escorredor, Kit Pano Microfibra, BS Isly, Kit Calca Infantil e Florat Red Egeu.
+- A leitura e somente inventario: nao houve publicacao, movimentacao, exclusao ou escrita na planilha.
 
 1. Recontar `estoque_videos` pela regra estrita: somente nomes com `G<number>C<number>A<number>` ou `FINAL`.
 2. Marcar lotes vindos da pasta `FLOW` como `pendente_limpeza_manual` quando puderem conter videos ja postados.

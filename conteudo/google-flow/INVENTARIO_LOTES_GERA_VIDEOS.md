@@ -1,7 +1,7 @@
 # Inventario FLOW - lotes Gera Videos / Gera Frames
 
 Data de registro: 2026-07-21  
-Ultima leitura da planilha-mae: 2026-07-28
+Ultima leitura da planilha-mae: 2026-07-29
 
 Fonte: leitura somente consulta da pasta Drive `FLOW`.
 
@@ -81,6 +81,10 @@ Leitura de 2026-07-28, com dados do snapshot 2026-07-24:
 | `BS BARBOUR'S MASC KIT2` | Ceci | 16 | 8 |
 
 ## Regra de disponibilidade
+
+## Recontagem estrita de 2026-07-29
+
+Leitura somente consulta das 21 pastas de `estoque_videos`: 188 videos validos. A recontagem usa o nome do arquivo e ID do Drive, contando somente videos com `G<number>C<number>A<number>` ou `FINAL`; os demais `.mp4` foram excluidos. Nenhuma pasta ficou pendente de verificacao.
 
 Alguns videos podem ja ter sido postados e ainda permanecerem no Drive. Por isso:
 
