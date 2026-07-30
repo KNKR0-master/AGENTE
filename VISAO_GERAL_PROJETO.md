@@ -258,6 +258,10 @@ Regra de estoque publicavel: contar apenas arquivos de video cujo nome contenha 
 
 ## Decisoes de seguranca
 
+## Estoque estrito em 2026-07-30
+
+O inventário diário leu as 21 pastas de estoque e encontrou 193 vídeos válidos. A regra aplicada foi: arquivo de vídeo com `G<number>C<number>A<number>` ou `FINAL` no nome, deduplicado por ID do Drive e com subpastas aplicáveis incluídas. Nenhuma pasta ficou pendente de verificação; não houve alteração no Drive ou na planilha.
+
 ## Estoque estrito em 2026-07-29
 
 O inventario diario leu as 21 pastas de estoque e encontrou 188 videos validos. A regra aplicada foi: arquivo de video com `G<number>C<number>A<number>` ou `FINAL` no nome; demais `.mp4` nao entram no estoque. Nao houve pasta inacessivel nem alteracao no Drive ou na planilha.

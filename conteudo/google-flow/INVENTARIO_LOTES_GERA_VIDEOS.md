@@ -82,6 +82,10 @@ Leitura de 2026-07-28, com dados do snapshot 2026-07-24:
 
 ## Regra de disponibilidade
 
+## Recontagem estrita de 2026-07-30
+
+Leitura somente consulta das 21 pastas de `estoque_videos`: 193 vídeos válidos. A recontagem usa nome e ID do arquivo, incluindo subpastas aplicáveis, e conta somente vídeos com `G<number>C<number>A<number>` ou `FINAL`; os demais `.mp4` foram excluídos. Nenhuma pasta ficou pendente de verificação.
+
 ## Recontagem estrita de 2026-07-29
 
 Leitura somente consulta das 21 pastas de `estoque_videos`: 188 videos validos. A recontagem usa o nome do arquivo e ID do Drive, contando somente videos com `G<number>C<number>A<number>` ou `FINAL`; os demais `.mp4` foram excluidos. Nenhuma pasta ficou pendente de verificacao.

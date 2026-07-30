@@ -494,6 +494,13 @@ Semanal:
 
 ## Proximas automacoes
 
+## Snapshot estrito de 2026-07-30
+
+- 21 produtos/pastas lidos com sucesso no Drive; nenhuma pendência de permissão.
+- 193 vídeos válidos pela regra estrita, deduplicados por ID e incluindo subpastas aplicáveis.
+- Itens abaixo de 8 vídeos válidos devem ser priorizados para nova produção: BS Arabe Amber Royale, BS Arabe Masc Kit 3, Hemorroida, Hidrabene (protetor e kits), Body Splash Ayra, Escorredor, Kit Pano Microfibra, BS Isly, Kit Calca Infantil e Florat Red Egeu.
+- A leitura é somente inventário: não houve publicação, movimentação, exclusão ou escrita na planilha.
+
 ## Snapshot estrito de 2026-07-29
 
 - 21 produtos/pastas lidos com sucesso no Drive; nenhuma pendencia de permissao.
