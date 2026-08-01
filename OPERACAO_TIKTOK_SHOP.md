@@ -1,15 +1,15 @@
 # Operacao TikTok Shop
 
 Data de criacao: 2026-07-21  
-Ultima leitura do Drive/Sheets: 2026-07-31
+Ultima leitura do Drive/Sheets: 2026-08-01
 
 Objetivo: organizar a rotina das contas TikTok Shop, os produtos em producao, o estoque de videos, a programacao de postagens e os resultados reais da conta.
 
 ## Estrutura criada
 
-## Recontagem diaria — 2026-07-31
+## Recontagem diaria — 2026-08-01
 
-No recorte das 21 linhas de `estoque_videos`, a leitura recursiva das pastas registrou 426 videos validos. A regra estrita conta somente arquivos de video com `G<number>C<number>A<number>` ou `FINAL` no nome, deduplicados por ID; a coluna da planilha e apenas referencia. Nove produtos ficaram abaixo de 8 videos validos.
+No recorte das 21 linhas de `estoque_videos`, a leitura recursiva das pastas registrou 402 videos validos. A regra estrita conta somente arquivos de video com `G<number>C<number>A<number>` ou `FINAL` no nome, deduplicados por ID; a coluna da planilha e apenas referencia. Dez produtos ficaram abaixo de 8 videos validos.
 
 Pasta Google Drive:
 

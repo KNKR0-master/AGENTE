@@ -1,7 +1,7 @@
 # Inventario FLOW - lotes Gera Videos / Gera Frames
 
 Data de registro: 2026-07-21  
-Ultima leitura da planilha-mae: 2026-07-31
+Ultima leitura da planilha-mae: 2026-08-01
 
 Fonte: leitura somente consulta da pasta Drive `FLOW`.
 
@@ -83,6 +83,10 @@ Leitura de 2026-07-28, com dados do snapshot 2026-07-24:
 ## Regra de disponibilidade
 
 ## Recontagem estrita de 2026-07-30
+
+## Recontagem estrita de 2026-08-01
+
+Leitura somente consulta das 21 pastas de `estoque_videos`, incluindo subpastas: 402 videos validos. A contagem aceita somente arquivos de video cujo nome tenha `G<number>C<number>A<number>` ou `FINAL`, deduplicados por ID do Drive. Nenhuma pasta ficou pendente de verificacao; 10 produtos ficaram abaixo de 8 videos.
 
 ## Recontagem estrita de 2026-07-31
 
