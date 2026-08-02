@@ -1,12 +1,12 @@
 # Visao geral do projeto TikTok Shop
 
-Data de atualizacao: 2026-08-01
+Data de atualizacao: 2026-08-02
 
 Objetivo: construir uma operacao semi-automatizada para escolher produtos, produzir conteudos em escala, publicar com controle, acompanhar dinheiro real da conta e aprender com as metricas reais das contas TikTok Shop.
 
 ## Pilares
 
-Nota operacional de 2026-08-01: a recontagem estrita das 21 pastas de estoque identificou 402 videos validos e 10 produtos abaixo de 8. A regra considera apenas nomes com `GxCyAz` ou `FINAL` e ignora os demais arquivos.
+Nota operacional de 2026-08-02: a recontagem estrita das 21 pastas de estoque identificou 402 videos validos e 10 produtos abaixo de 8. A regra considera apenas nomes com `GxCyAz` ou `FINAL` e ignora os demais arquivos.
 
 ### 1. Inteligencia de mercado
 
