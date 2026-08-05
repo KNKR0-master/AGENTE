@@ -1,7 +1,7 @@
 # Inventario FLOW - lotes Gera Videos / Gera Frames
 
 Data de registro: 2026-07-21  
-Ultima leitura da planilha-mae: 2026-08-02
+Ultima leitura da planilha-mae: 2026-08-05
 
 Fonte: leitura somente consulta da pasta Drive `FLOW`.
 
