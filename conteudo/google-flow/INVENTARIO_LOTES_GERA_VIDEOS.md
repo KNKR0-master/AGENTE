@@ -1,7 +1,7 @@
 # Inventario FLOW - lotes Gera Videos / Gera Frames
 
 Data de registro: 2026-07-21  
-Ultima leitura da planilha-mae: 2026-08-06
+Ultima leitura da planilha-mae: 2026-08-08
 
 Fonte: leitura somente consulta da pasta Drive `FLOW`.
 
@@ -150,3 +150,7 @@ Criar uma rotina de inventario que:
 - marca lote parcial quando houver menos de 18;
 - nao move nem apaga nada;
 - gera uma tabela para revisao humana antes de popular calendario/publicacoes.
+
+## Recontagem estrita de 2026-08-08
+
+Leitura somente consulta das 21 pastas de `estoque_videos`, incluindo subpastas: 308 videos validos em 31 pastas lidas (21 raizes e 10 subpastas). A contagem aceita somente arquivos de video cujo nome tenha `G<number>C<number>A<number>` ou `FINAL`, deduplicados por ID do Drive. Nenhuma pasta ficou pendente de verificacao; 10 produtos ficaram abaixo de 8 videos.

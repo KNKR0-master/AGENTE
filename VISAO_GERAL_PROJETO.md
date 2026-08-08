@@ -1,6 +1,6 @@
 # Visao geral do projeto TikTok Shop
 
-Data de atualizacao: 2026-08-06
+Data de atualizacao: 2026-08-08
 
 Objetivo: construir uma operacao semi-automatizada para escolher produtos, produzir conteudos em escala, publicar com controle, acompanhar dinheiro real da conta e aprender com as metricas reais das contas TikTok Shop.
 
@@ -284,3 +284,7 @@ O inventario diario leu as 21 pastas de estoque e encontrou 188 videos validos. 
 6. Depois da limpeza manual dos ja postados, transformar os lotes limpos em calendario.
 7. Cruzar publicacoes com metricas reais da conta.
 8. Conciliar GMV, pedidos, comissao estimada, comissao concluida e saldo.
+
+## Recontagem diaria — 2026-08-08
+
+No recorte das 21 linhas de `estoque_videos`, a leitura recursiva das pastas registrou 308 videos validos em 31 pastas lidas (21 raizes e 10 subpastas). A regra estrita conta somente arquivos de video com `G<number>C<number>A<number>` ou `FINAL` no nome, deduplicados por ID. Dez produtos ficaram abaixo de 8 videos validos.
