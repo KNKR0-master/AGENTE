@@ -4,15 +4,19 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agente TikTok Shop</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260809-3" />
   </head>
   <body>
     <header class="topbar">
       <div>
         <p class="eyebrow">TikTok Shop Intelligence</p>
-        <h1>Produtos em andamento</h1>
+        <h1>Operação diária</h1>
       </div>
       <div class="topbar-actions">
+        <button class="icon-button secondary" data-tab="products">Produtos</button>
+        <button class="icon-button secondary" data-tab="content">Conteúdo</button>
+        <button class="icon-button selected" data-tab="integration">Atualização TikTok</button>
+        <button class="icon-button secondary" data-tab="drive">Drive e estoque</button>
         <button id="refreshButton" title="Atualizar painel" aria-label="Atualizar painel">↻</button>
       </div>
     </header>
@@ -20,7 +24,7 @@
     <main>
       <section class="metrics-strip" id="summaryMetrics"></section>
 
-      <section class="layout">
+      <section class="layout tab-panel" id="productsPanel">
         <aside class="product-list">
           <div class="section-heading">
             <h2>Ranking</h2>
@@ -30,11 +34,255 @@
         </aside>
 
         <section class="detail" id="detail">
-          <div class="empty-state">Selecione um produto para ver criadores, vídeos e produção.</div>
+          <div class="empty-state">Selecione um produto para ver criadores, vídeos, produção e estoque.</div>
+        </section>
+      </section>
+
+      <section class="content-workspace tab-panel" id="contentPanel">
+        <section class="queue-column">
+          <div class="section-heading">
+            <h2>Próximo para postar</h2>
+            <button class="ghost-button" id="refreshNext">Atualizar</button>
+          </div>
+          <div id="nextContent" class="next-content"></div>
+
+          <div class="section-heading">
+            <h2>Importar vídeo</h2>
+          </div>
+          <form id="contentImportForm" class="content-form">
+            <label>Produto
+              <select name="product_id" required></select>
+            </label>
+            <label>Arquivo MP4
+              <input name="file" type="file" accept="video/mp4,video/*" />
+            </label>
+            <label>Caminho local
+              <input name="path" placeholder="C:\Users\Usuario\Videos\arquivo.mp4" />
+            </label>
+            <label>Legenda
+              <textarea name="caption" rows="3" placeholder="Legenda base"></textarea>
+            </label>
+            <label>Legenda salva
+              <select name="caption_id">
+                <option value="">Sem legenda salva</option>
+              </select>
+            </label>
+            <label>Hashtags
+              <input name="hashtags" placeholder="#tiktokshop #achadinhos" />
+            </label>
+            <div class="form-grid">
+              <label>Prioridade
+                <input name="priority" type="number" min="0" max="100" value="50" />
+              </label>
+              <label>Lote
+                <input name="batch" placeholder="Gera Viral 01" />
+              </label>
+            </div>
+            <button type="submit">Importar para estoque</button>
+          </form>
+        </section>
+
+        <section class="content-column">
+          <div class="section-heading">
+            <h2>Estoque de conteúdo</h2>
+            <div class="filter-row">
+              <select id="contentProductFilter"></select>
+              <button class="ghost-button" id="refreshContent">Atualizar</button>
+            </div>
+          </div>
+          <div id="contentList" class="content-list"></div>
+        </section>
+      </section>
+
+      <section class="integration-workspace tab-panel active" id="integrationPanel">
+        <div class="integration-toolbar">
+          <div>
+            <h2>Atualização diária TikTok</h2>
+            <div id="integrationIdentity" class="integration-identity"></div>
+          </div>
+          <div class="integration-actions">
+            <select id="affiliatePeriod" aria-label="Período dos indicadores">
+              <option value="1">Hoje</option>
+              <option value="7">7 dias</option>
+              <option value="30" selected>30 dias</option>
+              <option value="90">90 dias</option>
+            </select>
+            <select id="affiliateOrderType" aria-label="Tipo de pedido">
+              <option value="ALL">Todos os pedidos</option>
+              <option value="SHOP_AD_ORDER">Anúncios da loja</option>
+              <option value="AFFILIATE_ORDER">Afiliados</option>
+            </select>
+            <select id="affiliateSettlement" aria-label="Status financeiro">
+              <option value="ALL">Todos os status</option>
+              <option value="SETTLED">Liquidado</option>
+              <option value="PENDING">Pendente</option>
+              <option value="INELIGIBLE">Inelegível</option>
+              <option value="AWAITING_PAYMENT">Aguardando pagamento</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="integrationNotice"></div>
+
+        <section class="report-update-section">
+          <div class="report-update-copy">
+            <h2>Atualizar TikTok Shop</h2>
+            <span id="reportImportPath" class="muted"></span>
+          </div>
+          <form id="affiliateCsvForm" class="report-upload-form">
+            <label class="file-drop">
+              <strong>Selecione o XLSX de Affiliate Orders</strong>
+              <span>O arquivo é validado antes de gravar qualquer pedido.</span>
+              <input name="file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+            </label>
+            <select name="import_mode" aria-label="Modo da importação">
+              <option value="DAILY_UPDATE" selected>Atualização diária (30 dias)</option>
+              <option value="FULL_HISTORY">Histórico completo</option>
+            </select>
+            <button type="submit">Analisar arquivo</button>
+            <button type="button" id="scanAffiliateReports" class="ghost-button">Verificar pasta</button>
+          </form>
+          <div id="reportPreview"></div>
+        </section>
+
+        <div class="section-heading band-heading">
+          <div>
+            <h2>Resultado do período</h2>
+            <span id="commercialPeriodLabel"></span>
+          </div>
+        </div>
+        <div class="affiliate-metrics" id="affiliateMetrics"></div>
+        <div class="comparison-strip" id="affiliateComparisons"></div>
+
+        <div class="pipeline-band">
+          <div class="section-heading"><h2>Pipeline e publicação</h2></div>
+          <div class="pipeline-metrics" id="pipelineMetrics"></div>
+          <div class="integration-grid">
+            <section class="integration-section">
+              <div class="section-heading"><h2>Próximos para postar</h2></div>
+              <div class="table-scroll" id="nextToPublish"></div>
+            </section>
+            <section class="integration-section">
+              <div class="section-heading"><h2>Oportunidades de produção</h2></div>
+              <div class="table-scroll" id="productionOpportunities"></div>
+            </section>
+          </div>
+        </div>
+
+        <div class="integration-grid">
+          <section class="integration-section">
+            <div class="section-heading"><h2>Top produtos</h2></div>
+            <div class="table-scroll" id="affiliateProducts"></div>
+          </section>
+          <section class="integration-section">
+            <div class="section-heading">
+              <h2>Top conteúdos</h2>
+              <select id="affiliateContentSort" aria-label="Ordenar conteúdos">
+                <option value="gmv_minor">GMV</option>
+                <option value="orders">Pedidos</option>
+                <option value="actual_commission_minor">Comissão</option>
+              </select>
+            </div>
+            <div class="table-scroll" id="affiliateContent"></div>
+          </section>
+        </div>
+
+        <div class="integration-grid">
+          <section class="integration-section">
+            <div class="section-heading"><h2>Top lojas</h2></div>
+            <div class="table-scroll" id="affiliateShops"></div>
+          </section>
+          <section class="integration-section">
+            <div class="section-heading"><h2>Origem por conteúdo</h2></div>
+            <div class="table-scroll" id="affiliateContentTypes"></div>
+          </section>
+        </div>
+
+        <section class="reconciliation-band">
+          <div class="section-heading">
+            <div>
+              <h2>Reconciliação TikTok</h2>
+              <span>IDs sem vínculo permanecem sem atribuição automática.</span>
+            </div>
+          </div>
+          <div class="integration-grid">
+            <section class="integration-section">
+              <div class="section-heading"><h2>Conteúdos externos</h2></div>
+              <div class="table-scroll reconciliation-table" id="contentReconciliation"></div>
+            </section>
+            <section class="integration-section">
+              <div class="section-heading"><h2>Produtos não associados</h2></div>
+              <div class="table-scroll reconciliation-table" id="productReconciliation"></div>
+            </section>
+          </div>
+        </section>
+
+        <div class="waiting-band" id="videoAnalyticsStatus"></div>
+
+        <details class="provider-details">
+          <summary>Integração oficial futura</summary>
+          <div class="fallback-section">
+            <div>
+              <h2>TikTok Shop Creator API</h2>
+              <span id="lastSyncSummary" class="muted"></span>
+            </div>
+            <div class="inline-form">
+              <button id="connectTikTok">Conectar Creator</button>
+              <button id="syncTikTok" class="ghost-button">Sincronizar</button>
+              <button id="fullSyncTikTok" class="ghost-button">Sincronização completa</button>
+              <button id="disconnectTikTok" class="danger-button">Desconectar</button>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="drive-workspace tab-panel" id="drivePanel">
+        <div class="drive-toolbar">
+          <div>
+            <p class="eyebrow">Google Drive</p>
+            <h2>Vídeos disponíveis para publicação</h2>
+            <div id="driveIdentity" class="muted"></div>
+          </div>
+          <button id="scanDrive" title="Ler novamente todas as pastas">Atualizar Drive</button>
+        </div>
+
+        <div id="driveNotice"></div>
+        <div class="drive-metrics" id="driveMetrics"></div>
+
+        <section class="drive-band">
+          <div class="section-heading band-heading">
+            <div>
+              <h2>Drive Structure</h2>
+              <span>Somente o perfil ativo é expandido e usado nas métricas.</span>
+            </div>
+          </div>
+          <div id="driveProfiles" class="drive-profiles"></div>
+          <div id="driveTree" class="drive-tree"></div>
+        </section>
+
+        <section class="drive-band">
+          <div class="section-heading band-heading">
+            <div>
+              <h2>Oportunidades acionáveis</h2>
+              <span>Performance comercial cruzada com disponibilidade comprovada no Drive.</span>
+            </div>
+          </div>
+          <div class="table-scroll" id="driveOpportunities"></div>
+        </section>
+
+        <section class="drive-band">
+          <div class="section-heading band-heading">
+            <div>
+              <h2>Drive Product Mapping</h2>
+              <span id="driveMappingHealth"></span>
+            </div>
+            <input id="driveFolderSearch" type="search" placeholder="Buscar pasta ou produto" aria-label="Buscar mapeamento" />
+          </div>
+          <div class="table-scroll drive-folder-table" id="driveFolders"></div>
         </section>
       </section>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260809-3"></script>
   </body>
 </html>

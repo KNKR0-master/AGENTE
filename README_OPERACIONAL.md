@@ -43,6 +43,10 @@ Ele guarda:
 - `video_metrics`: linhas da exportacao de videos;
 - `creator_metrics`: linhas da exportacao de criadores;
 - `production_tasks`: versoes de video para produzir, postar, programar e medir.
+- `content_items`: videos proprios importados, validados e vinculados ao produto;
+- `publishing_queue`: fila manual de postagem para o iPhone;
+- `content_performance`: performance manual ou importada por video publicado;
+- `external_sync_events`: historico idempotente de sincronizacao com Drive/Sheets.
 
 O arquivo `.db` e local e nao entra no Git.
 
@@ -73,6 +77,43 @@ Depois abra:
 ```text
 http://127.0.0.1:8765
 ```
+
+## Pipeline de conteudo TikTok Shop
+
+A aba `Conteudo` do dashboard controla o estoque proprio de videos, a fila de publicacao e o proximo item a enviar manualmente para o iPhone.
+
+Documentacao completa:
+
+```text
+docs/tiktok-content-pipeline.md
+docs/tiktok-shop-creator-api.md
+docs/tiktok-affiliate-orders-daily-import.md
+docs/drive-content-inventory.md
+```
+
+Atalho CLI:
+
+```powershell
+python manage_content.py next
+```
+
+## TikTok Shop Creator API
+
+A extensao oficial de perfil, pedidos afiliados, GMV e comissoes esta preservada sob feature flag. Para BR ela permanece desativada, pois Creator Collaboration ainda nao esta aberto para esse caminho.
+
+Sincronizacao avulsa, depois de conectar a conta Creator:
+
+```powershell
+python sync_affiliate.py
+```
+
+A operacao atual usa `TikTokReportProvider` para o XLSX oficial Affiliate Orders e `ManualAffiliateProvider` como fallback. O upload diario possui preview antes do processamento. Coloque exportacoes do TikTok Shop em `data/affiliate_reports/inbox`; com o dashboard aberto, arquivos novos e estaveis sao detectados automaticamente. Tambem e possivel executar:
+
+```powershell
+python import_affiliate_reports.py
+```
+
+O SQLite continua sendo a fonte de verdade. Arquivos repetidos sao identificados por SHA-256, pedidos recebem UPSERT e a atribuicao a video so ocorre por match direto entre Content ID TikTok e `tiktok_video_id`.
 
 ## Automacao Kalodata via navegador
 
@@ -115,3 +156,8 @@ Contam apenas videos cujo nome tenha:
 - palavra `FINAL`, sem diferenciar maiusculas/minusculas.
 
 Todo outro `.mp4` deve ser tratado como arquivo auxiliar, antigo, rascunho ou pendente de verificacao, ate revisao manual.
+
+A contagem atual usa `VideoPublicationEligibilityService`: alem do nome, o
+arquivo precisa existir no Drive, estar em pasta mapeada, ter validacao tecnica
+`PASS` e Content `READY`. Publicados, itens na fila, duplicatas, invalidos e
+arquivos ausentes do Drive nao entram em "disponiveis para publicacao".

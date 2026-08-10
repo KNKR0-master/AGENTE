@@ -1,6 +1,39 @@
 {
   "created_at": "2026-07-21",
-  "last_observed_at": "2026-07-28",
+  "last_observed_at": "2026-08-08T19:35:47-03:00",
+  "active_drive_source": {
+    "account_email": "ceciliafigueiredo.shop@gmail.com",
+    "connection_status": "browser_verified_connector_reauthorization_pending",
+    "observed_at": "2026-08-08T19:35:47-03:00",
+    "root_folder": {
+      "name": "FLOW",
+      "id": "1XA8zgZNAMjhRvonypu1hb7cm3b9iX4Gc",
+      "url": "https://drive.google.com/drive/folders/1XA8zgZNAMjhRvonypu1hb7cm3b9iX4Gc"
+    },
+    "top_level_folders": {
+      "CANTINHO DA REFLEXAO": "1g_QRNvkSKd8bhk2nZRccugW32kR1M18J",
+      "CECI FIGUEIREDO - PERFIL 1": "1ZW60VcZumB1zIZ4Kd5X_AJxnt293Xps6",
+      "FE FIGUEIREDO - PERFIL 2": "19bb4YLntPmm5531c7IVnb8whi2GLGfOD",
+      "VISTAS LINDAS": "1KswszXZFEbZ8Wt-_5XtCQM1SXOL39cOS"
+    },
+    "inventory_mode": "Read-only. Derivar produtos das pastas e contar apenas videos com G<number>C<number>A<number> ou FINAL no nome.",
+    "previous_source_snapshot_retained": true
+  },
+  "daily_stock_snapshot": {
+    "date": "2026-08-08",
+    "stock_rows": 21,
+    "strict_valid_video_total": 308,
+    "calendar_horizon": "2026-07-22..2026-08-04",
+    "counting_rule": "Somente arquivos de video com G<number>C<number>A<number> ou FINAL no nome; deduplicar por ID do Drive e ignorar outros .mp4.",
+    "drive_unreadable_products": [],
+    "scope": "Recorte das 21 linhas da aba estoque_videos, com leitura recursiva das subpastas das URLs registradas.",
+    "folders_scanned": 31,
+    "generation_priority": {
+      "critical_zero_videos": 3,
+      "low_stock_1_to_7": 7,
+      "covered_8_or_more": 11
+    }
+  },
   "drive_root": {
     "name": "TikTok Shop Operacao",
     "id": "1EBc8qmZcDHoF7et-2ZzK3qY8CMWnKDsU",
@@ -28,7 +61,7 @@
     "safety_rule": "Somente leitura ate autorizacao explicita; nao apagar, mover ou renomear arquivos automaticamente."
   },
   "stock_counting_rule": {
-    "last_updated_at": "2026-07-28",
+    "last_updated_at": "2026-07-30",
     "valid_video_name_patterns": [
       "G<number>C<number>A<number>",
       "FINAL"
@@ -36,6 +69,26 @@
     "regex_hint": "(?i)(G\\d+C\\d+A\\d+|FINAL)",
     "rule": "Para estoque publicavel, contar apenas arquivos de video cujo nome contenha padrao Gera Viral/Gera Frames G<number>C<number>A<number> ou a palavra FINAL. Ignorar outros .mp4.",
     "previous_sheet_counts_are_raw": true
+  },
+  "latest_financial_import": {
+    "imported_at": "2026-07-28",
+    "source_file": "C:\\Users\\Usuario\\Documents\\Isabela Rosa\\VIDEOS SHOP\\FLOW\\PEDIDOS GMV TIKTOK.xlsx",
+    "account_id": "cs_figueiredo",
+    "profile": "CS Figueiredo",
+    "period_start": "2026-07-01",
+    "period_end": "2026-07-27",
+    "orders_total": 3384,
+    "items_sold": 3456,
+    "items_refunded": 6,
+    "products_sold": 38,
+    "videos_with_sales": 155,
+    "gmv_total": 129598.02,
+    "estimated_commission": 13907.78,
+    "pending_commission": 5312.77,
+    "awaiting_payment_commission": 249.21,
+    "ineligible_commission": 3521.85,
+    "final_earned_amount": 5383.53,
+    "normalization_rule": "Produtos consolidados por Product ID; Total final earned amount tratado como comissao concluida/receita real."
   },
   "spreadsheet": {
     "name": "Operacao TikTok Shop - Planilha Mae",
@@ -52,11 +105,13 @@
       },
       "dashboard": {
         "sheet_id": 1001,
-        "role": "Painel-base: GMV, comissao, videos postados, videos prontos e produtos em producao."
+        "role": "Painel-base: GMV, comissao, pedidos, unidades, produtos vendidos, videos com venda e reembolsos.",
+        "observed_financial_rows": 8
       },
       "contas": {
         "sheet_id": 1002,
-        "role": "Cadastro de perfis TikTok Shop."
+        "role": "Cadastro de perfis TikTok Shop.",
+        "observed_rows": 1
       },
       "produtos": {
         "sheet_id": 1003,
@@ -97,7 +152,8 @@
       "import_tiktok": {
         "sheet_id": 1010,
         "role": "Area de pouso para exports brutos TikTok Shop.",
-        "observed_rows": 0
+        "observed_rows": 1,
+        "latest_import": "PEDIDOS GMV TIKTOK.xlsx"
       },
       "import_echotik": {
         "sheet_id": 1011,
@@ -140,11 +196,41 @@
         "observed_rows": 21,
         "date_horizon": "2026-07-22..2026-08-04",
         "rule": "Usar como plano operacional; publicacao e limpeza de arquivos continuam manuais ate autorizacao explicita."
+      },
+      "financeiro_conta": {
+        "sheet_id": 2018,
+        "role": "Resumo financeiro por conta e periodo.",
+        "observed_rows": 1,
+        "latest_account": "cs_figueiredo",
+        "latest_period": "2026-07-01..2026-07-27",
+        "latest_gmv_total": 129598.02,
+        "latest_final_earned_amount": 5383.53
+      },
+      "vendas_produto": {
+        "sheet_id": 2019,
+        "role": "Resultado real por produto vendido, consolidado por Product ID.",
+        "observed_rows": 38,
+        "latest_account": "cs_figueiredo"
+      },
+      "status_pedidos_tiktok": {
+        "sheet_id": 2020,
+        "role": "Resumo financeiro por status de liquidacao do pedido TikTok Shop.",
+        "observed_rows": 4,
+        "statuses": [
+          "Settled",
+          "Pending",
+          "Ineligible",
+          "AwaitingPayment"
+        ]
+      },
+      "videos_venda_top": {
+        "sheet_id": 2021,
+        "role": "Top videos por GMV no export financeiro.",
+        "observed_rows": 30,
+        "latest_account": "cs_figueiredo"
       }
     },
     "planned_sheets_not_created": {
-      "financeiro_conta": "Resumo financeiro por conta e periodo: GMV, comissoes, saldos e saques.",
-      "vendas_produto": "Resultado real por produto vendido: pedidos, GMV e comissao.",
       "saldos_tiktok": "Historico de saldo disponivel, pendente, em processamento e saques."
     }
   },

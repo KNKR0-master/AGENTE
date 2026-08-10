@@ -4,6 +4,42 @@ Data de criacao: 2026-07-21
 
 Objetivo: controlar o dinheiro real da operacao, separando metricas de conteudo, GMV gerado, comissao estimada, comissao concluida, saldos e saques.
 
+## Ultimo import manual
+
+Data do import: 2026-07-28
+
+Fonte: `C:\Users\Usuario\Documents\Isabela Rosa\VIDEOS SHOP\FLOW\PEDIDOS GMV TIKTOK.xlsx`
+
+Perfil/conta: `CS Figueiredo` (`cs_figueiredo`)
+
+Periodo dos pedidos: 2026-07-01 a 2026-07-27
+
+Resumo importado:
+
+- Pedidos: 3.384.
+- Unidades vendidas: 3.456.
+- Unidades reembolsadas: 6.
+- Produtos unicos vendidos: 38.
+- Videos com venda: 155.
+- GMV total: R$129.598,02.
+- Comissao estimada: R$13.907,78.
+- Comissao pendente: R$5.312,77.
+- Comissao aguardando pagamento: R$249,21.
+- Comissao inelegivel/perdida no status atual: R$3.521,85.
+- Comissao concluida / receita registrada: R$5.383,53.
+
+Abas populadas na planilha-mae:
+
+- `contas`: cadastro do perfil CS Figueiredo.
+- `dashboard`: cards principais de GMV, receita, pedidos, produtos e videos com venda.
+- `import_tiktok`: linha de controle do arquivo importado.
+- `financeiro_conta`: resumo financeiro por conta e periodo.
+- `vendas_produto`: 38 produtos consolidados por `Product ID`.
+- `status_pedidos_tiktok`: resumo por status de liquidacao.
+- `videos_venda_top`: top 30 videos por GMV.
+
+Observacao: `Total final earned amount` foi tratado como comissao concluida/receita real. `Est. standard commission` foi tratado como comissao estimada e ainda precisa ser conciliado por status antes de ser considerado caixa.
+
 ## Perguntas que esta camada responde
 
 - Quanto a operacao gerou de GMV?

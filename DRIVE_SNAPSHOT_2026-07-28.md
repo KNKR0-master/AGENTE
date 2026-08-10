@@ -7,23 +7,56 @@ Planilha: `https://docs.google.com/spreadsheets/d/12wEBjSpfBBqm0Zj4sncafhjnGnt6S
 ## Resumo executivo
 
 - A pasta `TikTok Shop Operacao` existe com 6 subpastas operacionais: produtos validados, videos gerados, CapCut em edicao, prontos para postar, postados e descartados.
-- A planilha-mae foi criada em 2026-07-21 e modificada em 2026-07-24.
-- A estrutura atual tem 18 abas reais.
-- `financeiro_conta`, `vendas_produto` e `saldos_tiktok` ainda estao planejadas na documentacao, mas nao apareceram como abas reais nesta leitura.
+- A planilha-mae foi criada em 2026-07-21 e atualizada manualmente em 2026-07-28 com o import financeiro CS Figueiredo.
+- A estrutura atual passou de 18 para 22 abas reais apos o import financeiro manual do perfil CS Figueiredo.
+- `financeiro_conta` e `vendas_produto` foram criadas e populadas em 2026-07-28; `saldos_tiktok` segue planejada, pois o export recebido nao trouxe snapshot de saldo/saques.
+- O dashboard agora possui GMV, comissao concluida/receita, comissao estimada, pedidos, unidades, produtos vendidos, videos com venda e reembolsos do perfil CS Figueiredo.
 - Ha 2 produtos de mercado registrados na aba `produtos`.
 - Ha 33 produtos em pipelines por perfil: 23 em `pipeline_ceci` e 10 em `pipeline_fe`.
 - Ha 21 linhas de estoque de videos, somando 303 videos na contagem bruta anterior da planilha.
 - A contagem deve ser recalculada pela regra revisada: somente arquivos de video com `G<number>C<number>A<number>` ou `FINAL` no nome contam como estoque.
 - O calendario de postagens cobre o horizonte de 2026-07-22 a 2026-08-04, usando ritmo base de 2 videos por produto/dia.
-- Abas de publicacoes, metricas, arquivos, experimentos, import TikTok, import EchoTik, lotes e frames ainda estao sem linhas de dados alem dos cabecalhos.
+- Abas de publicacoes, metricas, arquivos, experimentos, import EchoTik, lotes e frames ainda estao sem linhas de dados alem dos cabecalhos. `import_tiktok` recebeu a linha de controle do arquivo `PEDIDOS GMV TIKTOK.xlsx`.
+
+## Import financeiro CS Figueiredo
+
+Fonte: `C:\Users\Usuario\Documents\Isabela Rosa\VIDEOS SHOP\FLOW\PEDIDOS GMV TIKTOK.xlsx`
+
+Data do import: 2026-07-28
+
+Periodo dos pedidos: 2026-07-01 a 2026-07-27
+
+| Indicador | Valor |
+|---|---:|
+| Pedidos | 3.384 |
+| Unidades vendidas | 3.456 |
+| Unidades reembolsadas | 6 |
+| Produtos unicos vendidos | 38 |
+| Videos com venda | 155 |
+| GMV total | R$129.598,02 |
+| Comissao estimada | R$13.907,78 |
+| Comissao pendente | R$5.312,77 |
+| Comissao aguardando pagamento | R$249,21 |
+| Comissao inelegivel/perdida no status atual | R$3.521,85 |
+| Comissao concluida / receita | R$5.383,53 |
+
+Top produtos por GMV no periodo:
+
+| Produto | GMV | Comissao concluida |
+|---|---:|---:|
+| Kit 3 Calcas infantil flanelado | R$25.125,26 | R$1.814,58 |
+| Kit Body Splash Florat Red + Dolce | R$23.180,63 | R$1.008,54 |
+| Kit 4 Body Splash Feminino Secret/Vanilla/Loved/Seduction/Coconut | R$22.480,87 | R$159,60 |
+| Kit 6 Travesseiro Pluma de Ganso | R$12.467,90 | R$957,83 |
+| Kit 4 Body Splash Arabe Feminino | R$11.468,94 | R$0,00 |
 
 ## Abas observadas
 
 | Aba | Linhas de dados observadas | Papel |
 |---|---:|---|
 | `README` | 5 linhas informativas | Instrucoes e regra de uso. |
-| `dashboard` | 5 metricas-base | Painel-base sem formulas/resultados reais preenchidos. |
-| `contas` | 0 | Cadastro de perfis. |
+| `dashboard` | 8 metricas financeiras | Painel-base preenchido com o import CS Figueiredo. |
+| `contas` | 1 | Cadastro de perfis; CS Figueiredo cadastrado. |
 | `produtos` | 2 | Produtos analisados via EchoTik. |
 | `conteudo` | 1 | Piloto de conteudo para Tetra Magnesio. |
 | `publicacoes` | 0 | Posts programados/publicados. |
@@ -31,7 +64,7 @@ Planilha: `https://docs.google.com/spreadsheets/d/12wEBjSpfBBqm0Zj4sncafhjnGnt6S
 | `calendario` | 0 | Calendario operacional granular. |
 | `arquivos_drive` | 0 | Mapa de arquivos. |
 | `experimentos` | 0 | Aprendizados. |
-| `import_tiktok` | 0 | Pouso de export TikTok Shop. |
+| `import_tiktok` | 1 | Linha de controle do export `PEDIDOS GMV TIKTOK.xlsx`. |
 | `import_echotik` | 0 | Pouso de export/API EchoTik. |
 | `lotes_gera_frames` | 0 | Rodadas Gera Videos/Gera Frames. |
 | `frames_prompts` | 0 | Frame sets, imagem base e prompts. |
@@ -39,6 +72,10 @@ Planilha: `https://docs.google.com/spreadsheets/d/12wEBjSpfBBqm0Zj4sncafhjnGnt6S
 | `pipeline_fe` | 10 | Produtos girando no perfil Fe. |
 | `estoque_videos` | 21 | Estoque de videos por produto/pasta. |
 | `calendario_postagens` | 21 | Plano de postagem por produto/data. |
+| `financeiro_conta` | 1 | Resumo financeiro CS Figueiredo, periodo 2026-07-01 a 2026-07-27. |
+| `vendas_produto` | 38 | Produtos vendidos consolidados por `Product ID`. |
+| `status_pedidos_tiktok` | 4 | Resumo por status: Settled, Pending, Ineligible e AwaitingPayment. |
+| `videos_venda_top` | 30 | Top videos por GMV no export financeiro. |
 
 ## Produtos em `produtos`
 
@@ -139,10 +176,10 @@ Importante: estes numeros vieram da coluna/contagem anterior da planilha. Para a
 ## Lacunas atuais
 
 - Nao ha dados reais nas abas `publicacoes`, `metricas_diarias`, `arquivos_drive` e `experimentos`.
-- `import_tiktok` e `import_echotik` seguem vazias.
+- `import_echotik` segue vazia.
 - `lotes_gera_frames` e `frames_prompts` ainda nao foram populadas apesar de haver estoque inventariado.
 - Quantidades de estoque precisam de recontagem estrita por padrao de nome antes de gerar alertas ou calendario.
-- O financeiro real ainda precisa de abas efetivas ou importacao para entrar no painel.
+- `saldos_tiktok` ainda precisa de export/screenshot proprio de saldo, saque e valores em processamento.
 - Produtos com `OK GERA` nao devem ser tratados como vendidos; indicam apenas producao/multiplicacao.
 - Produtos com perfil `pendente_conta` ou `pendente_perfil` precisam de decisao antes de publicar.
 
@@ -151,5 +188,5 @@ Importante: estes numeros vieram da coluna/contagem anterior da planilha. Para a
 1. Popular `lotes_gera_frames` a partir das 21 linhas de `estoque_videos`.
 2. Popular `conteudo` com pelo menos uma linha por video aprovado ou por lote revisado.
 3. Definir conta/perfil dos produtos pendentes antes de usar o calendario.
-4. Importar export real do TikTok Shop em `import_tiktok`.
-5. Normalizar publicacoes e metricas reais para fechar o ciclo de decisao.
+4. Receber export/screenshot de saldo e saques para criar `saldos_tiktok`.
+5. Normalizar publicacoes e metricas reais para cruzar video publicado, GMV e comissao concluida.
