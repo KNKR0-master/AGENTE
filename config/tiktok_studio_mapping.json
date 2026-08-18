@@ -1,0 +1,254 @@
+{
+  "version": "2026-08-17.pt-BR.5",
+  "validated_at": "2026-08-17T08:40:00-03:00",
+  "catalog": {
+    "url": "https://www.tiktok.com/tiktokstudio/content",
+    "row_selector": "[data-tt=\"components_PostTable_Absolute\"]",
+    "ready_selector": "[data-tt=\"components_PostTable_Absolute\"]",
+    "stability_selector": "[data-tt=\"components_PostTable_Container\"]",
+    "readiness_timeout_seconds": 45,
+    "empty_state_texts": [
+      "Nenhuma publicação",
+      "No posts yet"
+    ],
+    "discovery_fallbacks": [
+      "NETWORK_RESPONSE",
+      "a[href*=\"/video/\"]",
+      "[data-video-id]",
+      "[data-item-id]",
+      "[data-content-id]",
+      "[data-aweme-id]"
+    ],
+    "scroll_selector": "[data-tt=\"components_PostTable_Container\"]",
+    "max_pages": 300,
+    "page_wait_ms": 900,
+    "fields": {
+      "video_url": {
+        "selector": "[data-tt=\"components_PostInfoCell_a\"]",
+        "attribute": "href"
+      },
+      "caption": "[data-tt=\"components_PostInfoCell_a\"]",
+      "duration_seconds": {
+        "selector": "[data-tt=\"VideoCover_index_TUXText\"]",
+        "type": "duration_seconds"
+      },
+      "published_at": {
+        "selector": "[data-tt=\"components_PublishStageLabel_TUXText\"]",
+        "type": "datetime",
+        "locale": "pt-BR"
+      },
+      "thumbnail_url": {
+        "selector": "[data-tt=\"VideoCover_index_Image\"]",
+        "attribute": "src"
+      },
+      "status": "[data-tt=\"components_PrivacyCell_TUXButton\"]",
+      "views": {
+        "selector": "[data-tt=\"components_RowLayout_FlexRow_6\"] [data-tt=\"components_ItemRow_TUXText\"]",
+        "type": "number",
+        "locale": "pt-BR"
+      },
+      "likes": {
+        "selector": "[data-tt=\"components_RowLayout_FlexRow_7\"] [data-tt=\"components_ItemRow_TUXText\"]",
+        "type": "number",
+        "locale": "pt-BR"
+      },
+      "comments": {
+        "selector": "[data-tt=\"components_RowLayout_FlexRow_8\"] [data-tt=\"components_ItemRow_TUXText\"]",
+        "type": "number",
+        "locale": "pt-BR"
+      }
+    }
+  },
+  "detail": {
+    "pages": [
+      {
+        "name": "overview",
+        "url_template": "https://www.tiktok.com/tiktokstudio/analytics/{video_id}/overview",
+        "required": true,
+        "ready_selector": "[data-tt=\"VideoOverviewPage_VideoMetricsCard_Clickable\"]",
+        "stability_selector": "[data-tt=\"VideoOverviewPage_VideoOverviewPage_FlexColumn\"]",
+        "expected_metrics": [
+          "views",
+          "total_watch_time_seconds",
+          "average_watch_time_seconds",
+          "watched_full_rate",
+          "followers_generated",
+          "likes",
+          "comments",
+          "shares",
+          "saves",
+          "traffic_for_you",
+          "traffic_search",
+          "traffic_profile",
+          "traffic_following",
+          "traffic_other",
+          "traffic_sound"
+        ],
+        "required_metrics": [
+          "views",
+          "total_watch_time_seconds",
+          "average_watch_time_seconds",
+          "watched_full_rate",
+          "followers_generated",
+          "likes",
+          "comments",
+          "shares",
+          "saves"
+        ],
+        "metrics": {
+          "views": {
+            "container_selector": "[data-tt=\"VideoOverviewPage_VideoMetricsCard_Clickable\"]",
+            "has_text": "Visualizações do vídeo",
+            "value_selector": ".absolute-value",
+            "type": "number",
+            "locale": "pt-BR"
+          },
+          "total_watch_time_seconds": {
+            "container_selector": "[data-tt=\"VideoOverviewPage_VideoMetricsCard_Clickable\"]",
+            "has_text": "Tempo total de reprodução",
+            "value_selector": ".absolute-value",
+            "type": "duration_seconds"
+          },
+          "average_watch_time_seconds": {
+            "container_selector": "[data-tt=\"VideoOverviewPage_VideoMetricsCard_Clickable\"]",
+            "has_text": "Tempo médio de visualização",
+            "value_selector": ".absolute-value",
+            "type": "duration_seconds"
+          },
+          "watched_full_rate": {
+            "container_selector": "[data-tt=\"VideoOverviewPage_VideoMetricsCard_Clickable\"]",
+            "has_text": "Assistiu ao vídeo completo",
+            "value_selector": ".absolute-value",
+            "type": "percentage",
+            "locale": "pt-BR"
+          },
+          "followers_generated": {
+            "container_selector": "[data-tt=\"VideoOverviewPage_VideoMetricsCard_Clickable\"]",
+            "has_text": "Novos seguidores",
+            "value_selector": ".absolute-value",
+            "type": "number",
+            "locale": "pt-BR"
+          },
+          "likes": {
+            "container_selector": "body",
+            "value_selector": "[data-tt=\"VideoOverviewPage_VideoInfoCard_FlexColumn\"] [data-tt=\"VideoOverviewPage_VideoInfoCard_TUXText\"]",
+            "value_index": 2,
+            "type": "number",
+            "locale": "en-US"
+          },
+          "comments": {
+            "container_selector": "body",
+            "value_selector": "[data-tt=\"VideoOverviewPage_VideoInfoCard_FlexColumn\"] [data-tt=\"VideoOverviewPage_VideoInfoCard_TUXText\"]",
+            "value_index": 3,
+            "type": "number",
+            "locale": "en-US"
+          },
+          "shares": {
+            "container_selector": "body",
+            "value_selector": "[data-tt=\"VideoOverviewPage_VideoInfoCard_FlexColumn\"] [data-tt=\"VideoOverviewPage_VideoInfoCard_TUXText\"]",
+            "value_index": 4,
+            "type": "number",
+            "locale": "en-US"
+          },
+          "saves": {
+            "container_selector": "body",
+            "value_selector": "[data-tt=\"VideoOverviewPage_VideoInfoCard_FlexColumn\"] [data-tt=\"VideoOverviewPage_VideoInfoCard_TUXText\"]",
+            "value_index": 5,
+            "type": "number",
+            "locale": "en-US"
+          },
+          "traffic_for_you": {
+            "text": "Para você",
+            "exact": true,
+            "relative_selector": "xpath=following-sibling::span[1]",
+            "type": "percentage",
+            "locale": "pt-BR"
+          },
+          "traffic_search": {
+            "text": "Pesquisar",
+            "exact": true,
+            "relative_selector": "xpath=following-sibling::span[1]",
+            "type": "percentage",
+            "locale": "pt-BR"
+          },
+          "traffic_profile": {
+            "text": "Perfil pessoal",
+            "exact": true,
+            "relative_selector": "xpath=following-sibling::span[1]",
+            "type": "percentage",
+            "locale": "pt-BR"
+          },
+          "traffic_following": {
+            "text": "Seguindo",
+            "exact": true,
+            "relative_selector": "xpath=following-sibling::span[1]",
+            "type": "percentage",
+            "locale": "pt-BR"
+          },
+          "traffic_other": {
+            "text": "Outro",
+            "exact": true,
+            "relative_selector": "xpath=following-sibling::span[1]",
+            "type": "percentage",
+            "locale": "pt-BR"
+          },
+          "traffic_sound": {
+            "text": "Som",
+            "exact": true,
+            "relative_selector": "xpath=following-sibling::span[1]",
+            "type": "percentage",
+            "locale": "pt-BR"
+          }
+        }
+      },
+      {
+        "name": "viewers",
+        "url_template": "https://www.tiktok.com/tiktokstudio/analytics/{video_id}/viewers",
+        "required": false,
+        "ready_selector": "[data-tt=\"VideoViewerPage_VideoViewerPage_FlexColumn\"]",
+        "stability_selector": "[data-tt=\"VideoViewerPage_VideoViewerPage_FlexColumn\"]",
+        "expected_metrics": [
+          "reach",
+          "new_viewer_rate",
+          "returning_viewer_rate"
+        ],
+        "required_metrics": [
+          "reach",
+          "new_viewer_rate",
+          "returning_viewer_rate"
+        ],
+        "allow_terminal_unavailable": true,
+        "terminal_unavailable_texts": [
+          "Os dados do seu vídeo estão sendo processados",
+          "Os dados do seu vídeo está sendo processados",
+          "Your video data is being processed"
+        ],
+        "metrics": {
+          "reach": {
+            "container_selector": "[data-tt=\"VideoViewerPage_VideoViewCard_FlexColumn\"]",
+            "has_text": "Total de espectadores",
+            "value_selector": "[data-tt=\"VideoViewerPage_VideoViewCard_TUXText\"][style*=\"font-size: 28px\"]",
+            "type": "number",
+            "locale": "pt-BR"
+          },
+          "new_viewer_rate": {
+            "container_selector": "[data-tt=\"components_AnalyticsCard_CardWrapper\"]",
+            "has_text": "Tipos de espectadores",
+            "value_selector": "[data-tt=\"components_SingleBarChart_FlexColumn\"] [data-tt=\"components_SingleBarChart_TUXText\"]",
+            "value_index": 0,
+            "type": "percentage",
+            "locale": "pt-BR"
+          },
+          "returning_viewer_rate": {
+            "container_selector": "[data-tt=\"components_AnalyticsCard_CardWrapper\"]",
+            "has_text": "Tipos de espectadores",
+            "value_selector": "[data-tt=\"components_SingleBarChart_FlexColumn\"] [data-tt=\"components_SingleBarChart_TUXText\"]",
+            "value_index": 1,
+            "type": "percentage",
+            "locale": "pt-BR"
+          }
+        }
+      }
+    ]
+  }
+}

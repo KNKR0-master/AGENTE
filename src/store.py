@@ -627,6 +627,230 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS tiktok_analytics_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_key TEXT NOT NULL UNIQUE,
+            source TEXT NOT NULL DEFAULT 'tiktok_studio_browser',
+            trigger_type TEXT NOT NULL DEFAULT 'MANUAL',
+            account_reference TEXT,
+            status TEXT NOT NULL DEFAULT 'RUNNING',
+            current_step TEXT,
+            videos_discovered INTEGER NOT NULL DEFAULT 0,
+            videos_expected INTEGER,
+            videos_collected INTEGER NOT NULL DEFAULT 0,
+            snapshots_created INTEGER NOT NULL DEFAULT 0,
+            videos_failed INTEGER NOT NULL DEFAULT 0,
+            videos_complete INTEGER NOT NULL DEFAULT 0,
+            videos_partial INTEGER NOT NULL DEFAULT 0,
+            videos_timeout INTEGER NOT NULL DEFAULT 0,
+            retries_total INTEGER NOT NULL DEFAULT 0,
+            average_load_ms REAL,
+            p95_load_ms REAL,
+            average_completeness REAL,
+            new_videos_discovered INTEGER NOT NULL DEFAULT 0,
+            collection_coverage REAL,
+            coverage_confidence TEXT NOT NULL DEFAULT 'LOW',
+            discovery_method TEXT,
+            valid INTEGER NOT NULL DEFAULT 0,
+            last_n_days INTEGER,
+            full_backfill INTEGER NOT NULL DEFAULT 0,
+            duration_seconds REAL,
+            page_url TEXT,
+            screenshot_path TEXT,
+            debug_report_path TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            error_summary TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tiktok_video_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_content_id TEXT NOT NULL,
+            extraction_run_id INTEGER NOT NULL,
+            captured_at TEXT NOT NULL,
+            video_age_hours REAL,
+            views REAL,
+            impressions REAL,
+            reach REAL,
+            traffic_for_you REAL,
+            traffic_following REAL,
+            traffic_search REAL,
+            traffic_profile REAL,
+            traffic_other REAL,
+            traffic_sound REAL,
+            new_viewers REAL,
+            returning_viewers REAL,
+            new_viewer_rate REAL,
+            returning_viewer_rate REAL,
+            likes REAL,
+            comments REAL,
+            shares REAL,
+            saves REAL,
+            profile_visits REAL,
+            followers_generated REAL,
+            average_watch_time_seconds REAL,
+            total_watch_time_seconds REAL,
+            watched_full_rate REAL,
+            completion_rate REAL,
+            product_impressions REAL,
+            product_clicks REAL,
+            product_ctr REAL,
+            add_to_cart REAL,
+            orders REAL,
+            items_sold REAL,
+            gmv_minor INTEGER,
+            estimated_commission_minor INTEGER,
+            conversion_rate REAL,
+            average_order_value_minor INTEGER,
+            commission_rate REAL,
+            shop_ads_orders REAL,
+            shop_ads_gmv_minor INTEGER,
+            organic_orders REAL,
+            organic_gmv_minor INTEGER,
+            source TEXT NOT NULL,
+            page_url TEXT,
+            raw_values_json TEXT NOT NULL DEFAULT '{}',
+            metric_sources_json TEXT NOT NULL DEFAULT '{}',
+            quality_status TEXT NOT NULL DEFAULT 'VALID',
+            data_quality_status TEXT NOT NULL DEFAULT 'VALID',
+            extraction_status TEXT NOT NULL DEFAULT 'COMPLETE',
+            data_completeness_score REAL,
+            load_duration_ms INTEGER,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            readiness_json TEXT NOT NULL DEFAULT '{}',
+            anomaly_reason TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(external_content_id, extraction_run_id),
+            FOREIGN KEY(extraction_run_id) REFERENCES tiktok_analytics_runs(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS tiktok_video_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_content_id TEXT NOT NULL,
+            snapshot_id INTEGER NOT NULL UNIQUE,
+            cohort TEXT NOT NULL,
+            views_delta_24h REAL,
+            views_delta_48h REAL,
+            orders_delta_24h REAL,
+            gmv_delta_24h_minor INTEGER,
+            commission_delta_24h_minor INTEGER,
+            product_clicks_delta_24h REAL,
+            views_per_hour REAL,
+            orders_per_1000_views REAL,
+            gmv_per_1000_views_minor INTEGER,
+            commission_per_1000_views_minor INTEGER,
+            product_ctr REAL,
+            click_to_order_cvr REAL,
+            engagement_rate REAL,
+            share_rate REAL,
+            comment_rate REAL,
+            follow_rate REAL,
+            paid_gmv_share REAL,
+            organic_gmv_share REAL,
+            account_percentile REAL,
+            product_percentile REAL,
+            winner INTEGER NOT NULL DEFAULT 0,
+            early_winner INTEGER NOT NULL DEFAULT 0,
+            decay_score REAL,
+            decay_status TEXT NOT NULL DEFAULT 'INSUFFICIENT_DATA',
+            investment_score REAL,
+            confidence_score REAL NOT NULL DEFAULT 0,
+            confidence_level TEXT NOT NULL DEFAULT 'LOW',
+            recommendation TEXT NOT NULL DEFAULT 'OBSERVAR',
+            reasons_json TEXT NOT NULL DEFAULT '[]',
+            component_scores_json TEXT NOT NULL DEFAULT '{}',
+            computed_at TEXT NOT NULL,
+            FOREIGN KEY(snapshot_id) REFERENCES tiktok_video_snapshots(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS tiktok_account_health (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            computed_at TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            distribution_health_score REAL,
+            diagnosis TEXT NOT NULL DEFAULT 'INSUFFICIENT_DATA',
+            health_state TEXT NOT NULL DEFAULT 'INSUFFICIENT_HISTORY',
+            median_views_24h REAL,
+            median_views_48h REAL,
+            previous_median_views_24h REAL,
+            previous_median_views_48h REAL,
+            gmv_per_1000_views_minor INTEGER,
+            previous_gmv_per_1000_views_minor INTEGER,
+            orders_per_1000_views REAL,
+            previous_orders_per_1000_views REAL,
+            new_winners_created INTEGER NOT NULL DEFAULT 0,
+            old_winners_lost INTEGER NOT NULL DEFAULT 0,
+            replacement_ratio REAL,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(period_end)
+        );
+
+        CREATE TABLE IF NOT EXISTS tiktok_creative_tags (
+            external_content_id TEXT PRIMARY KEY,
+            creative_family TEXT,
+            hook_family TEXT,
+            body_family TEXT,
+            cta_family TEXT,
+            actor_type TEXT,
+            scenario TEXT,
+            production_method TEXT,
+            ai_generated INTEGER,
+            ai_tool TEXT,
+            gera_viral INTEGER,
+            creative_similarity_cluster TEXT,
+            saturation_score REAL,
+            classification_source TEXT NOT NULL DEFAULT 'MANUAL',
+            confidence REAL,
+            manually_confirmed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tiktok_experiments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            hypothesis TEXT,
+            product_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'DRAFT',
+            starts_at TEXT,
+            ends_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS tiktok_experiment_videos (
+            experiment_id INTEGER NOT NULL,
+            external_content_id TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            published_at TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(experiment_id, external_content_id),
+            FOREIGN KEY(experiment_id) REFERENCES tiktok_experiments(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS tiktok_analytics_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_key TEXT NOT NULL UNIQUE,
+            alert_type TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            external_content_id TEXT,
+            product_id INTEGER,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_affiliate_orders_created
             ON affiliate_orders(order_created_at);
         CREATE INDEX IF NOT EXISTS idx_affiliate_orders_product
@@ -665,6 +889,16 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON product_prompts(product_id, status, source_missing);
         CREATE INDEX IF NOT EXISTS idx_product_captions_product
             ON product_captions(product_id, status);
+        CREATE INDEX IF NOT EXISTS idx_tiktok_snapshots_content_time
+            ON tiktok_video_snapshots(external_content_id, captured_at);
+        CREATE INDEX IF NOT EXISTS idx_tiktok_snapshots_run
+            ON tiktok_video_snapshots(extraction_run_id, quality_status);
+        CREATE INDEX IF NOT EXISTS idx_tiktok_scores_recommendation
+            ON tiktok_video_scores(recommendation, investment_score);
+        CREATE INDEX IF NOT EXISTS idx_tiktok_scores_content
+            ON tiktok_video_scores(external_content_id, computed_at);
+        CREATE INDEX IF NOT EXISTS idx_tiktok_alerts_status
+            ON tiktok_analytics_alerts(status, created_at);
         """
     )
     _migrate_products(conn)
@@ -673,6 +907,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate_affiliate_order_items(conn)
     _migrate_drive_inventory(conn)
     _migrate_content_items(conn)
+    _migrate_external_tiktok_contents(conn)
+    _migrate_tiktok_analytics(conn)
     conn.commit()
 
 
@@ -803,6 +1039,60 @@ def _migrate_drive_inventory(conn: sqlite3.Connection) -> None:
 
 def _migrate_content_items(conn: sqlite3.Connection) -> None:
     _add_column(conn, "content_items", "caption_id", "INTEGER")
+
+
+def _migrate_external_tiktok_contents(conn: sqlite3.Connection) -> None:
+    columns = {
+        "video_url": "TEXT",
+        "published_at": "TEXT",
+        "caption": "TEXT",
+        "duration_seconds": "REAL",
+        "thumbnail_url": "TEXT",
+        "platform_status": "TEXT",
+        "seller_name": "TEXT",
+        "catalog_source": "TEXT",
+        "discovered_at": "TEXT",
+        "last_collected_at": "TEXT",
+        "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, definition in columns.items():
+        _add_column(conn, "external_tiktok_contents", name, definition)
+
+
+def _migrate_tiktok_analytics(conn: sqlite3.Connection) -> None:
+    run_columns = {
+        "videos_expected": "INTEGER",
+        "new_videos_discovered": "INTEGER NOT NULL DEFAULT 0",
+        "collection_coverage": "REAL",
+        "coverage_confidence": "TEXT NOT NULL DEFAULT 'LOW'",
+        "discovery_method": "TEXT",
+        "valid": "INTEGER NOT NULL DEFAULT 0",
+        "last_n_days": "INTEGER",
+        "full_backfill": "INTEGER NOT NULL DEFAULT 0",
+        "duration_seconds": "REAL",
+        "debug_report_path": "TEXT",
+        "error_summary": "TEXT",
+        "videos_complete": "INTEGER NOT NULL DEFAULT 0",
+        "videos_partial": "INTEGER NOT NULL DEFAULT 0",
+        "videos_timeout": "INTEGER NOT NULL DEFAULT 0",
+        "retries_total": "INTEGER NOT NULL DEFAULT 0",
+        "average_load_ms": "REAL",
+        "p95_load_ms": "REAL",
+        "average_completeness": "REAL",
+    }
+    for name, definition in run_columns.items():
+        _add_column(conn, "tiktok_analytics_runs", name, definition)
+    _add_column(conn, "tiktok_video_snapshots", "new_viewer_rate", "REAL")
+    _add_column(conn, "tiktok_video_snapshots", "returning_viewer_rate", "REAL")
+    _add_column(conn, "tiktok_video_snapshots", "traffic_other", "REAL")
+    _add_column(conn, "tiktok_video_snapshots", "traffic_sound", "REAL")
+    _add_column(conn, "tiktok_video_snapshots", "data_quality_status", "TEXT NOT NULL DEFAULT 'VALID'")
+    _add_column(conn, "tiktok_video_snapshots", "extraction_status", "TEXT NOT NULL DEFAULT 'COMPLETE'")
+    _add_column(conn, "tiktok_video_snapshots", "data_completeness_score", "REAL")
+    _add_column(conn, "tiktok_video_snapshots", "load_duration_ms", "INTEGER")
+    _add_column(conn, "tiktok_video_snapshots", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+    _add_column(conn, "tiktok_video_snapshots", "readiness_json", "TEXT NOT NULL DEFAULT '{}'")
+    _add_column(conn, "tiktok_account_health", "health_state", "TEXT NOT NULL DEFAULT 'INSUFFICIENT_HISTORY'")
 
 
 def now_iso() -> str:
