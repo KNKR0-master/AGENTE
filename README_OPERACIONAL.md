@@ -78,6 +78,40 @@ Depois abra:
 http://127.0.0.1:8765
 ```
 
+A aba `Inteligencia de videos` reune distribuicao, retencao, engajamento,
+conciliacao comercial por Content ID, Investment Score, decay, reposicao de
+vencedores e alertas explicaveis.
+
+## Analytics diario do TikTok Studio
+
+O coletor usa readiness deterministico em modo `SAFE`: espera os campos
+obrigatorios, tres leituras iguais, DOM quieto e ausencia de requests relevantes
+antes de extrair ou navegar para o proximo video. O dashboard exibe completos,
+parciais, timeouts, tentativas, tempo medio/P95 e completude da ultima execucao.
+
+O catalogo e as metricas por video podem ser coletados com uma sessao TikTok
+autenticada manualmente:
+
+```powershell
+pip install -r requirements.txt
+python -m playwright install chromium
+python collect_tiktok_analytics.py --setup-session
+python collect_tiktok_analytics.py --last-n-days 30
+python collect_tiktok_analytics.py --remap --last-n-days 30
+```
+
+O agendamento diario das 07:00 chama `run_tiktok_analytics_daily.ps1`. A coleta
+nao guarda senha e para em `AUTH_REQUIRED` ou `INTERACTION_REQUIRED` quando login, CAPTCHA ou MFA exigem
+intervencao humana.
+
+Documentacao:
+
+```text
+docs/tiktok-studio-browser-analytics.md
+docs/tiktok-video-intelligence.md
+docs/tiktok_analytics.md
+```
+
 ## Pipeline de conteudo TikTok Shop
 
 A aba `Conteudo` do dashboard controla o estoque proprio de videos, a fila de publicacao e o proximo item a enviar manualmente para o iPhone.

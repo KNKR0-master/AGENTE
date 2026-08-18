@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agente TikTok Shop</title>
-    <link rel="stylesheet" href="/styles.css?v=20260809-3" />
+    <link rel="stylesheet" href="/styles.css?v=20260817-4" />
   </head>
   <body>
     <header class="topbar">
@@ -15,6 +15,7 @@
       <div class="topbar-actions">
         <button class="icon-button secondary" data-tab="products">Produtos</button>
         <button class="icon-button secondary" data-tab="content">Conteúdo</button>
+        <button class="icon-button secondary" data-tab="analytics">Inteligência de vídeos</button>
         <button class="icon-button selected" data-tab="integration">Atualização TikTok</button>
         <button class="icon-button secondary" data-tab="drive">Drive e estoque</button>
         <button id="refreshButton" title="Atualizar painel" aria-label="Atualizar painel">↻</button>
@@ -91,6 +92,83 @@
             </div>
           </div>
           <div id="contentList" class="content-list"></div>
+        </section>
+      </section>
+
+      <section class="analytics-workspace tab-panel" id="analyticsPanel">
+        <div class="analytics-toolbar">
+          <div>
+            <p class="eyebrow">TikTok Studio</p>
+            <h2>Inteligência vídeo a vídeo</h2>
+            <div id="analyticsIdentity" class="muted"></div>
+          </div>
+          <button id="recomputeAnalytics" class="ghost-button">Recalcular indicadores</button>
+        </div>
+
+        <div id="analyticsNotice"></div>
+        <section class="analytics-band collection-health-band">
+          <div class="section-heading band-heading">
+            <div><h2>Collection Health</h2><span>Integridade da última leitura do TikTok Studio</span></div>
+          </div>
+          <div class="collection-health" id="collectionHealth"></div>
+        </section>
+        <div class="analytics-metrics" id="analyticsMetrics"></div>
+
+        <section class="analytics-band">
+          <div class="section-heading band-heading">
+            <div><h2>Investment Intelligence</h2><span>Fila diária de decisão</span></div>
+          </div>
+          <div class="decision-grid" id="investmentQueues"></div>
+        </section>
+
+        <section class="analytics-band">
+          <div class="section-heading band-heading">
+            <div><h2>Vídeos</h2><span id="analyticsVideoCount"></span></div>
+            <div class="analytics-filters">
+              <input id="analyticsVideoSearch" type="search" placeholder="Buscar vídeo ou produto" aria-label="Buscar vídeo ou produto" />
+              <select id="analyticsRecommendationFilter" aria-label="Filtrar recomendação">
+                <option value="ALL">Todas as decisões</option>
+                <option value="ESCALAR">Escalar</option>
+                <option value="TESTAR_COM_BAIXO_ORCAMENTO">Testar</option>
+                <option value="OBSERVAR">Observar</option>
+                <option value="NAO_ESCALAR">Não escalar</option>
+                <option value="EM_DECAY">Em decay</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-scroll analytics-video-table" id="analyticsVideos"></div>
+        </section>
+
+        <div class="analytics-split">
+          <section class="analytics-band">
+            <div class="section-heading"><h2>Early Winners</h2></div>
+            <div class="table-scroll" id="earlyWinners"></div>
+          </section>
+          <section class="analytics-band">
+            <div class="section-heading"><h2>Creative Decay</h2></div>
+            <div class="table-scroll" id="creativeDecay"></div>
+          </section>
+        </div>
+
+        <section class="analytics-band">
+          <div class="section-heading band-heading"><div><h2>Distribution Analytics</h2><span>Mediana de views nas primeiras 24h e 48h</span></div></div>
+          <div class="distribution-chart-wrap"><canvas id="distributionChart" height="240" aria-label="Curva de distribuição por data de publicação"></canvas></div>
+        </section>
+
+        <div class="analytics-split">
+          <section class="analytics-band">
+            <div class="section-heading"><h2>Produtos e reposição</h2></div>
+            <div class="table-scroll" id="analyticsProducts"></div>
+          </section>
+          <section class="analytics-band">
+            <div class="section-heading"><h2>Famílias criativas</h2></div>
+            <div class="table-scroll" id="creativeFamilies"></div>
+          </section>
+        </div>
+
+        <section class="analytics-band">
+          <div class="section-heading band-heading"><div><h2>Alertas</h2><span id="analyticsUnavailable"></span></div></div>
+          <div class="analytics-alerts" id="analyticsAlerts"></div>
         </section>
       </section>
 
@@ -283,6 +361,40 @@
       </section>
     </main>
 
-    <script src="/app.js?v=20260809-3"></script>
+    <dialog id="creativeTagDialog" class="analytics-dialog">
+      <form id="creativeTagForm" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Classificação manual</p>
+            <h2>Estrutura criativa</h2>
+            <span id="creativeTagVideo" class="muted"></span>
+          </div>
+          <button type="button" class="icon-button" id="closeCreativeTagDialog" aria-label="Fechar" title="Fechar">×</button>
+        </div>
+        <input name="video_id" type="hidden" />
+        <div class="creative-tag-grid">
+          <label>Família criativa<input name="creative_family" placeholder="Ex.: demonstração direta" /></label>
+          <label>Família do hook<input name="hook_family" placeholder="Ex.: dor + promessa" /></label>
+          <label>Corpo<input name="body_family" placeholder="Ex.: prova e aplicação" /></label>
+          <label>CTA<input name="cta_family" placeholder="Ex.: oferta com urgência" /></label>
+          <label>Ator/apresentação<input name="actor_type" placeholder="Ex.: UGC, mãos, avatar" /></label>
+          <label>Cenário<input name="scenario" placeholder="Ex.: banheiro, bancada" /></label>
+          <label>Método de produção<input name="production_method" placeholder="Ex.: captação própria" /></label>
+          <label>Cluster de similaridade<input name="creative_similarity_cluster" placeholder="Ex.: body-splash-demo" /></label>
+          <label>Ferramenta de IA<input name="ai_tool" placeholder="Ex.: Flow" /></label>
+          <label>Saturação (0-100)<input name="saturation_score" type="number" min="0" max="100" step="0.1" /></label>
+        </div>
+        <div class="creative-flags">
+          <label><input name="ai_generated" type="checkbox" /> Gerado com IA</label>
+          <label><input name="gera_viral" type="checkbox" /> Padrão Gera Viral</label>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" class="ghost-button" id="cancelCreativeTagDialog">Cancelar</button>
+          <button type="submit">Salvar classificação</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/app.js?v=20260817-4"></script>
   </body>
 </html>

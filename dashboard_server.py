@@ -74,6 +74,13 @@ from src.tiktok_reports import (
     reconcile_external_content_id,
     reconcile_external_product,
 )
+from src.tiktok_analytics import (
+    add_experiment_video,
+    create_experiment,
+    recompute_tiktok_analytics,
+    save_creative_tags,
+    tiktok_analytics_dashboard,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -161,6 +168,10 @@ class Handler(SimpleHTTPRequestHandler):
                     ),
                 }
             )
+            return
+
+        if path == "/api/tiktok-analytics":
+            self._json(tiktok_analytics_dashboard(conn))
             return
 
         if path == "/api/integrations/tiktok-shop/creator/authorize":
@@ -386,6 +397,26 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/drive/scan":
             result = scan_drive_inventory(conn, force=bool(payload.get("force", True)))
             self._json({"ok": result.get("status") in {"COMPLETE", "PARTIAL"}, "scan": result})
+            return
+
+        if path == "/api/tiktok-analytics/recompute":
+            result = recompute_tiktok_analytics(conn)
+            self._json({"ok": True, **result})
+            return
+
+        if path == "/api/tiktok-analytics/creative-tags":
+            save_creative_tags(conn, str(payload["video_id"]), payload)
+            self._json({"ok": True})
+            return
+
+        if path == "/api/tiktok-analytics/experiments":
+            experiment_id = create_experiment(conn, payload)
+            self._json({"ok": True, "experiment_id": experiment_id})
+            return
+
+        if path == "/api/tiktok-analytics/experiment-videos":
+            add_experiment_video(conn, int(payload["experiment_id"]), payload)
+            self._json({"ok": True})
             return
 
         if path == "/api/drive/folder-mapping":

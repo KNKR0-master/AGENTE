@@ -21,6 +21,10 @@ data/backups/*
 data/content/
 data/uploads/
 data/google_drive_mirror/
+data/tiktok-browser-profile/
+logs/
+data/tiktok-analytics-artifacts/
+data/logs/
 data/affiliate_reports/inbox/*
 !data/affiliate_reports/inbox/.gitkeep
 

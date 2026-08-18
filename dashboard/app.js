@@ -5,6 +5,7 @@ let state = {
   contentSummary: null,
   integration: null,
   affiliate: null,
+  analytics: null,
   reconciliation: { contents: [], products: [], local_contents: [], local_products: [] },
   drive: { folders: [], inventory: [], mapping_health: {}, classification_totals: {} },
   reportPreview: null,
@@ -42,13 +43,14 @@ async function load() {
   const orderType = document.querySelector("#affiliateOrderType")?.value || "ALL";
   const settlement = document.querySelector("#affiliateSettlement")?.value || "ALL";
   const affiliateQuery = new URLSearchParams({ days: period, order_type: orderType, settlement_status: settlement });
-  const [summary, contentSummary, integration, affiliate, reconciliation, drive] = await Promise.all([
+  const [summary, contentSummary, integration, affiliate, reconciliation, drive, analytics] = await Promise.all([
     api("/api/summary"),
     api("/api/content/summary"),
     api("/api/integrations/tiktok-shop/status"),
     api(`/api/integrations/tiktok-shop/affiliate-summary?${affiliateQuery}`),
     api("/api/integrations/tiktok-shop/reconciliation"),
     api("/api/drive/inventory"),
+    api("/api/tiktok-analytics"),
   ]);
   state.products = summary.products;
   state.tasks = summary.tasks;
@@ -57,6 +59,7 @@ async function load() {
   state.affiliate = affiliate;
   state.reconciliation = reconciliation;
   state.drive = drive;
+  state.analytics = analytics;
   if (!state.selectedId && state.products.length) state.selectedId = state.products[0].id;
   renderSummary();
   renderProducts();
@@ -66,6 +69,7 @@ async function load() {
   await renderNextContent();
   renderIntegration();
   renderDrive();
+  renderAnalytics();
 }
 
 async function loadContent() {
@@ -559,9 +563,11 @@ function renderIntegration() {
 
   renderReconciliation();
   renderReportPreview();
-  document.querySelector("#videoAnalyticsStatus").innerHTML = `
-    <strong>Video Analytics aguardando relatório oficial</strong>
-    <span>CTR, conversão por view, GMV por mil views e pedidos por mil views permanecem como WAITING_FOR_VIDEO_ANALYTICS.</span>`;
+  const analyticsCollection = state.analytics?.collection || {};
+  const analyticsReady = Number(state.analytics?.summary?.videos_with_snapshots || 0) > 0;
+  document.querySelector("#videoAnalyticsStatus").innerHTML = analyticsReady
+    ? `<strong>Video Analytics disponível</strong><span>${number.format(state.analytics.summary.videos_with_snapshots)} vídeos com série capturada pelo TikTok Studio.</span>`
+    : `<strong>Video Analytics aguardando coleta autenticada</strong><span>${escapeHtml(analyticsCollection.error_message || "CTR, eficiência por view e distribuição permanecem indisponíveis até o primeiro snapshot válido.")}</span>`;
 
   const run = status.last_sync_run;
   document.querySelector("#lastSyncSummary").textContent = run
@@ -575,6 +581,295 @@ function renderIntegration() {
   document.querySelector("#fullSyncTikTok").disabled = !status.enabled || !connected;
   document.querySelector("#disconnectTikTok").disabled = !account;
   document.querySelector("#connectTikTok").textContent = account ? "Reautorizar" : "Conectar Creator";
+}
+
+function renderAnalytics() {
+  const data = state.analytics || {};
+  const collection = data.collection || { status: "NEVER_RUN" };
+  const health = data.health || {};
+  const summary = data.summary || {};
+  const healthLabels = {
+    NO_DATA: "Sem dados válidos",
+    INSUFFICIENT_HISTORY: "Sem histórico suficiente",
+    INSUFFICIENT_DATA: "Dados insuficientes",
+    DISTRIBUTION_DROP: "Queda de distribuição",
+    CONVERSION_DROP: "Queda de conversão",
+    PRODUCT_DROP: "Queda por produto",
+    ACCOUNT_WIDE_DROP: "Queda geral",
+    HEALTHY: "Saudável",
+  };
+  const statusLabels = {
+    NEVER_RUN: "Coleta ainda não executada",
+    RUNNING: "Coleta em andamento",
+    SUCCESS: "Coleta concluída",
+    PARTIAL_SUCCESS: "Coleta parcial",
+    AUTH_REQUIRED: "Login manual necessário",
+    INTERACTION_REQUIRED: "Interação manual necessária",
+    UI_CHANGED: "Mapeamento da tela precisa ser revisto",
+    COVERAGE_CRITICAL: "Cobertura crítica",
+    FAILED_VALIDATION: "Coleta reprovada na validação",
+    RATE_LIMITED: "Coleta temporariamente limitada",
+    FAILED: "Falha na coleta",
+  };
+  document.querySelector("#analyticsIdentity").textContent = [
+    statusLabels[collection.status] || collection.status,
+    collection.finished_at ? formatDateTime(collection.finished_at) : null,
+    collection.videos_collected != null ? `${number.format(collection.videos_collected)} vídeos coletados` : null,
+  ].filter(Boolean).join(" · ");
+
+  const coverage = collection.collection_coverage == null ? null : Number(collection.collection_coverage);
+  const expected = collection.videos_expected;
+  const collectionTone = collection.status === "SUCCESS" ? "success" : collection.analytics_allowed ? "warning" : "error";
+  document.querySelector("#collectionHealth").innerHTML = `
+    <div class="collection-health-status ${collectionTone}">
+      <strong>${escapeHtml(collection.status === "SUCCESS" ? "COLETA OK" : collection.analytics_allowed ? "COLETA PARCIAL" : "COLETA CRÍTICA")}</strong>
+      <span>${escapeHtml(statusLabels[collection.status] || collection.status || "Nunca executada")}</span>
+    </div>
+    ${collectionHealthItem("Processados", expected == null ? `${nullableNumber(collection.videos_collected)} coletados` : `${nullableNumber(collection.videos_collected)} / ${nullableNumber(expected)}`)}
+    ${collectionHealthItem("Completos / parciais", `${nullableNumber(collection.videos_complete)} / ${nullableNumber(collection.videos_partial)}`)}
+    ${collectionHealthItem("Timeouts / tentativas", `${nullableNumber(collection.videos_timeout)} / ${nullableNumber(collection.retries_total)}`)}
+    ${collectionHealthItem("Tempo médio / P95", `${formatMilliseconds(collection.average_load_ms)} / ${formatMilliseconds(collection.p95_load_ms)}`)}
+    ${collectionHealthItem("Completude", collection.average_completeness == null ? "—" : `${decimal.format(Number(collection.average_completeness))}%`)}
+    ${collectionHealthItem("Cobertura", coverage == null ? "—" : `${decimal.format(coverage * 100)}% · ${collection.coverage_confidence || "LOW"}`)}
+    ${collectionHealthItem("Última coleta", collection.finished_at ? formatDateTime(collection.finished_at) : "—")}
+  `;
+
+  const noticeType = collection.status === "SUCCESS" ? "success" : ["AUTH_REQUIRED", "INTERACTION_REQUIRED", "PARTIAL_SUCCESS"].includes(collection.status) ? "warning" : "error";
+  const noticeTitle = collection.status === "AUTH_REQUIRED"
+    ? "Entre manualmente no TikTok Studio"
+    : collection.status === "SUCCESS"
+      ? "Analytics atualizados"
+      : statusLabels[collection.status] || "Coleta pendente";
+  const noticeDetail = collection.error_message || (collection.status === "NEVER_RUN"
+    ? "A série histórica começa após a primeira coleta autenticada."
+    : collection.analytics_allowed
+      ? `${nullableNumber(summary.videos_with_snapshots)} vídeos possuem snapshots de runs aceitos.`
+      : "Investment Intelligence suspenso até uma coleta com pelo menos 70% de cobertura.");
+  document.querySelector("#analyticsNotice").innerHTML = `<div class="integration-notice ${noticeType}"><strong>${escapeHtml(noticeTitle)}</strong><span>${escapeHtml(noticeDetail)}</span></div>`;
+
+  const definitions = data.metric_definitions || {};
+  document.querySelector("#analyticsMetrics").innerHTML = [
+    ["Distribution Health", health.distribution_health_score == null ? healthLabels[health.health_state || health.diagnosis] || "Sem baseline" : `${decimal.format(health.distribution_health_score)}/100`, "Compara a mediana de views nas primeiras 24h/48h entre coortes com cobertura completa."],
+    ["Views 24h", nullableNumber(summary.views_24h), "Delta de reproduções entre snapshots próximos de 24 horas."],
+    ["Views em vídeos 7d", nullableNumber(summary.views_7d), definitions.views_7d?.definition],
+    ["GMV 24h", nullableMoney(summary.gmv_24h_minor), definitions.gmv_24h_minor?.definition],
+    ["GMV conciliado", nullableMoney(summary.gmv_total_minor), definitions.gmv_total_minor?.definition],
+    ["Pedidos 24h", nullableNumber(summary.orders_24h), "Pedidos Affiliate Orders atribuídos a Content IDs de vídeo nas últimas 24 horas."],
+    ["Pedidos conciliados", nullableNumber(summary.orders_total), "Pedidos históricos conciliados por Content ID. Fonte: Affiliate Orders."],
+    ["GMV/1k views", nullableMoney(summary.gmv_per_1000_views_minor), "GMV conciliado por mil reproduções. Exige views válidas do crawler."],
+    ["Pedidos/1k views", summary.orders_per_1000_views == null ? "—" : decimal.format(summary.orders_per_1000_views), "Pedidos conciliados por mil reproduções."],
+    ["Novos viewers estimados", nullableNumber(summary.new_viewers_estimated), definitions.new_viewers_estimated?.definition],
+    ["Publicados em 7d", nullableNumber(summary.published_7d), definitions.published_7d?.definition],
+    ["Novos vencedores", nullableNumber(summary.new_winners_created), "Vídeos que passaram a vencedor entre snapshots válidos."],
+    ["Em decay", summary.decaying == null ? "Sem histórico" : nullableNumber(summary.decaying), "Exige no mínimo três snapshots válidos por vídeo."],
+    ["Replacement ratio", health.replacement_ratio == null ? "Sem histórico" : decimal.format(health.replacement_ratio), "Novos vencedores divididos por vencedores perdidos."],
+  ].map(([label, value, definition]) => metric(label, value, definition)).join("");
+
+  renderInvestmentQueues(data.investment || {});
+  renderAnalyticsVideos();
+  document.querySelector("#earlyWinners").innerHTML = compactVideoTable(data.early_winners || [], "account_percentile");
+  document.querySelector("#creativeDecay").innerHTML = compactVideoTable(data.creative_decay || [], "decay_score");
+  document.querySelector("#analyticsProducts").innerHTML = table(
+    ["Produto", "Vídeos", "Vencedores", "Decay", "GMV 24h", "GMV 7d", "Pedidos 7d", "Melhor vídeo", "Melhor recente", "Prontos", "Fila", "Novos necessários"],
+    (data.products || []).map((item) => [
+      escapeHtml(item.product_name),
+      number.format(item.active_videos || 0),
+      item.winners == null ? "—" : number.format(item.winners),
+      item.decaying == null ? "Sem histórico" : number.format(item.decaying),
+      nullableMoney(item.gmv_24h_minor),
+      nullableMoney(item.gmv_7d_minor),
+      nullableNumber(item.orders_7d),
+      escapeHtml(item.best_video?.video_id || "-"),
+      escapeHtml(item.best_recent_video?.video_id || "-"),
+      number.format(item.ready_count || 0),
+      number.format(item.queued_count || 0),
+      item.new_videos_needed == null ? "—" : item.new_videos_needed > 0 ? `<strong class="text-danger">${number.format(item.new_videos_needed)}</strong>` : "0",
+    ]),
+  );
+  document.querySelector("#creativeFamilies").innerHTML = table(
+    ["Família", "Vídeos", "Vencedores", "GMV", "GMV/1k", "Score mediano"],
+    (data.creative_families || []).map((item) => [
+      escapeHtml(item.creative_family),
+      number.format(item.videos || 0),
+      number.format(item.winners || 0),
+      moneyMinor(item.gmv_minor),
+      nullableMoney(item.gmv_per_1000_views_minor),
+      item.median_investment_score == null ? "-" : decimal.format(item.median_investment_score),
+    ]),
+  );
+  renderDistributionChart(data.distribution_curve || []);
+  document.querySelector("#analyticsUnavailable").textContent = data.unavailable_metrics?.length
+    ? `${data.unavailable_metrics.length} métricas aguardando dados do Studio`
+    : "Todas as métricas mapeadas têm ao menos uma leitura";
+  document.querySelector("#analyticsAlerts").innerHTML = (data.alerts || []).map((alert) => `
+    <article class="analytics-alert ${alert.severity === "HIGH" ? "high" : "medium"}">
+      <div><strong>${escapeHtml(alert.title)}</strong><span>${escapeHtml(alert.message)}</span></div>
+      ${statusPill(alert.severity)}
+    </article>
+  `).join("") || `<div class="empty-mini">Nenhum alerta analítico aberto.</div>`;
+}
+
+function renderInvestmentQueues(investment) {
+  if (investment.blocked) {
+    document.querySelector("#investmentQueues").innerHTML = `<div class="analytics-gate"><strong>Dados insuficientes</strong><span>${escapeHtml(investment.message || "Coleta incompleta.")}</span></div>`;
+    return;
+  }
+  const queues = [
+    ["ESCALAR AGORA", investment.scale_now || [], "green"],
+    ["TESTAR", investment.test || [], "blue"],
+    ["OBSERVAR", investment.observe || [], "amber"],
+    ["EM DECAY", investment.decay || [], "red"],
+  ];
+  document.querySelector("#investmentQueues").innerHTML = queues.map(([label, videos, color]) => `
+    <section class="decision-column">
+      <div class="decision-heading"><span class="tag ${color}">${label}</span><strong>${number.format(videos.length)}</strong></div>
+      <div class="decision-list">${videos.slice(0, 8).map((video) => `
+        <article>
+          <div><strong>${escapeHtml(video.product_name || "Produto não associado")}</strong><small>${escapeHtml(video.video_id)}</small></div>
+          <div class="decision-score"><strong>${video.investment_score == null ? "-" : decimal.format(video.investment_score)}</strong><small>${escapeHtml(video.confidence_level || "LOW")}</small></div>
+          <p>${escapeHtml((video.reasons || []).slice(0, 2).join(" · ") || "Aguardando evidências")}</p>
+        </article>
+      `).join("") || `<div class="empty-mini">Nenhum vídeo nesta fila.</div>`}</div>
+    </section>
+  `).join("");
+}
+
+function renderAnalyticsVideos() {
+  const videos = state.analytics?.videos || [];
+  const query = normalizeSearchText(document.querySelector("#analyticsVideoSearch")?.value || "");
+  const recommendation = document.querySelector("#analyticsRecommendationFilter")?.value || "ALL";
+  const filtered = videos.filter((video) => {
+    const haystack = normalizeSearchText(`${video.video_id} ${video.product_name || ""} ${video.caption || ""}`);
+    return (!query || haystack.includes(query)) && (recommendation === "ALL" || video.recommendation === recommendation);
+  });
+  document.querySelector("#analyticsVideoCount").textContent = `${number.format(filtered.length)} de ${number.format(videos.length)}`;
+  document.querySelector("#analyticsVideos").innerHTML = table(
+    ["", "Vídeo", "Publicado", "Produto", "Criativo", "Idade", "Views", "Views 24h", "Pedidos", "GMV", "GMV 24h", "GMV/1k", "CTR", "CVR", "Completion", "Shop Ads", "Qualidade", "Status", "Score", "Confiança", ""],
+    filtered.map((video) => [
+      video.thumbnail_url ? `<img class="video-thumb" src="${escapeAttr(video.thumbnail_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : `<span class="video-thumb placeholder"></span>`,
+      video.video_url ? `<a href="${escapeAttr(video.video_url)}" target="_blank" rel="noreferrer">${escapeHtml(video.video_id)}</a>` : escapeHtml(video.video_id),
+      video.published_at ? formatDateTime(video.published_at) : "-",
+      escapeHtml(video.product_name || "-"),
+      escapeHtml(video.creative_family || "Não classificado"),
+      formatAge(video.video_age_hours),
+      nullableNumber(video.views),
+      nullableNumber(video.views_delta_24h),
+      nullableNumber(video.orders_total),
+      nullableMoney(video.gmv_total_minor),
+      nullableMoney(video.gmv_delta_24h_minor),
+      nullableMoney(video.gmv_per_1000_views_minor),
+      nullablePercent(video.product_ctr),
+      nullablePercent(video.click_to_order_cvr),
+      nullablePercent(video.completion_rate ?? video.watched_full_rate),
+      nullablePercent(video.paid_gmv_share),
+      `${escapeHtml(video.data_quality_status || "MISSING")}<small class="cell-detail">${escapeHtml(video.extraction_status || "SEM LEITURA")} · ${video.data_completeness_score == null ? "—" : `${decimal.format(Number(video.data_completeness_score))}%`}</small>`,
+      statusPill(video.recommendation || "SEM_SCORE"),
+      video.investment_score == null ? "-" : `<strong>${decimal.format(video.investment_score)}</strong>`,
+      `${escapeHtml(video.confidence_level || "LOW")}<small class="cell-detail">${decimal.format(video.confidence_score || 0)}</small>`,
+      `<button class="table-action" type="button" data-edit-creative="${escapeAttr(video.video_id)}">Classificar</button>`,
+    ]),
+  );
+}
+
+function openCreativeTagDialog(videoId) {
+  const video = (state.analytics?.videos || []).find((item) => String(item.video_id) === String(videoId));
+  if (!video) return;
+  const dialog = document.querySelector("#creativeTagDialog");
+  const form = document.querySelector("#creativeTagForm");
+  const fields = ["video_id", "creative_family", "hook_family", "body_family", "cta_family", "actor_type", "scenario", "production_method", "creative_similarity_cluster", "ai_tool", "saturation_score"];
+  fields.forEach((field) => {
+    form.elements[field].value = video[field] ?? "";
+  });
+  form.elements.ai_generated.checked = Boolean(video.ai_generated);
+  form.elements.gera_viral.checked = Boolean(video.gera_viral);
+  document.querySelector("#creativeTagVideo").textContent = `${video.video_id} · ${video.product_name || "Produto não associado"}`;
+  dialog.showModal();
+}
+
+function compactVideoTable(videos, scoreField) {
+  return table(
+    ["Vídeo", "Produto", "Idade", "GMV 24h", "Indicador"],
+    videos.slice(0, 20).map((video) => [
+      escapeHtml(video.video_id),
+      escapeHtml(video.product_name || "-"),
+      formatAge(video.video_age_hours),
+      nullableMoney(video.gmv_delta_24h_minor),
+      video[scoreField] == null ? "-" : decimal.format(video[scoreField]),
+    ]),
+  );
+}
+
+function renderDistributionChart(points) {
+  const canvas = document.querySelector("#distributionChart");
+  if (!canvas) return;
+  const width = Math.max(720, canvas.parentElement.clientWidth - 2);
+  const height = 240;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = width * ratio;
+  canvas.height = height * ratio;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(ratio, ratio);
+  ctx.clearRect(0, 0, width, height);
+  const usable = points.filter((point) => point.median_views_24h != null || point.median_views_48h != null).slice(-30);
+  if (!usable.length) {
+    ctx.fillStyle = "#62716b";
+    ctx.font = "14px Inter, sans-serif";
+    ctx.fillText("Aguardando snapshots de vídeos entre 12h e 60h de idade.", 20, 32);
+    return;
+  }
+  const padding = { left: 58, right: 24, top: 20, bottom: 42 };
+  const maxValue = Math.max(1, ...usable.flatMap((point) => [point.median_views_24h || 0, point.median_views_48h || 0]));
+  ctx.strokeStyle = "#dce3df";
+  ctx.lineWidth = 1;
+  for (let line = 0; line <= 4; line += 1) {
+    const y = padding.top + ((height - padding.top - padding.bottom) * line) / 4;
+    ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(width - padding.right, y); ctx.stroke();
+    ctx.fillStyle = "#62716b"; ctx.font = "11px Inter, sans-serif";
+    ctx.fillText(number.format(maxValue * (1 - line / 4)), 4, y + 4);
+  }
+  const draw = (field, color) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    let started = false;
+    usable.forEach((point, index) => {
+      const value = point[field];
+      if (value == null) return;
+      const x = padding.left + ((width - padding.left - padding.right) * index) / Math.max(1, usable.length - 1);
+      const y = padding.top + (height - padding.top - padding.bottom) * (1 - value / maxValue);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  };
+  draw("median_views_24h", "#1467a8");
+  draw("median_views_48h", "#15845a");
+  ctx.fillStyle = "#1467a8"; ctx.fillRect(padding.left, height - 18, 14, 3);
+  ctx.fillStyle = "#26312c"; ctx.fillText("24h", padding.left + 20, height - 13);
+  ctx.fillStyle = "#15845a"; ctx.fillRect(padding.left + 70, height - 18, 14, 3);
+  ctx.fillStyle = "#26312c"; ctx.fillText("48h", padding.left + 90, height - 13);
+}
+
+function nullableNumber(value) {
+  return value == null ? "—" : number.format(Number(value));
+}
+
+function nullableMoney(value) {
+  return value == null ? "—" : moneyMinor(value);
+}
+
+function nullablePercent(value) {
+  return value == null ? "—" : `${decimal.format(Number(value))}%`;
+}
+
+function formatAge(hours) {
+  if (hours == null) return "-";
+  if (hours < 48) return `${decimal.format(hours)}h`;
+  return `${decimal.format(hours / 24)}d`;
+}
+
+function formatMilliseconds(value) {
+  if (value == null) return "—";
+  return `${decimal.format(Number(value) / 1000)}s`;
 }
 
 function renderDriveLegacy() {
@@ -1142,8 +1437,13 @@ async function renderNextContent() {
   }));
 }
 
-function metric(label, value) {
-  return `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`;
+function metric(label, value, definition = "") {
+  const title = definition ? ` title="${escapeAttr(definition)}"` : "";
+  return `<div class="metric"${title}><span>${label}${definition ? '<b class="metric-info" aria-hidden="true">i</b>' : ""}</span><strong>${value}</strong></div>`;
+}
+
+function collectionHealthItem(label, value) {
+  return `<div class="collection-health-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
 }
 
 function renderTasks(tasks) {
@@ -1317,6 +1617,7 @@ function switchTab(tab) {
   document.querySelectorAll("[data-tab]").forEach((button) => {
     button.classList.toggle("selected", button.dataset.tab === tab);
   });
+  if (tab === "analytics") renderDistributionChart(state.analytics?.distribution_curve || []);
 }
 
 function escapeHtml(value) {
@@ -1340,6 +1641,53 @@ function escapeAttr(value) {
 }
 
 document.querySelector("#refreshButton").addEventListener("click", load);
+document.querySelector("#recomputeAnalytics").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    await api("/api/tiktok-analytics/recompute", { method: "POST", body: "{}" });
+    state.analytics = await api("/api/tiktok-analytics");
+    renderAnalytics();
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+document.querySelector("#analyticsVideoSearch").addEventListener("input", renderAnalyticsVideos);
+document.querySelector("#analyticsRecommendationFilter").addEventListener("change", renderAnalyticsVideos);
+document.querySelector("#analyticsVideos").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-edit-creative]");
+  if (button) openCreativeTagDialog(button.dataset.editCreative);
+});
+document.querySelector("#closeCreativeTagDialog").addEventListener("click", () => document.querySelector("#creativeTagDialog").close());
+document.querySelector("#cancelCreativeTagDialog").addEventListener("click", () => document.querySelector("#creativeTagDialog").close());
+document.querySelector("#creativeTagForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form).entries());
+  payload.ai_generated = form.elements.ai_generated.checked;
+  payload.gera_viral = form.elements.gera_viral.checked;
+  payload.saturation_score = payload.saturation_score === "" ? null : Number(payload.saturation_score);
+  payload.classification_source = "MANUAL";
+  payload.confidence = 1;
+  payload.manually_confirmed = true;
+  const submit = form.querySelector("button[type='submit']");
+  submit.disabled = true;
+  try {
+    await api("/api/tiktok-analytics/creative-tags", { method: "POST", body: JSON.stringify(payload) });
+    state.analytics = await api("/api/tiktok-analytics");
+    document.querySelector("#creativeTagDialog").close();
+    renderAnalytics();
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    submit.disabled = false;
+  }
+});
+window.addEventListener("resize", () => {
+  if (state.activeTab === "analytics") renderDistributionChart(state.analytics?.distribution_curve || []);
+});
 document.querySelector("#scanDrive").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
