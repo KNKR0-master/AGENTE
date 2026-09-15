@@ -501,7 +501,12 @@ def refresh_content_performance(
         )
 
 
-def affiliate_dashboard(conn: sqlite3.Connection, days: int = 30) -> dict[str, Any]:
+def affiliate_dashboard(
+    conn: sqlite3.Connection,
+    days: int = 30,
+    *,
+    as_of: str | None = None,
+) -> dict[str, Any]:
     days = max(1, min(int(days), 3650))
     window = f"-{days - 1} days"
     totals = conn.execute(
@@ -513,9 +518,9 @@ def affiliate_dashboard(conn: sqlite3.Connection, days: int = 30) -> dict[str, A
                COALESCE(SUM(actual_commission), 0) AS actual_commission,
                COALESCE(SUM(refund_amount), 0) AS refunds
         FROM affiliate_orders
-        WHERE date(order_created_at) >= date('now', ?)
+        WHERE date(order_created_at) >= date(COALESCE(?, 'now'), ?)
         """,
-        (window,),
+        (as_of, window),
     ).fetchone()
     windows: dict[str, Any] = {}
     for label, offset in (("today", "0 days"), ("days_7", "-6 days"), ("days_30", "-29 days")):
@@ -523,9 +528,9 @@ def affiliate_dashboard(conn: sqlite3.Connection, days: int = 30) -> dict[str, A
             """
             SELECT COUNT(DISTINCT id) AS orders, COALESCE(SUM(gmv), 0) AS gmv
             FROM affiliate_orders
-            WHERE date(order_created_at) >= date('now', ?)
+            WHERE date(order_created_at) >= date(COALESCE(?, 'now'), ?)
             """,
-            (offset,),
+            (as_of, offset),
         ).fetchone()
         windows[label] = dict(row)
     top_products = [
@@ -540,12 +545,12 @@ def affiliate_dashboard(conn: sqlite3.Connection, days: int = 30) -> dict[str, A
             FROM affiliate_order_items i
             JOIN affiliate_orders o ON o.id = i.affiliate_order_id
             LEFT JOIN products p ON p.id = i.product_id
-            WHERE date(o.order_created_at) >= date('now', ?)
+            WHERE date(o.order_created_at) >= date(COALESCE(?, 'now'), ?)
             GROUP BY COALESCE(p.name, i.product_name, i.external_product_id, 'Nao mapeado'), i.product_id
             ORDER BY gmv DESC
             LIMIT 10
             """,
-            (window,),
+            (as_of, window),
         ).fetchall()
     ]
     top_content = [
@@ -558,12 +563,12 @@ def affiliate_dashboard(conn: sqlite3.Connection, days: int = 30) -> dict[str, A
             FROM affiliate_order_items i
             JOIN affiliate_orders o ON o.id = i.affiliate_order_id
             JOIN content_items c ON c.id = i.content_id
-            WHERE date(o.order_created_at) >= date('now', ?)
+            WHERE date(o.order_created_at) >= date(COALESCE(?, 'now'), ?)
             GROUP BY c.id
             ORDER BY gmv DESC
             LIMIT 10
             """,
-            (window,),
+            (as_of, window),
         ).fetchall()
     ]
     return {

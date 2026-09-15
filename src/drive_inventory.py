@@ -95,6 +95,9 @@ class DriveInventoryConfig:
     active_profile_folder_id: str | None = None
     reserve_profile_folder_ids: tuple[str, ...] = ()
     archived_profile_folder_ids: tuple[str, ...] = ()
+    auth_mode: str = 'service_account'
+    expected_google_account: str | None = None
+    oauth_credential_store: str | None = None
     cache_seconds: int = 600
     publish_target_per_day: float = 2.0
     watch_threshold: int = 8
@@ -117,10 +120,18 @@ class DriveInventoryConfig:
         root = os.getenv("GOOGLE_DRIVE_TIKTOK_ROOT_FOLDER_ID", "").strip()
         ignored = _csv_env("GOOGLE_DRIVE_IGNORED_FOLDER_IDS")
         administrative = _csv_env("GOOGLE_DRIVE_ADMINISTRATIVE_NAMES")
+        auth = {}
+        if (os.getenv('GOOGLE_DRIVE_ACCOUNT_EMAIL') or '').strip().lower() == 'ceciliafigueiredo.shop@gmail.com':
+            settings = Path(__file__).resolve().parents[1] / 'config/cecilia_drive_auth.json'
+            if settings.is_file():
+                auth = json.loads(settings.read_text(encoding='utf-8'))
         return cls(
             root_folder_id=root,
             account_email=os.getenv("GOOGLE_DRIVE_ACCOUNT_EMAIL") or None,
             credentials_file=os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or None,
+            auth_mode=auth.get('auth_mode', 'service_account'),
+            expected_google_account=auth.get('expected_google_account'),
+            oauth_credential_store=str(Path(__file__).resolve().parents[1] / auth['credential_store']) if auth.get('credential_store') else None,
             active_profile_folder_id=os.getenv("GOOGLE_DRIVE_ACTIVE_PROFILE_FOLDER_ID") or None,
             reserve_profile_folder_ids=tuple(_csv_env("GOOGLE_DRIVE_RESERVE_PROFILE_FOLDER_IDS")),
             archived_profile_folder_ids=tuple(_csv_env("GOOGLE_DRIVE_ARCHIVED_PROFILE_FOLDER_IDS")),
@@ -140,7 +151,25 @@ class GoogleApiDriveInventoryProvider:
 
     SCOPES = ("https://www.googleapis.com/auth/drive.readonly",)
 
-    def __init__(self, credentials_file: str | None) -> None:
+    @classmethod
+    def from_config(cls, config, *, scopes=None):
+        if config.auth_mode == 'service_account':
+            return cls(config.credentials_file, scopes=scopes)
+        if config.auth_mode != 'user_oauth':
+            raise DriveProviderUnavailable('GOOGLE_AUTH_MODE_INVALID')
+        from src.google_drive_auth import user_drive_service, DriveAuthError, CECILIA
+        if config.account_email != CECILIA or config.expected_google_account != CECILIA:
+            raise DriveProviderUnavailable('GOOGLE_ACCOUNT_MISMATCH')
+        if not config.oauth_credential_store:
+            raise DriveProviderUnavailable('GOOGLE_USER_CONSENT_REQUIRED')
+        try:
+            instance = cls.__new__(cls)
+            instance._service = user_drive_service(config.oauth_credential_store, config.expected_google_account)
+            return instance
+        except DriveAuthError as exc:
+            raise DriveProviderUnavailable(str(exc)) from None
+
+    def __init__(self, credentials_file: str | None, *, scopes=None) -> None:
         if not credentials_file or not Path(credentials_file).exists():
             raise DriveProviderUnavailable(
                 "Credenciais server-side ausentes. Configure GOOGLE_APPLICATION_CREDENTIALS "
@@ -154,7 +183,7 @@ class GoogleApiDriveInventoryProvider:
                 "Dependencias Google ausentes. Instale requirements.txt antes do scan."
             ) from exc
         credentials = service_account.Credentials.from_service_account_file(
-            credentials_file, scopes=self.SCOPES
+            credentials_file, scopes=scopes or self.SCOPES
         )
         self._service = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
@@ -535,7 +564,7 @@ def scan_drive_inventory(conn, force: bool = False) -> dict[str, Any]:
     config = DriveInventoryConfig.from_env()
     with _SCAN_LOCK:
         try:
-            provider = GoogleApiDriveInventoryProvider(config.credentials_file)
+            provider = GoogleApiDriveInventoryProvider.from_config(config)
         except DriveInventoryError as exc:
             return record_scan_error(conn, config, str(exc))
         return DriveInventoryScanner(provider, config).scan(conn, force=force)

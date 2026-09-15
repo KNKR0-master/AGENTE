@@ -85,7 +85,7 @@ class AffiliateProviderTests(unittest.TestCase):
 
     def test_dashboard_uses_requested_period(self) -> None:
         TikTokShopCreatorProvider().ingest_orders(self.conn, [official_order("COMPLETED")])
-        summary = affiliate_dashboard(self.conn, 30)
+        summary = affiliate_dashboard(self.conn, 30, as_of="2026-08-31")
         self.assertEqual(summary["period_days"], 30)
         self.assertEqual(summary["totals"]["orders"], 1)
         self.assertEqual(summary["top_products"][0]["name"], "Produto A")

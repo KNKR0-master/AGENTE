@@ -19,6 +19,8 @@ data/*.log
 data/backups/*
 !data/backups/.gitkeep
 data/content/
+data/publisher/
+data/credentials/
 data/uploads/
 data/google_drive_mirror/
 data/tiktok-browser-profile/

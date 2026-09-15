@@ -20,6 +20,7 @@ from src.tiktok_reports import (
     TikTokVideoPerformanceImporter,
     classify_external_content,
     detect_report_file,
+    normalize_settlement_status,
     parse_decimal_br,
     reconcile_external_content_id,
 )
@@ -73,6 +74,20 @@ HEADERS = [
     "Valor total final recebido",
     "Data do pedido",
     "Data de liquidação da comissão",
+]
+
+ENGLISH_HEADERS = [
+    "Order ID", "SKU ID", "Product name", "Product ID", "Price", "Items sold",
+    "Items refunded", "Shop name", "Shop code", "Affiliate partner", "Agency",
+    "Currency", "Order type", "Order settlement status", "Indirect", "Commission type",
+    "Content Type", "Carousel", "Content ID", "Standard", "Shop ads", "TikTok bonus",
+    "Partner bonus", "Revenue sharing portion", "GMV", "Est. commission base",
+    "Est. standard commission", "Est. Shop Ads commission", "Est. Bonus",
+    "Est. Affiliate partner bonus", "Est. IVA", "Est. ISR", "Est. CedularTax",
+    "Est. PIT", "Est. revenue sharing portion", "Actual commission base",
+    "Standard commission", "Shop Ads commission", "Bonus", "Affiliate partner bonus",
+    "Tax - ISR", "Tax - IVA", "cedular_tax", "Tax - PIT", "Shared with partner",
+    "Total final earned amount", "Order date", "Commission settlement date",
 ]
 
 
@@ -153,6 +168,32 @@ class TikTokAffiliateReportTests(unittest.TestCase):
         self.assertEqual(result.report_type, REPORT_AFFILIATE_ORDERS)
         self.assertEqual(result.compatibility, COMPATIBLE)
         self.assertEqual(result.missing_required, ())
+
+    def test_detector_accepts_official_english_format_with_carousel_column(self) -> None:
+        path = self.root / "english.xlsx"
+        source_values = list(report_row().values())
+        translated = {
+            header: "" if header == "Carousel" else source_values[index if index < 17 else index - 1]
+            for index, header in enumerate(ENGLISH_HEADERS)
+        }
+        translated.update({
+            "Carousel": "",
+            "Order type": "Shop ads order",
+            "Order settlement status": "Settled",
+            "Content Type": "Video",
+            "Order date": "08/08/2026 10:11:12",
+        })
+        write_xlsx_report(path, [translated], headers=ENGLISH_HEADERS)
+
+        result = detect_report_file(path)
+        parsed = TikTokAffiliateOrdersImporter().parse_file(path)
+
+        self.assertEqual(result.report_type, REPORT_AFFILIATE_ORDERS)
+        self.assertEqual(result.compatibility, COMPATIBLE_WITH_NEW_COLUMNS)
+        self.assertEqual(result.missing_required, ())
+        self.assertEqual(parsed.orders[0].settlement_status, "SETTLED")
+        self.assertEqual(parsed.orders[0].normalized_order_type, "SHOP_AD_ORDER")
+        self.assertEqual(normalize_settlement_status("Pending"), "PENDING")
 
     def test_reordered_headers_and_added_column_are_adaptive(self) -> None:
         path = self.root / "changed.xlsx"
@@ -334,7 +375,11 @@ class TikTokAffiliateReportTests(unittest.TestCase):
         })
         write_xlsx_report(path, [settled, showcase])
         AffiliateReportImporter(self.config).import_file(self.conn, path, import_mode="FULL_HISTORY")
-        metrics = affiliate_daily_operations(self.conn, days=30)
+        metrics = affiliate_daily_operations(
+            self.conn,
+            days=30,
+            as_of="2026-08-31T12:00:00-03:00",
+        )
         self.assertEqual(metrics["totals"]["gmv_minor"], 12672)
         self.assertEqual(metrics["totals"]["estimated_commission_minor"], 1900)
         self.assertEqual(metrics["totals"]["actual_commission_minor"], 950)

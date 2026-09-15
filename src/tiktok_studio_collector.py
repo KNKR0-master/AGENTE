@@ -1036,6 +1036,9 @@ class TikTokStudioBrowserCollector:
             try:
                 relevant = self._is_relevant_request(response.request)
                 if relevant:
+                    # A response is sufficient for readiness. Some TikTok requests keep
+                    # the transport open and never emit requestfinished promptly.
+                    self._network.get("pending_relevant", {}).pop(request_key(response.request), None)
                     self._network["relevant_responses"].append({
                         "url": _sanitize_url(response.url),
                         "status": response.status,

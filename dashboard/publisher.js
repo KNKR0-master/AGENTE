@@ -1,0 +1,123 @@
+const $ = s => document.querySelector(s);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let state = {drafts:[],products:[],accounts:[],presets:[],batches:[],logs:[],review_sessions:[]};
+let selected = new Set(), editing = [], remoteSelected = new Set(), reviewing = null;
+const loginRequests = new Set();
+const authLabels = {NOT_AUTHENTICATED:'não verificada',LOGIN_IN_PROGRESS:'login em andamento',AUTHENTICATED:'autenticada',NEEDS_LOGIN:'requer login'};
+function renderAccounts(){
+ $('#accountList').innerHTML=state.accounts.map(a=>{
+  if(a.session_verified)a={...a,auth_status:'AUTHENTICATED'};
+  const button='Abrir perfil para login manual';
+  const manualBusy=['MANUAL_STARTING','MANUAL_BROWSER_ACTIVE','PLAYWRIGHT_STARTING','PLAYWRIGHT_ACTIVE'].includes(a.profile_state);
+  const disabled=!state.worker_config?.manual_profile_available||!a.active||manualBusy||loginRequests.has(a.id);
+  return `<div class="record"><div>${esc(a.name)} ${a.active?'':'(inativa)'}<small>${esc(a.browser_profile)}</small><small role="status">Sessão TikTok: ${authLabels[a.auth_status]||authLabels.NOT_AUTHENTICATED}</small><small>${esc(a.profile_state||'IDLE')}</small>${a.auth_detail?`<small>${esc(a.auth_detail)}</small>`:''}${a.session_verified_at?`<small>Última confirmação: ${esc(new Date(a.session_verified_at).toLocaleString())}</small>`:''}</div><button data-account-edit="${a.id}">Editar</button><button data-login="${a.id}" ${disabled?'disabled':''} aria-busy="${loginRequests.has(a.id)}">${button}</button><button data-verify-manual="${a.id}" ${state.worker_config?.manual_profile_available&&['MANUAL_BROWSER_ACTIVE','SESSION_REQUIRES_VERIFICATION'].includes(a.profile_state)?'':'disabled'}>Verificar sessão</button><button data-auth-diagnostic="${a.id}" ${state.worker_config?.auth_diagnostics_available?'':'disabled title="Servidor atual ainda sem diagnóstico"'}>Diagnóstico da sessão</button></div>`;
+ }).join('')||'<p>Nenhuma conta cadastrada.</p>';
+}
+async function openAccountLogin(id){
+ if(loginRequests.has(id))return;
+ loginRequests.add(id);renderAccounts();
+ try{
+  await api('/open-manual-profile',{id});
+  await refresh();
+  notice('Perfil aberto no Chrome manual.');
+ }finally{loginRequests.delete(id);renderAccounts();}
+}
+let diagnosticAccount = null;
+async function showAuthDiagnostics(id){
+ diagnosticAccount=id;
+ const dialog=$('#authDiagnosticDialog'),body=$('#authDiagnosticBody');
+ if(!dialog.open)dialog.showModal();
+ body.textContent='Consultando estado do worker…';
+ $('#refreshAuthDiagnostic').disabled=true;
+ try{
+  const snapshot=await api(`/accounts/${id}/auth-diagnostics`);
+  const authPage=snapshot.pages.find(p=>p.is_auth_page);
+  body.innerHTML=`<dl class="auth-diagnostic-fields"><dt>Estado técnico</dt><dd>${esc(snapshot.status)}</dd><dt>Diagnóstico</dt><dd>${esc(snapshot.diagnostic_state)}</dd><dt>Contextos / páginas</dt><dd>${esc(snapshot.context_count)} / ${esc(snapshot.page_count??'desconhecido')}</dd><dt>Página de autenticação</dt><dd>${esc(snapshot.auth_page_id??'não identificada')}</dd><dt>URL atual</dt><dd>${esc(authPage?.url??'indisponível')}</dd><dt>Documento</dt><dd>${esc(authPage?.readyState??'desconhecido')} / ${esc(authPage?.visibilityState??'desconhecido')}</dd><dt>Estado do login</dt><dd>${esc(authPage?.login_state??'UNKNOWN')}</dd><dt>Coleta</dt><dd>${esc(snapshot.captured_at)}</dd></dl><h3>Erros recentes</h3><pre>${esc(JSON.stringify([...(snapshot.errors||[]),...(snapshot.detector_error?[snapshot.detector_error]:[]),...(snapshot.events||[]).filter(e=>['PAGE_ERROR','DETECTOR_ERROR','COLLECTION_ERROR','LISTENER_ERROR','REQUEST_FAILED'].includes(e.event)||e.level==='error')],null,2))}</pre><h3>Navegação e rede</h3><pre>${esc(JSON.stringify(snapshot.events||[],null,2))}</pre><details><summary>Páginas, cookies e armazenamento</summary><pre>${esc(JSON.stringify({pages:snapshot.pages,cookies:snapshot.cookies,session_cookie_present:snapshot.session_cookie_present},null,2))}</pre></details>`;
+ }catch(error){body.textContent=error.message;throw error;}
+ finally{$('#refreshAuthDiagnostic').disabled=false;}
+}
+const field = (form,name) => form.elements.namedItem(name);
+const productLabel = p => `${p.name} [${p.id}]`;
+const chosenProduct = text => state.products.find(p => productLabel(p) === text);
+const notice = (text,error=false) => { $('#notice').textContent=text; $('#notice').className=error?'error':''; };
+async function api(path='',data){const r=await fetch('/api/publisher'+path,data===undefined?{}:{method:'POST',headers:data instanceof FormData?{}:{'Content-Type':'application/json'},body:data instanceof FormData?data:JSON.stringify(data)});const body=await r.json();if(!r.ok)throw Error(body.error||'Erro na operação');return body;}
+function options(items,empty='Selecionar'){return `<option value="">${empty}</option>`+items.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('');}
+function fillSelect(el,items,empty){const old=el.value;el.innerHTML=options(items,empty);el.value=old;}
+async function refresh(){state=await api();render();}
+function view(name){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===name));document.querySelectorAll('nav [data-view]').forEach(x=>x.classList.toggle('selected',x.dataset.view===name));}
+document.querySelectorAll('[data-view]').forEach(x=>x.onclick=()=>view(x.dataset.view));
+document.querySelectorAll('[data-close]').forEach(x=>x.onclick=()=>$('#'+x.dataset.close).close());
+function render(){
+ $('#workerStatus').textContent=state.worker_config?.tiktok_actions_paused?'Contato com TikTok pausado · Diagnóstico de login':state.worker_config?.studio_validated&&state.worker_config?.durable_confirmation_validated?(state.worker_config.ffprobe_available?'Studio: configurado · Sequencial':'Studio: ffprobe ausente'):'Studio: validação de persistência pendente · Sequencial';
+ renderCaptionPreview();
+ renderMedia();
+ $('#executionProgress').innerHTML=(state.executions||[]).slice(0,3).map(e=>`<div class="record"><div>Execução #${e.id} · Lote ${e.batch_id??'múltiplo'} · ${esc(e.status)}<small>${e.succeeded} preparados · ${e.failed} falharam · ${e.waiting_manual} aguardam ação · ${e.processing} processando · ${e.queued} na fila</small><progress value="${e.succeeded+e.failed+e.waiting_manual}" max="${e.total}"></progress> ${e.succeeded+e.failed+e.waiting_manual} / ${e.total}<small>Drive: ${e.remote_deleted} removidos · ${e.remote_preserved} preservados · ${e.remote_delete_pending} limpezas pendentes</small></div></div>`).join('')+`<small>Cache temporário: ${state.temporary_files||0} arquivos</small>`;
+ $('#productOptions').innerHTML=state.products.filter(p=>p.active).map(p=>`<option value="${esc(productLabel(p))}">${esc(p.short_name)} ${esc(p.aliases.join(' '))}</option>`).join('');
+ document.querySelectorAll('select[name=account_id]').forEach(el=>fillSelect(el,state.accounts.filter(a=>a.active),'Selecionar / manter'));
+ document.querySelectorAll('select[name=preset_id]').forEach(el=>fillSelect(el,state.presets,'Padrão / manter'));
+ fillSelect($('#filter-account'),state.accounts,'Todas');fillSelect($('#filter-batch'),state.batches,'Todos');
+ const status=$('#filter-status').value;$('#filter-status').innerHTML='<option value="">Todos ativos</option>'+state.statuses.map(s=>`<option>${s}</option>`).join('');$('#filter-status').value=status;
+ renderQueue();renderProducts();
+ renderAccounts();
+ $('#presetList').innerHTML=state.presets.map(p=>`<div class="record"><div>${esc(p.name)}<small>${esc(p.visibility)} · Comentários ${p.comments?'ON':'OFF'}</small></div><button data-preset-edit="${p.id}">Editar</button></div>`).join('');
+ $('#logList').innerHTML=state.logs.map(l=>`<div class="log"><small>${esc(new Date(l.created_at).toLocaleString())} · Draft ${l.draft_id??'—'} · ${esc(l.step)} / ${esc(l.status)}</small><p>${esc(l.message)}</p>${l.screenshot_path?`<a target="_blank" href="/api/publisher?evidence=${l.id}">Ver evidência</a>`:''}</div>`).join('')||'<p>Nenhuma execução.</p>';
+}
+function visibleDrafts(){const search=$('#filter-product').value.toLocaleLowerCase();return state.drafts.filter(d=>(!$('#filter-status').value?d.status!=='ARCHIVED':d.status===$('#filter-status').value)&&(!search||(d.product_name+' '+d.product_id).toLocaleLowerCase().includes(search))&&(!$('#filter-account').value||d.account_id===Number($('#filter-account').value))&&(!$('#filter-batch').value||d.batch_id===Number($('#filter-batch').value)));}
+function renderQueue(){const rows=visibleDrafts();$('#count').textContent=`(${rows.length})`;$('#selectedCount').textContent=`${selected.size} selecionados`;$('#selectAll').checked=rows.length>0&&rows.every(d=>selected.has(d.id));
+ queueMicrotask(()=>{
+  for(const d of rows.filter(d=>d.persistence_status==='PERSISTED')){
+   const row=$(`#draftRows [data-select="${d.id}"]`)?.closest('tr');
+   if(!row)continue;
+   const status=row.querySelector('.status');
+   if(status&&d.status==='READY_FOR_REVIEW')status.textContent='READY_FOR_REVIEW_PERSISTED';
+   if(['RESERVED','CONSUMED_PENDING_DELETE'].includes(d.media_status)){
+    const button=document.createElement('button');button.dataset.cleanup=d.id;
+    button.textContent='Finalizar consumo da mídia';button.disabled=state.worker_config?.persistence_workflow_version!==1;row.lastElementChild.append(button);
+   }
+  }
+ });
+ $('#prepare').disabled=state.worker_config?.persistence_workflow_version!==1||!!state.worker_config?.tiktok_actions_paused||!selected.size||state.drafts.some(d=>selected.has(d.id)&&(!d.caption.trim()||d.persistence_status==='PERSISTED'||d.confirmed_at));$('#prepareBatch').disabled=state.worker_config?.persistence_workflow_version!==1||!!state.worker_config?.tiktok_actions_paused;
+ $('#draftRows').innerHTML=rows.map(d=>`<tr><td><input type="checkbox" data-select="${d.id}" ${selected.has(d.id)?'checked':''} aria-label="Selecionar draft ${d.id}"></td><td><button data-review="${d.id}" title="Preview do vídeo">▶ ${esc(d.filename)}</button><small>#${d.id} · Lote ${d.batch_id}</small><button data-edit="${d.id}" title="Editar draft">Editar</button></td><td>${esc(d.product_name)}<small>${esc(d.account_name)}</small></td><td><div class="caption">${esc(d.caption)||'—'}</div></td><td>${d.scheduled_at?esc(new Date(d.scheduled_at).toLocaleString()):'—'}</td><td><span class="status ${d.status==='READY_FOR_REVIEW'?'ready':d.error_code?'error':''}">${esc(d.status)}</span>${d.error_code?`<small>${esc(d.error_code)}</small>`:''}</td><td><button data-review="${d.id}">Revisar</button>${state.review_sessions.includes(d.id)?`<button data-studio="${d.id}" ${state.worker_config?.tiktok_actions_paused?'disabled':''}>Studio ↗</button>`:''}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">Nenhum draft nesta fila.</td></tr>';
+}
+function renderProducts(){const q=$('#productSearch').value.toLocaleLowerCase();$('#productList').innerHTML=state.products.filter(p=>(p.name+' '+(p.short_name||'')+' '+(p.legacy_product_id||'')+' '+p.aliases.join(' ')).toLocaleLowerCase().includes(q)).map(p=>`<div class="record"><div>${esc(p.short_name||p.name)}<small>${p.short_name?esc(p.name)+' · ':''}${p.active?'Ativo':'Inativo'} · ${p.default_caption?.trim()?'Legenda cadastrada':'CAPTION_MISSING'}</small></div><button data-product-edit="${p.id}">Editar</button></div>`).join('');}
+function renderCaptionPreview(){const p=chosenProduct(field($('#batchForm'),'product_search').value);$('#batchCaptionPreview').textContent=p?(p.default_caption?.trim()?p.default_caption:'CAPTION_MISSING'):'Nenhum produto selecionado';}
+function fillForm(form,data){for(const [k,v] of Object.entries(data)){const el=field(form,k);if(!el)continue;if(el.type==='checkbox')el.checked=!!v;else el.value=Array.isArray(v)?v.join(', '):(v??'');}}
+function formData(form){const data=Object.fromEntries(new FormData(form));form.querySelectorAll('input[type=checkbox]').forEach(x=>data[x.name]=x.checked);return data;}
+async function task(fn){try{await fn();}catch(e){notice(e.message,true);}}
+$('#refresh').onclick=()=>task(refresh);
+$('#refreshAuthDiagnostic').onclick=()=>task(()=>showAuthDiagnostics(diagnosticAccount));
+document.addEventListener('click',e=>{const button=e.target.closest('[data-auth-diagnostic]');if(button)task(()=>showAuthDiagnostics(Number(button.dataset.authDiagnostic)));});
+document.addEventListener('click',e=>{const button=e.target.closest('[data-verify-manual]');if(button&&!button.disabled)task(async()=>{await api('/verify-manual-profile',{id:Number(button.dataset.verifyManual)});await refresh();});});
+['filter-status','filter-product','filter-account','filter-batch'].forEach(id=>$('#'+id).oninput=renderQueue);
+$('#productSearch').oninput=renderProducts;
+$('#selectAll').onchange=e=>{visibleDrafts().forEach(d=>e.target.checked?selected.add(d.id):selected.delete(d.id));renderQueue();};
+function edit(ids){if(!ids.length)throw Error('Selecione drafts');editing=ids;const form=$('#editForm');form.reset();$('#editTitle').textContent=`Editar ${ids.length} draft(s)`;if(ids.length===1){const d=state.drafts.find(d=>d.id===ids[0]);fillForm(form,d);field(form,'product_search').value=productLabel(state.products.find(p=>p.id===d.product_id));field(form,'change_caption').checked=true;field(form,'change_schedule').checked=true;field(form,'scheduled_at').value=d.scheduled_at?new Date(new Date(d.scheduled_at)-new Date(d.scheduled_at).getTimezoneOffset()*60000).toISOString().slice(0,16):'';}$('#editDialog').showModal();}
+$('#bulkEdit').onclick=()=>task(()=>edit([...selected]));
+$('#useProductCaption').onclick=()=>task(async()=>{await api('/bulk',{ids:[...selected],action:'use_product_caption'});await refresh();notice('Legenda do produto copiada para os drafts selecionados');});
+$('#editForm').onsubmit=e=>{e.preventDefault();task(async()=>{const data=formData(e.target),fields={};if(data.product_search){const p=chosenProduct(data.product_search);if(!p)throw Error('Selecione um produto da lista');fields.product_id=p.id;}for(const k of ['account_id','preset_id'])if(data[k])fields[k]=Number(data[k]);if(data.change_caption)fields.caption=data.caption;if(data.change_schedule)fields.scheduled_at=data.scheduled_at?new Date(data.scheduled_at).toISOString():null;await api('/bulk',{ids:editing,fields});$('#editDialog').close();await refresh();notice('Drafts atualizados');});};
+$('#archive').onclick=()=>task(async()=>{await api('/bulk',{ids:[...selected],action:'archive'});selected.clear();await refresh();notice('Drafts removidos da fila; arquivos remotos preservados');});
+$('#duplicate').onclick=()=>task(()=>{if(selected.size!==1)throw Error('Selecione um draft para copiar a configuração');const d=state.drafts.find(x=>selected.has(x.id));fillForm($('#batchForm'),d);field($('#batchForm'),'product_search').value=productLabel(state.products.find(p=>p.id===d.product_id));field($('#batchForm'),'scheduled_at').value='';remoteSelected.clear();renderMedia();view('batch');notice('Configuração copiada. Selecione novas mídias.');});
+$('#prepareBatch').onclick=()=>task(async()=>{const id=Number($('#filter-batch').value);if(!id)throw Error('Selecione um lote no filtro');await api('/prepare',{batch_id:id});await refresh();notice('Lote enfileirado para processamento sequencial');});
+$('#prepare').onclick=()=>task(async()=>{await api('/prepare',{ids:[...selected]});await refresh();notice('Preparação iniciada. Revisão e ação final permanecem pendentes.');});
+for(const [name,route] of [['product','products'],['account','accounts'],['preset','presets']])$('#'+name+'Form').onsubmit=e=>{e.preventDefault();task(async()=>{await api('/'+route,formData(e.target));e.target.reset();await refresh();notice('Cadastro salvo');});};
+$('#newProduct').onclick=()=>{$('#productForm').reset();field($('#productForm'),'id').value='';$('#productLegacy').textContent='';field($('#productForm'),'name').focus();};
+function visibleMedia(){const q=$('#mediaSearch').value.toLocaleLowerCase(),status=$('#mediaStatus').value;return (state.media_assets||[]).filter(m=>(!status||m.status===status)&&(!q||`${m.filename} ${m.folder_path} ${m.remote_file_id}`.toLocaleLowerCase().includes(q)));}
+function renderMedia(){const items=visibleMedia();remoteSelected=new Set([...remoteSelected].filter(id=>(state.media_assets||[]).some(m=>m.id===id&&m.status==='AVAILABLE')));$('#fileCount').textContent=`(${remoteSelected.size} selecionados)`;$('#mediaCount').textContent=`${items.length} arquivos`;$('#selectAllMedia').checked=items.some(m=>m.status==='AVAILABLE')&&items.filter(m=>m.status==='AVAILABLE').every(m=>remoteSelected.has(m.id));$('#mediaRows').innerHTML=items.map(m=>`<tr><td><input type="checkbox" data-media="${m.id}" aria-label="Selecionar ${esc(m.filename)}" ${m.status!=='AVAILABLE'?'disabled':''} ${remoteSelected.has(m.id)?'checked':''}></td><td>${esc(m.filename)}<small>${esc(m.remote_file_id)}</small>${m.status!=='CONSUMED'?`<a href="https://drive.google.com/file/d/${encodeURIComponent(m.remote_file_id)}/view" target="_blank" rel="noopener">Ver no Drive ↗</a>`:''}</td><td>${esc(m.folder_path)}</td><td>${(m.size_bytes/1048576).toFixed(1)} MB<small>${esc(m.remote_modified_at||m.remote_created_at||'')}</small></td><td>${esc(m.status)}${m.cleanup_error?`<small>${esc(m.cleanup_error)}</small>`:''}${m.status==='CONSUMED_PENDING_DELETE'?`<button data-cleanup="${m.consumed_by_draft_id}">Repetir limpeza</button>`:''}</td></tr>`).join('')||'<tr><td colspan="5">Nenhum vídeo neste filtro.</td></tr>';}
+$('#mediaSearch').oninput=renderMedia;$('#mediaStatus').onchange=renderMedia;
+$('#selectAllMedia').onchange=e=>{visibleMedia().filter(m=>m.status==='AVAILABLE').forEach(m=>e.target.checked?remoteSelected.add(m.id):remoteSelected.delete(m.id));renderMedia();};
+$('#syncMedia').onclick=()=>task(async()=>{const button=$('#syncMedia');button.disabled=true;button.textContent='Sincronizando…';try{const r=await api('/sync-media',{});await refresh();notice(`${r.indexed} vídeos indexados; nenhum download realizado`);}finally{button.disabled=false;button.textContent='Sincronizar Drive';}});
+field($('#batchForm'),'product_search').onchange=e=>{const p=chosenProduct(e.target.value);renderCaptionPreview();if(p?.account_id)field($('#batchForm'),'account_id').value=p.account_id;};
+field($('#batchForm'),'preset_id').onchange=e=>{const p=state.presets.find(x=>x.id===Number(e.target.value));if(p?.account_id)field($('#batchForm'),'account_id').value=p.account_id;};
+$('#batchForm').onsubmit=e=>{e.preventDefault();task(async()=>{const p=chosenProduct(field(e.target,'product_search').value);if(!p)throw Error('Selecione um produto da lista');const data=formData(e.target);data.product_id=p.id;data.media_asset_ids=[...remoteSelected];data.scheduled_at=data.scheduled_at?new Date(data.scheduled_at).toISOString():null;const button=e.target.querySelector('button[type=submit]');button.disabled=true;try{const result=await api('/batches',data);e.target.reset();remoteSelected.clear();await refresh();selected=new Set(result.draft_ids);renderQueue();view('queue');notice(`${result.draft_ids.length} drafts criados sem baixar vídeos`);}finally{button.disabled=false;}});};
+function review(id){reviewing=id;const d=state.drafts.find(x=>x.id===id);const p=state.products.find(x=>x.id===d.product_id);const evidence=state.logs.find(l=>l.draft_id===id&&l.screenshot_path);$('#reviewBody').innerHTML=`<strong>${esc(d.filename)}</strong><div>Produto interno: ${esc(d.product_name)}<br>${esc(d.account_name)} · ${esc(d.status)}<br>Mídia: ${esc(d.media_status||'Legado local')}</div>${d.remote_file_id&&d.media_status!=='CONSUMED'?`<a href="https://drive.google.com/file/d/${encodeURIComponent(d.remote_file_id)}/view" target="_blank" rel="noopener">Ver no Drive ↗</a>`:''}<pre>${esc(d.caption)}</pre><p>Horário desejado: ${d.scheduled_at?esc(new Date(d.scheduled_at).toLocaleString()):'Não definido'}</p><p>${Object.entries({upload:'Vídeo enviado',caption:'Legenda preenchida',settings:'Configurações preparadas',durable:'Draft persistido'}).map(([k,label])=>`${d.checklist[k]?'✓':'○'} ${label}`).join(' · ')}</p><p class="shopping-warning">Produto TikTok Shop ainda precisa ser vinculado manualmente.</p>${d.error_code?`<p>${esc(d.error_code)}</p>`:''}<div class="actions"><button data-studio="${id}" ${state.worker_config?.tiktok_actions_paused?'disabled':''}>Abrir / continuar no Studio</button><button data-complete="published">Registrar publicado</button><button data-complete="scheduled">Registrar agendado</button>${!d.confirmed_at?'<button data-complete="reset">Reabrir draft</button>':''}${d.media_status==='CONSUMED_PENDING_DELETE'?`<button data-cleanup="${id}">Repetir limpeza remota</button>`:''}</div>${evidence?`<a href="/api/publisher?evidence=${evidence.id}" target="_blank">Última evidência</a><img alt="Última tela do Studio" src="/api/publisher?evidence=${evidence.id}">`:''}`;$('#reviewDialog').showModal();}
+document.addEventListener('change',e=>{if(e.target.dataset.media){const id=Number(e.target.dataset.media);e.target.checked?remoteSelected.add(id):remoteSelected.delete(id);renderMedia();}});
+document.addEventListener('click',e=>{const el=e.target.closest('[data-cleanup]');if(el)task(async()=>{
+ if(state.worker_config?.persistence_workflow_version!==1)throw Error('Reinicie o Publisher para ativar o novo ciclo de consumo.');
+ if(!confirm('Finalizar consumo: excluir somente o arquivo remoto deste draft e, depois, seu TEMP? O rascunho TikTok sera preservado.'))return;
+ el.disabled=true;
+ try{await api('/cleanup',{id:Number(el.dataset.cleanup),human_confirmed:true});notice('Limpeza enfileirada; nenhum upload sera repetido');}
+ finally{el.disabled=false;}
+});});
+document.addEventListener('change',e=>{if(e.target.dataset.select){const id=Number(e.target.dataset.select);e.target.checked?selected.add(id):selected.delete(id);renderQueue();}});
+document.addEventListener('click',e=>task(async()=>{const el=e.target.closest('button');if(!el||el.disabled)return;const d=el.dataset;if(d.productEdit){const p=state.products.find(x=>x.id===Number(d.productEdit));fillForm($('#productForm'),p);$('#productLegacy').innerHTML=`Fonte: ${esc(p.legacy_source||'Cadastro interno')}<br>ID legado: ${esc(p.legacy_product_id||'—')}<br>URL legada: ${esc(p.legacy_shop_url||'—')}`;}if(d.accountEdit)fillForm($('#accountForm'),state.accounts.find(x=>x.id===Number(d.accountEdit)));if(d.presetEdit)fillForm($('#presetForm'),state.presets.find(x=>x.id===Number(d.presetEdit)));if(d.login)await openAccountLogin(Number(d.login));if(d.edit)edit([Number(d.edit)]);if(d.review)review(Number(d.review));if(d.studio){await api('/review',{id:Number(d.studio)});notice('Abrindo a aba mantida pelo worker');}if(d.complete){const prompt=d.complete==='reset'?'Você encerrou ou descartou a preparação anterior no Studio?':'Você vinculou o produto TikTok Shop e concluiu esta ação manualmente no Studio?';if(!confirm(prompt))return;await api('/bulk',{ids:[reviewing],action:d.complete,human_confirmed:true});$('#reviewDialog').close();await refresh();notice('Estado registrado');}}));
+task(refresh);setInterval(()=>task(refresh),5000);

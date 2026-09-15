@@ -154,6 +154,49 @@ HEADER_ALIASES = {
     "valor total final recebido": "final_received_amount",
     "data do pedido": "order_created_at",
     "data de liquidacao da comissao": "commission_settled_at",
+    "order id": "external_order_id",
+    "sku id": "external_sku_id",
+    "product name": "external_product_name",
+    "product id": "external_product_id",
+    "price": "price",
+    "items sold": "items_sold",
+    "items refunded": "items_refunded",
+    "shop name": "shop_name",
+    "shop code": "shop_code",
+    "affiliate partner": "partner_agency",
+    "agency": "agency",
+    "currency": "currency",
+    "order type": "external_order_type",
+    "order settlement status": "external_settlement_status",
+    "indirect": "indirect",
+    "commission type": "commission_type",
+    "content type": "external_content_type",
+    "content id": "external_content_id",
+    "standard": "standard_rate",
+    "shop ads": "shop_ads_rate",
+    "tiktok bonus": "tiktok_bonus_rate",
+    "partner bonus": "partner_bonus_rate",
+    "revenue sharing portion": "revenue_share_rate",
+    "est commission base": "estimated_commission_base",
+    "est standard commission": "estimated_standard_commission",
+    "est shop ads commission": "estimated_shop_ads_commission",
+    "est bonus": "estimated_tiktok_bonus",
+    "est affiliate partner bonus": "estimated_partner_agency_bonus",
+    "est iva": "estimated_tax_vat",
+    "est isr": "estimated_tax_isr",
+    "est pit": "estimated_tax_pit",
+    "est revenue sharing portion": "estimated_revenue_share",
+    "actual commission base": "actual_commission_base",
+    "standard commission": "actual_standard_commission",
+    "shop ads commission": "actual_shop_ads_commission",
+    "affiliate partner bonus": "actual_partner_agency_bonus",
+    "tax isr": "actual_tax_isr",
+    "tax iva": "actual_tax_vat",
+    "tax pit": "actual_tax_pit",
+    "shared with partner": "actual_partner_share",
+    "total final earned amount": "final_received_amount",
+    "order date": "order_created_at",
+    "commission settlement date": "commission_settled_at",
 }
 
 
@@ -916,8 +959,11 @@ def normalize_settlement_status(value: Any) -> str:
     normalized = normalize_header(value)
     return {
         "liquidado": SETTLED,
+        "settled": SETTLED,
         "inelegivel": INELIGIBLE,
+        "ineligible": INELIGIBLE,
         "pendente": PENDING,
+        "pending": PENDING,
         "awaitingpayment": AWAITING_PAYMENT,
         "awaiting payment": AWAITING_PAYMENT,
     }.get(normalized, SETTLEMENT_UNKNOWN)
@@ -925,9 +971,9 @@ def normalize_settlement_status(value: Any) -> str:
 
 def normalize_order_type(value: Any) -> str:
     normalized = normalize_header(value)
-    if normalized == "pedido de anuncios da loja":
+    if normalized in {"pedido de anuncios da loja", "shop ads order"}:
         return SHOP_AD_ORDER
-    if normalized == "pedido de afiliados":
+    if normalized in {"pedido de afiliados", "affiliate order"}:
         return AFFILIATE_ORDER
     return OTHER_ORDER
 

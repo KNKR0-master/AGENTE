@@ -1,0 +1,9 @@
+{
+  "validated": true,
+  "experimental_qr_enabled": false,
+  "tiktok_actions_paused": false,
+  "durable_confirmation_validated": true,
+  "notes": "Fluxo draft-only validado em 2026-09-11. Sessao existente; QR experimental desabilitado. Salvar rascunho por allowlist; produto, publicacao e agendamento manuais. Consumo exige acao administrativa explicita.",
+  "file_input": {"selector": "input[type=file]"},
+  "caption": {"selector": "[contenteditable=\"true\"]"}
+}

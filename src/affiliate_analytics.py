@@ -15,17 +15,18 @@ def affiliate_daily_operations(
     days: int = 30,
     order_type: str = "ALL",
     settlement_status: str = "ALL",
+    as_of: str | None = None,
 ) -> dict[str, Any]:
     days = max(1, min(int(days), 3650))
     filters, params = _filters(order_type, settlement_status)
-    totals = _window_metrics(conn, f"-{days - 1} days", "0 days", filters, params)
+    totals = _window_metrics(conn, f"-{days - 1} days", "0 days", filters, params, as_of)
     windows = {
-        "today": _window_metrics(conn, "0 days", "0 days", filters, params),
-        "yesterday": _window_metrics(conn, "-1 days", "-1 days", filters, params),
-        "days_7": _window_metrics(conn, "-6 days", "0 days", filters, params),
-        "previous_7": _window_metrics(conn, "-13 days", "-7 days", filters, params),
-        "days_30": _window_metrics(conn, "-29 days", "0 days", filters, params),
-        "previous_30": _window_metrics(conn, "-59 days", "-30 days", filters, params),
+        "today": _window_metrics(conn, "0 days", "0 days", filters, params, as_of),
+        "yesterday": _window_metrics(conn, "-1 days", "-1 days", filters, params, as_of),
+        "days_7": _window_metrics(conn, "-6 days", "0 days", filters, params, as_of),
+        "previous_7": _window_metrics(conn, "-13 days", "-7 days", filters, params, as_of),
+        "days_30": _window_metrics(conn, "-29 days", "0 days", filters, params, as_of),
+        "previous_30": _window_metrics(conn, "-59 days", "-30 days", filters, params, as_of),
     }
     comparisons = {
         "today_vs_yesterday": _compare(windows["today"], windows["yesterday"]),
@@ -42,10 +43,10 @@ def affiliate_daily_operations(
         "totals": totals,
         "windows": windows,
         "comparisons": comparisons,
-        "content_types": _content_type_breakdown(conn, window, filters, params),
-        "top_products": _top_products(conn, window, filters, params),
-        "top_contents": _top_contents(conn, window, filters, params),
-        "top_shops": _top_shops(conn, window, filters, params),
+        "content_types": _content_type_breakdown(conn, window, filters, params, as_of),
+        "top_products": _top_products(conn, window, filters, params, as_of),
+        "top_contents": _top_contents(conn, window, filters, params, as_of),
+        "top_shops": _top_shops(conn, window, filters, params, as_of),
         "content_curves": _content_curves(conn),
         "pipeline": _pipeline_summary(conn),
         "next_to_publish": _next_to_publish(conn),
@@ -142,6 +143,7 @@ def _window_metrics(
     end_modifier: str,
     filters: str,
     params: tuple[Any, ...],
+    as_of: str | None,
 ) -> dict[str, Any]:
     row = conn.execute(
         f"""
@@ -157,11 +159,11 @@ def _window_metrics(
         FROM affiliate_orders o
         JOIN affiliate_order_items i ON i.affiliate_order_id = o.id
         WHERE o.provider = ?
-          AND date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', ?)
-          AND date(o.order_created_at, '-3 hours') <= date('now', '-3 hours', ?)
+          AND date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', ?)
+          AND date(o.order_created_at, '-3 hours') <= date(COALESCE(?, 'now'), '-3 hours', ?)
           {filters}
         """,
-        (PROVIDER_TIKTOK_REPORT, start_modifier, end_modifier, *params),
+        (PROVIDER_TIKTOK_REPORT, as_of, start_modifier, as_of, end_modifier, *params),
     ).fetchone()
     result = dict(row)
     sold = int(result["items_sold"] or 0)
@@ -198,7 +200,11 @@ def _compare(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any
 
 
 def _content_type_breakdown(
-    conn: sqlite3.Connection, window: str, filters: str, params: tuple[Any, ...]
+    conn: sqlite3.Connection,
+    window: str,
+    filters: str,
+    params: tuple[Any, ...],
+    as_of: str | None,
 ) -> list[dict[str, Any]]:
     return [
         dict(row)
@@ -212,17 +218,21 @@ def _content_type_breakdown(
                    COALESCE(SUM(i.actual_commission_minor), 0) AS actual_commission_minor,
                    COALESCE(SUM(i.final_received_minor), 0) AS final_received_minor
             FROM affiliate_orders o JOIN affiliate_order_items i ON i.affiliate_order_id = o.id
-            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', ?)
+            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', ?)
               {filters}
             GROUP BY i.normalized_content_type ORDER BY gmv_minor DESC
             """,
-            (PROVIDER_TIKTOK_REPORT, window, *params),
+            (PROVIDER_TIKTOK_REPORT, as_of, window, *params),
         ).fetchall()
     ]
 
 
 def _top_products(
-    conn: sqlite3.Connection, window: str, filters: str, params: tuple[Any, ...]
+    conn: sqlite3.Connection,
+    window: str,
+    filters: str,
+    params: tuple[Any, ...],
+    as_of: str | None,
 ) -> list[dict[str, Any]]:
     result = [
         dict(row)
@@ -249,12 +259,12 @@ def _top_products(
                         WHERE c.product_id = i.product_id AND c.status = 'PUBLISHED') AS last_published_at
             FROM affiliate_orders o JOIN affiliate_order_items i ON i.affiliate_order_id = o.id
             LEFT JOIN products p ON p.id = i.product_id
-            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', ?)
+            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', ?)
               {filters}
             GROUP BY i.external_product_id, i.product_id, product_name
             ORDER BY gmv_minor DESC LIMIT 30
             """,
-            (PROVIDER_TIKTOK_REPORT, window, *params),
+            (PROVIDER_TIKTOK_REPORT, as_of, window, *params),
         ).fetchall()
     ]
     windows = {
@@ -262,21 +272,21 @@ def _top_products(
         for row in conn.execute(
             f"""
             SELECT i.external_product_id,
-                   COALESCE(SUM(CASE WHEN datetime(o.order_created_at, '-3 hours') >= datetime('now', '-3 hours', '-24 hours') THEN i.gmv_minor ELSE 0 END), 0) AS gmv_24h_minor,
-                   COALESCE(SUM(CASE WHEN date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', '-6 days') THEN i.gmv_minor ELSE 0 END), 0) AS gmv_7d_minor,
+                   COALESCE(SUM(CASE WHEN datetime(o.order_created_at, '-3 hours') >= datetime(COALESCE(?, 'now'), '-3 hours', '-24 hours') THEN i.gmv_minor ELSE 0 END), 0) AS gmv_24h_minor,
+                   COALESCE(SUM(CASE WHEN date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', '-6 days') THEN i.gmv_minor ELSE 0 END), 0) AS gmv_7d_minor,
                    COALESCE(SUM(i.gmv_minor), 0) AS gmv_30d_minor,
-                   COUNT(DISTINCT CASE WHEN datetime(o.order_created_at, '-3 hours') >= datetime('now', '-3 hours', '-24 hours') THEN o.id END) AS orders_24h,
-                   COUNT(DISTINCT CASE WHEN date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', '-6 days') THEN o.id END) AS orders_7d,
+                   COUNT(DISTINCT CASE WHEN datetime(o.order_created_at, '-3 hours') >= datetime(COALESCE(?, 'now'), '-3 hours', '-24 hours') THEN o.id END) AS orders_24h,
+                   COUNT(DISTINCT CASE WHEN date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', '-6 days') THEN o.id END) AS orders_7d,
                    COUNT(DISTINCT o.id) AS orders_30d,
-                   COALESCE(SUM(CASE WHEN datetime(o.order_created_at, '-3 hours') >= datetime('now', '-3 hours', '-24 hours') THEN i.actual_commission_minor ELSE 0 END), 0) AS commission_24h_minor,
-                   COALESCE(SUM(CASE WHEN date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', '-6 days') THEN i.actual_commission_minor ELSE 0 END), 0) AS commission_7d_minor,
+                   COALESCE(SUM(CASE WHEN datetime(o.order_created_at, '-3 hours') >= datetime(COALESCE(?, 'now'), '-3 hours', '-24 hours') THEN i.actual_commission_minor ELSE 0 END), 0) AS commission_24h_minor,
+                   COALESCE(SUM(CASE WHEN date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', '-6 days') THEN i.actual_commission_minor ELSE 0 END), 0) AS commission_7d_minor,
                    COALESCE(SUM(i.actual_commission_minor), 0) AS commission_30d_minor
             FROM affiliate_orders o JOIN affiliate_order_items i ON i.affiliate_order_id = o.id
-            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', '-29 days')
+            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', '-29 days')
               {filters}
             GROUP BY i.external_product_id
             """,
-            (PROVIDER_TIKTOK_REPORT, *params),
+            (PROVIDER_TIKTOK_REPORT, as_of, as_of, as_of, as_of, as_of, as_of, as_of, *params),
         ).fetchall()
     }
     for item in result:
@@ -285,7 +295,11 @@ def _top_products(
 
 
 def _top_contents(
-    conn: sqlite3.Connection, window: str, filters: str, params: tuple[Any, ...]
+    conn: sqlite3.Connection,
+    window: str,
+    filters: str,
+    params: tuple[Any, ...],
+    as_of: str | None,
 ) -> list[dict[str, Any]]:
     return [
         dict(row)
@@ -308,18 +322,22 @@ def _top_contents(
             LEFT JOIN external_tiktok_contents e
               ON e.external_content_id = i.external_content_id
              AND e.external_content_type = i.normalized_content_type
-            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', ?)
+            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', ?)
               {filters}
             GROUP BY i.external_content_id, i.normalized_content_type
             ORDER BY gmv_minor DESC LIMIT 50
             """,
-            (PROVIDER_TIKTOK_REPORT, window, *params),
+            (PROVIDER_TIKTOK_REPORT, as_of, window, *params),
         ).fetchall()
     ]
 
 
 def _top_shops(
-    conn: sqlite3.Connection, window: str, filters: str, params: tuple[Any, ...]
+    conn: sqlite3.Connection,
+    window: str,
+    filters: str,
+    params: tuple[Any, ...],
+    as_of: str | None,
 ) -> list[dict[str, Any]]:
     return [
         dict(row)
@@ -331,11 +349,11 @@ def _top_shops(
                    COALESCE(SUM(i.actual_commission_minor), 0) AS actual_commission_minor,
                    COALESCE(SUM(i.final_received_minor), 0) AS final_received_minor
             FROM affiliate_orders o JOIN affiliate_order_items i ON i.affiliate_order_id = o.id
-            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date('now', '-3 hours', ?)
+            WHERE o.provider = ? AND date(o.order_created_at, '-3 hours') >= date(COALESCE(?, 'now'), '-3 hours', ?)
               {filters}
             GROUP BY o.shop_name, o.shop_code ORDER BY gmv_minor DESC LIMIT 30
             """,
-            (PROVIDER_TIKTOK_REPORT, window, *params),
+            (PROVIDER_TIKTOK_REPORT, as_of, window, *params),
         ).fetchall()
     ]
 

@@ -1,0 +1,7 @@
+{
+  "auth_mode": "user_oauth",
+  "expected_google_account": "ceciliafigueiredo.shop@gmail.com",
+  "credential_store": "data/credentials/cecilia-drive.dpapi",
+  "oauth_client_file": "data/credentials/cecilia-oauth-client.json",
+  "scopes": ["https://www.googleapis.com/auth/drive"]
+}
