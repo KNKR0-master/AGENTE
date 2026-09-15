@@ -81,12 +81,14 @@ from src.tiktok_analytics import (
     save_creative_tags,
     tiktok_analytics_dashboard,
 )
+from src.publisher.http import PublisherAPI
 
 
 ROOT = Path(__file__).resolve().parent
 DASHBOARD = ROOT / "dashboard"
 DB_PATH = ROOT / "data" / "agent.db"
 UPLOADS = ROOT / "data" / "uploads"
+PUBLISHER = PublisherAPI(ROOT, DB_PATH)
 
 
 def rows(conn: sqlite3.Connection, query: str, params: tuple = ()) -> list[dict]:
@@ -111,6 +113,12 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/publisher/"):
+            try:
+                PUBLISHER.post(self, parsed.path)
+            except (ValueError, KeyError, sqlite3.IntegrityError) as exc:
+                self._integration_error(exc)
+            return
         if not parsed.path.startswith("/api/"):
             self.send_error(404)
             return
@@ -126,6 +134,12 @@ class Handler(SimpleHTTPRequestHandler):
             self._integration_error(exc)
 
     def _api_get(self, path: str, query: dict) -> None:
+        if path.startswith('/api/publisher/accounts/') and path.endswith('/auth-diagnostics'):
+            PUBLISHER.get_auth_diagnostics(self, path)
+            return
+        if path == "/api/publisher":
+            PUBLISHER.get(self, query)
+            return
         conn = connect(DB_PATH)
         init_db(conn)
 
@@ -928,11 +942,13 @@ class Handler(SimpleHTTPRequestHandler):
             status=status,
         )
 
-    def _json(self, data: dict, status: int = 200) -> None:
+    def _json(self, data: dict, status: int = 200, *, no_store: bool = False) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        if no_store:
+            self.send_header('Cache-Control', 'no-store')
         self.end_headers()
         self.wfile.write(body)
 
@@ -1055,11 +1071,18 @@ def main() -> None:
         init_db(conn)
         sync_affiliate_product_catalog(conn)
     report_config = AffiliateReportConfig.from_env(ROOT)
+    PUBLISHER.initialize()
     report_config.import_dir.mkdir(parents=True, exist_ok=True)
     start_report_import_worker(DB_PATH, report_config)
     server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
     print("Dashboard local: http://127.0.0.1:8765")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        PUBLISHER.worker.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":

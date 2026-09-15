@@ -362,6 +362,18 @@ class TikTokCollectorStateTests(unittest.TestCase):
         self.assertIsNone(raw["product_clicks"])
         self.assertEqual(sources, {})
 
+    def test_relevant_response_clears_pending_request_before_requestfinished(self) -> None:
+        page = FakeNetworkPage()
+        self.collector._attach_network_observer(page)
+        request = FakeNetworkRequest()
+
+        page.emit("request", request)
+        self.assertEqual(len(self.collector._network["pending_relevant"]), 1)
+
+        page.emit("response", FakeNetworkResponse(request))
+        self.assertEqual(self.collector._network["pending_relevant"], {})
+        self.assertEqual(len(self.collector._network["relevant_responses"]), 1)
+
 
 class FakePage:
     def __init__(self, url: str, body: str) -> None:
@@ -374,6 +386,31 @@ class FakePage:
 
     def inner_text(self, timeout: int):
         return self.body
+
+
+class FakeNetworkPage:
+    def __init__(self) -> None:
+        self.handlers = {}
+
+    def on(self, event: str, handler) -> None:
+        self.handlers[event] = handler
+
+    def emit(self, event: str, value) -> None:
+        self.handlers[event](value)
+
+
+class FakeNetworkRequest:
+    resource_type = "xhr"
+    url = "https://www.tiktok.com/tiktok/creator/manage/item_list/v1/"
+    method = "POST"
+
+
+class FakeNetworkResponse:
+    def __init__(self, request: FakeNetworkRequest) -> None:
+        self.request = request
+        self.url = request.url
+        self.status = 200
+        self.headers = {"content-type": "text/plain"}
 
 
 if __name__ == "__main__":

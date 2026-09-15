@@ -1,5 +1,20 @@
 # Fluxo operacional do agente TikTok Shop
 
+## Publisher Desk
+
+Acesse `/publisher.html` no mesmo dashboard para produtos internos, legendas por
+produto, contas, lotes de referencias do Drive e revisao humana. O modulo usa o
+SQLite existente e opera sem depender de Analytics. O fluxo de drafts, batch
+sequencial, persistencia de sessao, preflight ffprobe e cleanup do Drive estao
+validados. A legenda e copiada para cada draft, e o vinculo do produto TikTok
+Shop permanece manual, assim como publicar/agendar.
+
+O runtime de producao usa Chrome com o mesmo `userDataDir`, lancamento por
+`subprocess.Popen(args, shell=False)` e attach Playwright via CDP somente em
+`127.0.0.1`. O handle esperado da conta e `cecilia.figueired65`.
+Consulte [Publisher Desk](docs/publisher-desk.md) e o
+[checkpoint estavel](docs/publisher-stable-checkpoint.md) para o estado atual.
+
 ## Objetivo
 
 Transformar dados crus do Kalodata, EchoTik e da planilha-mae do Drive em uma base local de decisao:
