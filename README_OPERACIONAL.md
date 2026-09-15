@@ -93,6 +93,27 @@ Depois abra:
 http://127.0.0.1:8765
 ```
 
+### Inicializacao diaria do Publisher Desk
+
+O launcher oficial para Windows e:
+
+```text
+C:\Users\Usuario\Documents\New project 10\start-publisher.bat
+```
+
+Ele resolve a raiz pelo proprio caminho, inicia o `dashboard_server.py` com o
+Python disponivel no ambiente, preserva o log em
+`logs/publisher-server.log`, protege a porta local contra segunda instancia e
+abre `/publisher.html` quando o servidor fica pronto. A verificacao de sessao
+usa a rota read-only existente e o `BrowserRuntimeManager`; o launcher nao
+possui logica propria de Chrome, CDP, profile ou autenticacao.
+
+Para encerrar normalmente, pressione `Ctrl+C` na janela do launcher. O
+supervisor envia um sinal de encerramento ao servidor, que executa o shutdown
+do worker e libera o mutex do profile. Nao use `taskkill` como procedimento
+normal; a sessao TikTok, cookies, storage e `userDataDir` permanecem no mesmo
+profile persistente.
+
 A aba `Inteligencia de videos` reune distribuicao, retencao, engajamento,
 conciliacao comercial por Content ID, Investment Score, decay, reposicao de
 vencedores e alertas explicaveis.
