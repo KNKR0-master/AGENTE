@@ -55,6 +55,39 @@ drafts, batches, metricas, conteudo, pastas ou outros historicos sao arquivados
 e nunca apagados fisicamente. Uma selecao mista mostra os dois totais antes da
 confirmacao.
 
+## UI 2A.2: Biblioteca e lotes multi-produto
+
+A aba `Biblioteca` usa `drive_files` como fonte de inventario completo e
+aplica filtros combinaveis no servidor por nome/ID, caminho, produto, tipo,
+status e decisao. A paginacao e limitada a 100 itens por consulta. A exibicao
+usa estados amigaveis (`DISPONIVEL`, `RESERVADO`, `REQUER ATENCAO` e
+`IGNORADO`), mantendo a classificacao tecnica internamente.
+
+A classificacao automatica e deliberadamente conservadora: `G<n>C<n>A<n>` e
+`FINAL` sao alta confianca; `VIDEO <n>` e media confianca somente quando o
+produto pode ser resolvido pela arvore de pastas e os metadados de video sao
+validos. Nomes suspeitos ficam em atencao ate uma decisao manual `VALID` ou
+`IGNORED`. A associacao de arquivo a produto pode usar override persistente ou
+o mapeamento de pasta existente, sem mover arquivos no Drive.
+
+`Criar lote` aceita varias midias com produtos diferentes. O preflight valida
+toda a selecao antes de abrir transacao; qualquer `PRODUCT_UNASSIGNED`,
+`CAPTION_MISSING`, conflito de conta, midia reservada ou metadado invalido
+aborta a operacao inteira. Quando aprovado, cria apenas referencias
+`MediaAsset`/`Draft` e reserva as midias: nao baixa, nao abre o TikTok e nao
+inicia cleanup remoto. O download JIT continua pertencendo ao worker normal.
+
+A acao `Excluir do Drive` e separada da criacao de lote, exige confirmacao
+humana no navegador e no backend, compara a identidade do arquivo e confirma
+que o ID deixou de existir pela mesma integracao antes de atualizar o
+inventario local. Ela nao pode ser usada para midia vinculada a draft; nesse
+caso o lifecycle do Publisher continua sendo a unica rota de cleanup.
+
+As tabelas `publisher_media_decisions` e `publisher_media_overrides` guardam
+as decisoes e atribuicoes sem apagar o inventario original. Nao ha Changes API,
+polling em background, sincronizacao automatica ou classificacao baseada em
+IA nesta fase.
+
 ## Runtime de producao
 
 O caminho validado nao usa `launch_persistent_context()` para o Publisher.

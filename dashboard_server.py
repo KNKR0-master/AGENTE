@@ -137,8 +137,8 @@ class Handler(SimpleHTTPRequestHandler):
         if path.startswith('/api/publisher/accounts/') and path.endswith('/auth-diagnostics'):
             PUBLISHER.get_auth_diagnostics(self, path)
             return
-        if path == "/api/publisher":
-            PUBLISHER.get(self, query)
+        if path in {"/api/publisher", "/api/publisher/library"}:
+            PUBLISHER.get(self, query, path)
             return
         conn = connect(DB_PATH)
         init_db(conn)

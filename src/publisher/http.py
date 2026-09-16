@@ -207,8 +207,14 @@ class PublisherAPI:
             result.update(status="ATTENTION", diagnosis="ACTUAL_CREDENTIAL_FAILURE")
         return result
 
-    def get(self, handler, query):
+    def get(self, handler, query, path="/api/publisher"):
         with closing(connect(self.db)) as conn:
+            if path == "/api/publisher/library":
+                result = PublisherService(conn, self.root).media_library({
+                    key: values[0] for key, values in query.items() if values
+                })
+                handler._json(result, no_store=True)
+                return
             if "media" in query or "evidence" in query:
                 if "media" in query:
                     row = get_row(conn, "publisher_drafts", query["media"][0])
@@ -341,6 +347,14 @@ class PublisherAPI:
                             raise ValueError(f'Falha ao sincronizar Drive ({type(exc).__name__}). Verifique acesso da Cecilia e conexao.') from exc
                     elif action == 'batches':
                         result = service.create_remote_batch(data)
+                    elif action == 'library-batches':
+                        result = service.create_library_batch(data)
+                    elif action == 'media-decision':
+                        result = service.decide_media(data)
+                    elif action == 'media-product':
+                        result = service.assign_media_product(data)
+                    elif action == 'media-delete':
+                        result = service.delete_library_media(data, media_provider())
                     elif action == "bulk":
                         ids = data.get("ids", [])
                         if data.get("action") in {"reset", "published", "scheduled"} and not data.get("human_confirmed"):

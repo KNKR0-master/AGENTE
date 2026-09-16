@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.store import now_iso
+from src.publisher.library import get_library_items, list_library, save_decision, set_product_overrides
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -53,6 +54,12 @@ def init_publisher(conn):
       consumed_by_draft_id INTEGER, remote_deleted_at TEXT, cleanup_error TEXT,
       last_seen_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       UNIQUE(provider,source_account,remote_file_id));
+    CREATE TABLE IF NOT EXISTS publisher_media_decisions (
+      drive_file_id TEXT PRIMARY KEY, decision TEXT NOT NULL CHECK(decision IN ('VALID','IGNORED')),
+      decided_at TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS publisher_media_overrides (
+      drive_file_id TEXT PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES publisher_products(product_id),
+      updated_at TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '');
     CREATE TABLE IF NOT EXISTS publisher_batch_executions (
       id INTEGER PRIMARY KEY, batch_id INTEGER, total INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'QUEUED', started_at TEXT NOT NULL, finished_at TEXT,
@@ -92,6 +99,8 @@ def init_publisher(conn):
     if 'auto_cleanup' not in columns:
         conn.execute("ALTER TABLE publisher_batch_executions ADD COLUMN auto_cleanup INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS publisher_media_reservation ON publisher_drafts(media_asset_id) WHERE media_asset_id IS NOT NULL AND status<>'ARCHIVED'")
+    conn.execute("CREATE INDEX IF NOT EXISTS publisher_media_decisions_decision ON publisher_media_decisions(decision, updated_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS publisher_media_overrides_product ON publisher_media_overrides(product_id, updated_at)")
     columns = {r[1] for r in conn.execute('PRAGMA table_info(publisher_products)')}
     for name, definition in {
         'name': 'TEXT', 'short_name': 'TEXT', 'default_caption': 'TEXT',
@@ -466,6 +475,127 @@ class PublisherService:
                     self.conn.execute("UPDATE publisher_drafts SET status='CAPTION_MISSING',error_code='CAPTION_MISSING' WHERE id=?",(row_id,))
                 drafts.append(row_id)
         return {'batch_id':batch,'draft_ids':drafts}
+
+    def media_library(self, params=None):
+        params = params or {}
+        return list_library(
+            self.conn,
+            page=params.get("page", 1),
+            page_size=params.get("page_size", 50),
+            search=params.get("search", ""),
+            path=params.get("path", ""),
+            product_id=params.get("product_id"),
+            file_type=params.get("type", params.get("file_type", "VIDEO")),
+            status=params.get("status", ""),
+            decision=params.get("decision", ""),
+        )
+
+    def decide_media(self, data):
+        return save_decision(self.conn, data.get("drive_file_id"), data.get("decision"), data.get("reason", ""))
+
+    def assign_media_product(self, data):
+        ids = data.get("drive_file_ids") or []
+        if data.get("scope") == "folder":
+            folder_id = str(data.get("folder_id") or "").strip()
+            product_id = int(data.get("product_id"))
+            from src.drive_inventory import set_folder_mapping
+            self.get_product(product_id)
+            set_folder_mapping(self.conn, folder_id, product_id, reason="Atribuição em lote na Biblioteca")
+            return {"scope": "folder", "folder_id": folder_id, "product_id": product_id}
+        return set_product_overrides(self.conn, ids, int(data.get("product_id")))
+
+    def delete_library_media(self, data, provider):
+        if data.get("human_confirmed") is not True:
+            raise ValueError("CONFIRM_MEDIA_DELETE")
+        drive_file_id = str(data.get("drive_file_id") or "").strip()
+        filename = str(data.get("filename") or "").strip()
+        if not drive_file_id or not filename:
+            raise ValueError("IDENTITY_REQUIRED_FOR_MEDIA_DELETE")
+        rows = get_library_items(self.conn, [drive_file_id])
+        if len(rows) != 1:
+            raise ValueError("Arquivo não encontrado no inventário")
+        item = rows[0]
+        if item["filename"] != filename or (data.get("size") is not None and int(data["size"]) != int(item.get("size") or 0)):
+            raise ValueError("MEDIA_IDENTITY_MISMATCH")
+        if item.get("media_status") in {"RESERVED", "PROCESSING", "CONSUMED_PENDING_DELETE", "CONSUMED"} or item.get("draft_id"):
+            raise ValueError("Mídia vinculada a draft; finalize o lifecycle pelo Publisher")
+        asset = {
+            "provider": "google_drive", "source_account": "cecilia",
+            "remote_file_id": drive_file_id, "filename": item["filename"],
+            "size_bytes": int(item.get("size") or 0), "checksum": item.get("md5_checksum"),
+        }
+        before = provider.get_remote_metadata(drive_file_id)
+        if before is None:
+            raise ValueError("REMOTE_FILE_NOT_FOUND")
+        if before.get("id") != drive_file_id or before.get("name") != filename:
+            raise ValueError("MEDIA_IDENTITY_MISMATCH")
+        provider.delete_remote(asset)
+        after = provider.get_remote_metadata(drive_file_id)
+        if after is not None:
+            raise ValueError("REMOTE_DELETE_NOT_CONFIRMED")
+        timestamp = now_iso()
+        with self.conn:
+            self.conn.execute("UPDATE drive_files SET missing_since=?,updated_at=? WHERE drive_file_id=?", (timestamp, timestamp, drive_file_id))
+        return {"drive_file_id": drive_file_id, "remote_exists_after": False, "deleted_at": timestamp}
+
+    def create_library_batch(self, data):
+        ids = list(dict.fromkeys(str(value) for value in (data.get("drive_file_ids") or []) if str(value).strip()))
+        if not ids or len(ids) > 100:
+            raise ValueError("Selecione entre 1 e 100 vídeos")
+        if data.get("scheduled_at"):
+            raise ValueError("A Biblioteca não agenda lotes; horário desejado não é definido")
+        account_id = data.get("account_id") or self.default_account_id()
+        if not account_id:
+            raise ValueError("Selecione uma conta Publisher ativa")
+        preset_id = data.get("preset_id") or None
+        items = get_library_items(self.conn, ids)
+        by_id = {item["drive_file_id"]: item for item in items}
+        missing = [file_id for file_id in ids if file_id not in by_id]
+        problems = [{"drive_file_id": file_id, "reason": "Arquivo não encontrado no inventário"} for file_id in missing]
+        for file_id in ids:
+            item = by_id.get(file_id)
+            if item and not item.get("eligible"):
+                problems.append({"drive_file_id": file_id, "filename": item["filename"], "reason": item["reason"] or item["status_label"]})
+            if item and item.get("eligible"):
+                try:
+                    self.validate_fields({"product_id": item["product_id"], "account_id": account_id,
+                                          "preset_id": preset_id, "caption": item["caption"]})
+                except ValueError as exc:
+                    problems.append({"drive_file_id": file_id, "filename": item["filename"], "reason": str(exc)})
+        if problems:
+            raise ValueError("BATCH_PREFLIGHT_FAILED: " + json.dumps(problems, ensure_ascii=False))
+        timestamp = now_iso()
+        with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            batch_id = self.conn.execute(
+                "INSERT INTO publisher_batches(name,source,created_at) VALUES (?, 'MEDIA_LIBRARY', ?)",
+                (str(data.get("name") or f"Lote {timestamp[:16]}"), timestamp),
+            ).lastrowid
+            draft_ids = []
+            for file_id in ids:
+                item = by_id[file_id]
+                asset = self.conn.execute("SELECT * FROM publisher_media_assets WHERE remote_file_id=?", (file_id,)).fetchone()
+                if asset:
+                    asset = dict(asset)
+                    self.assert_media_available(asset)
+                    asset_id = asset["id"]
+                else:
+                    asset_id = self.conn.execute("""INSERT INTO publisher_media_assets
+                      (provider,source_account,remote_file_id,remote_folder_id,filename,mime_type,size_bytes,checksum,
+                       folder_path,web_view_link,remote_created_at,remote_modified_at,last_seen_at,created_at,updated_at)
+                      VALUES ('google_drive','cecilia',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                      (file_id, item["folder_id"], item["filename"], item["mime_type"] or "video/mp4", item.get("size"),
+                       item.get("md5_checksum"), item.get("folder_path"), item.get("web_view_link"), item.get("created_time"),
+                       item.get("modified_time"), timestamp, timestamp, timestamp)).lastrowid
+                    asset = dict(self.conn.execute("SELECT * FROM publisher_media_assets WHERE id=?", (asset_id,)).fetchone())
+                draft_id = self.conn.execute("""INSERT INTO publisher_drafts
+                  (batch_id,product_id,account_id,preset_id,media_asset_id,video_path,filename,caption,scheduled_at,created_at,updated_at)
+                  VALUES (?,?,?,?,?,'',?,?,?,?,?)""",
+                  (batch_id, item["product_id"], int(account_id), preset_id, asset_id, item["filename"], item["caption"], None, timestamp, timestamp)).lastrowid
+                self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?", (timestamp, asset_id))
+                log(self.conn, draft_id, "CREATE", "DRAFT", "Biblioteca: referência Drive reservada; nenhum download realizado")
+                draft_ids.append(draft_id)
+        return {"batch_id": batch_id, "draft_ids": draft_ids, "items": [{"drive_file_id": i["drive_file_id"], "product_id": i["product_id"], "filename": i["filename"]} for i in (by_id[file_id] for file_id in ids)]}
 
     def save_product(self, data):
         if data.get('id'):
