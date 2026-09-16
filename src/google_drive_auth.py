@@ -27,6 +27,39 @@ class DriveCredentialStore:
         except Exception:
             raise DriveAuthError('GOOGLE_CREDENTIAL_STORE_UNREADABLE') from None
 
+    def diagnostic(self):
+        """Return local credential metadata without exposing decrypted secrets."""
+        result = {
+            'file_exists': False,
+            'file_readable': False,
+            'dpapi_load_ok': False,
+            'json_valid': False,
+            'exception_type': None,
+            'winerror': None,
+        }
+        try:
+            result['file_exists'] = self.path.is_file()
+            if not result['file_exists']:
+                return result
+            ciphertext = self.path.read_text(encoding='utf-8')
+            result['file_readable'] = True
+            plaintext = self.cipher.decrypt(ciphertext)
+            payload = json.loads(plaintext)
+            if not isinstance(payload, dict):
+                raise ValueError('credential payload is not an object')
+            result['dpapi_load_ok'] = True
+            result['json_valid'] = True
+            result['has_refresh_token'] = bool(payload.get('refresh_token'))
+            result['scopes'] = [str(scope) for scope in payload.get('scopes', [])]
+        except OSError as exc:
+            result.update(
+                exception_type=type(exc).__name__,
+                winerror=getattr(exc, 'winerror', None),
+            )
+        except (ValueError, TypeError, UnicodeError) as exc:
+            result['exception_type'] = type(exc).__name__
+        return result
+
     def save(self, info):
         encrypted = self.cipher.encrypt(json.dumps(info))
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -29,6 +29,32 @@ areas, mas isso e apenas infraestrutura de entrada. Nenhuma rota ou calculo de
 Analytics e pre-requisito funcional do runtime, da autenticacao, do batch ou do
 provider de Drive do Publisher.
 
+## UI 2A.1: catalogo, preferencias e pastas
+
+A primeira entrega da nova UI permanece limitada a Produtos, health e
+preferencias. A migracao e incremental e idempotente: `publisher_products`
+recebe `flow_prompt` sem recriar ou renumerar produtos, e
+`publisher_preferences` guarda `default_publisher_account_id` por referencia
+de banco, nunca apenas por nome. Se a conta padrao for removida ou ficar
+inativa, a tela de criacao volta a exigir selecao normal.
+
+O campo `flow_prompt` e cadastro editorial multilinha. Ele ainda nao participa
+do worker, do upload ou de qualquer automacao TikTok. A associacao de produtos
+e pastas usa exclusivamente `drive_folders` e
+`drive_folder_mapping_history`; um produto pode ter varias pastas, cada pasta
+tem no maximo um produto canonico e associar/remover nao move arquivos.
+
+`drive_files` e o inventario completo para a futura Biblioteca. `MediaAsset` e
+somente o subconjunto operacional elegivel para o lifecycle de drafts. A UI
+2A.1 nao implementa Changes API, polling em background, classificacao nova de
+midia, publicacao ou agendamento.
+
+Exclusao em massa de produtos e protegida por referencias historicas. Produtos
+sem referencias podem ser excluidos apos confirmacao visual; produtos com
+drafts, batches, metricas, conteudo, pastas ou outros historicos sao arquivados
+e nunca apagados fisicamente. Uma selecao mista mostra os dois totais antes da
+confirmacao.
+
 ## Runtime de producao
 
 O caminho validado nao usa `launch_persistent_context()` para o Publisher.

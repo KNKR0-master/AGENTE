@@ -95,6 +95,17 @@ class UserOAuthTests(unittest.TestCase):
             self.assertEqual(store.load(),self.info)
             self.assertFalse(list(path.parent.glob('.credential-*')))
 
+    def test_dpapi_diagnostic_never_returns_secret_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'credential.dpapi'
+            cipher=MagicMock();cipher.decrypt.return_value=json.dumps(self.info)
+            path.write_text('encrypted-fixture', encoding='utf-8')
+            diagnostic=DriveCredentialStore(path,cipher).diagnostic()
+            self.assertTrue(diagnostic['dpapi_load_ok'])
+            self.assertTrue(diagnostic['has_refresh_token'])
+            self.assertNotIn('refresh_token', diagnostic)
+            self.assertNotIn('client_secret', diagnostic)
+
     def test_missing_store_never_uses_service_account(self):
         with tempfile.TemporaryDirectory() as directory:
             config=DriveInventoryConfig('root',CECILIA,'old-service-key',auth_mode='user_oauth',

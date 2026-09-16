@@ -1,11 +1,15 @@
 import json
-import shutil
+import getpass
 import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlparse
 
+from src.content_pipeline import probe_video
+from src.drive_inventory import DriveInventoryConfig
+from src.google_drive_auth import DriveAuthError, DriveCredentialStore, user_drive_service
+from src.media_tools import FFProbeError, ffprobe_version, resolve_ffprobe_path
 from src.store import connect
 from src.publisher.service import PublisherService, get_row, init_publisher
 from src.publisher.worker import PublisherWorker, recover_sessions
@@ -24,6 +28,184 @@ class PublisherAPI:
             init_publisher(conn)
             recover_sessions(conn)
         self.worker.cache.clean_orphans()
+
+    def _ffprobe_health(self):
+        result = {
+            "available": False,
+            "executable_valid": False,
+            "path": None,
+            "version": None,
+            "error": None,
+            "path_exists": False,
+            "is_file": False,
+            "file_readable": False,
+            "file_executable_by_process": False,
+            "process_started": False,
+            "exit_code": None,
+            "exception_type": None,
+            "exception_winerror": None,
+            "media_test": False,
+            "media_test_path": None,
+            "media_test_metadata": None,
+        }
+        try:
+            path = resolve_ffprobe_path(self.root)
+            result["path"] = str(path) if path else None
+            if path:
+                try:
+                    result["path_exists"] = path.exists()
+                    result["is_file"] = path.is_file()
+                    if result["is_file"]:
+                        with path.open("rb"):
+                            result["file_readable"] = True
+                except OSError as exc:
+                    result["exception_type"] = type(exc).__name__
+                    result["exception_winerror"] = getattr(exc, "winerror", None)
+            version = ffprobe_version(path)
+            result.update(
+                available=True,
+                executable_valid=True,
+                file_executable_by_process=True,
+                process_started=True,
+                exit_code=0,
+                version=version,
+                error=None,
+            )
+            test_candidates = (
+                self.root / "data" / "content" / "KIT5" / "KIT5-0001.mp4",
+                self.root / "data" / "uploads" / "1786300701_CUECAPOLO_G1C1A1_2607_1785103599470.mp4",
+            )
+            test_path = next((candidate for candidate in test_candidates if candidate.is_file()), None)
+            if test_path:
+                probe = probe_video(test_path, str(path))
+                result.update(
+                    media_test=bool(
+                        probe.results.get("ffprobe_available")
+                        and probe.results.get("valid_file")
+                    ),
+                    media_test_path=str(test_path),
+                    media_test_metadata={
+                        key: probe.results.get(key)
+                        for key in ("duration", "codec", "width", "height", "resolution")
+                    },
+                )
+            return result
+        except FFProbeError as exc:
+            result.update(
+                error=exc.exception_type or exc.code,
+                exception_type=exc.exception_type,
+                exception_winerror=exc.winerror,
+                process_started=bool(exc.process_started),
+            )
+            return result
+        except OSError as exc:
+            result.update(
+                error=type(exc).__name__,
+                exception_type=type(exc).__name__,
+                exception_winerror=getattr(exc, "winerror", None),
+            )
+            return result
+
+    def _drive_health(self, conn):
+        latest = conn.execute("SELECT * FROM drive_scan_runs ORDER BY id DESC LIMIT 1").fetchone()
+        inventory_count = int(conn.execute("SELECT COUNT(*) FROM drive_files").fetchone()[0])
+        try:
+            config = DriveInventoryConfig.from_env()
+        except (OSError, ValueError, KeyError, TypeError):
+            config = None
+        result = {
+            "status": "UNKNOWN", "diagnosis": "NO_SCAN", "available": bool(inventory_count),
+            "latest_scan_id": latest["id"] if latest else None,
+            "latest_scan_status": latest["status"] if latest else "NEVER_SCANNED",
+            "latest_error": latest["error_message"] if latest else None,
+            "account": (config.expected_google_account or config.account_email) if config else None,
+            "credential_store_exists": bool(config and config.oauth_credential_store and Path(config.oauth_credential_store).is_file()),
+            "credential_store_readable": None,
+            "dpapi_file_exists": False,
+            "dpapi_load_ok": False,
+            "credential_error_type": None,
+            "credential_error_winerror": None,
+            "drive_auth_ok": False,
+            "drive_read_ok": False,
+            "process_user": getpass.getuser(),
+        }
+        if config and config.oauth_credential_store:
+            diagnostic = DriveCredentialStore(config.oauth_credential_store).diagnostic()
+            result.update(
+                dpapi_file_exists=diagnostic["file_exists"],
+                credential_store_readable=diagnostic["file_readable"],
+                dpapi_load_ok=diagnostic["dpapi_load_ok"],
+                credential_error_type=diagnostic["exception_type"],
+                credential_error_winerror=diagnostic["winerror"],
+            )
+        if config and config.auth_mode == "user_oauth" and not result["dpapi_load_ok"]:
+            if result["credential_error_winerror"] == -2146893813:
+                diagnosis = "DPAPI_PROFILE_MISMATCH"
+            elif not result["dpapi_file_exists"]:
+                diagnosis = "GOOGLE_USER_CONSENT_REQUIRED"
+            else:
+                diagnosis = "ACTUAL_CREDENTIAL_FAILURE"
+            result.update(status="ATTENTION", diagnosis=diagnosis, available=False)
+            return result
+        if config and config.auth_mode == "user_oauth" and result["dpapi_load_ok"]:
+            try:
+                service = user_drive_service(
+                    config.oauth_credential_store,
+                    config.expected_google_account,
+                )
+                result["drive_auth_ok"] = True
+                service.files().list(
+                    q="'root' in parents and trashed = false",
+                    spaces="drive",
+                    pageSize=1,
+                    fields="files(id)",
+                ).execute(num_retries=0)
+                result.update(
+                    status="AVAILABLE",
+                    diagnosis="HEALTHY",
+                    available=True,
+                    drive_read_ok=True,
+                )
+            except DriveAuthError as exc:
+                result.update(
+                    status="ATTENTION",
+                    diagnosis=str(exc),
+                    available=False,
+                )
+            except Exception as exc:
+                result.update(
+                    status="ATTENTION",
+                    diagnosis="DRIVE_READ_FAILURE",
+                    available=False,
+                    credential_error_type=type(exc).__name__,
+                )
+            return result
+        if not latest:
+            return result
+        if latest["status"] == "COMPLETE":
+            result.update(status="AVAILABLE", diagnosis="HEALTHY", available=True)
+            return result
+        if latest["status"] != "ERROR":
+            result.update(status="CHECKING", diagnosis="SCAN_IN_PROGRESS")
+            return result
+        if latest["error_message"] == "GOOGLE_CREDENTIAL_STORE_UNREADABLE":
+            if not config or not config.oauth_credential_store or not Path(config.oauth_credential_store).is_file():
+                result.update(status="ATTENTION", diagnosis="ACTUAL_CREDENTIAL_FAILURE", available=bool(inventory_count))
+                return result
+            try:
+                DriveCredentialStore(config.oauth_credential_store).load()
+            except DriveAuthError:
+                result.update(status="ATTENTION", diagnosis="ACTUAL_CREDENTIAL_FAILURE", credential_store_readable=False)
+            except OSError:
+                result.update(status="ATTENTION", diagnosis="WRONG_PROCESS_CONTEXT", credential_store_readable=False)
+            else:
+                result.update(status="AVAILABLE", diagnosis="STALE_ERROR", credential_store_readable=True, available=True, dpapi_load_ok=True)
+            return result
+        if latest["error_message"] == "GOOGLE_USER_CONSENT_REQUIRED":
+            result.update(status="ATTENTION", diagnosis="ACTUAL_CREDENTIAL_FAILURE")
+        else:
+            result.update(status="ATTENTION", diagnosis="ACTUAL_CREDENTIAL_FAILURE")
+        return result
 
     def get(self, handler, query):
         with closing(connect(self.db)) as conn:
@@ -82,15 +264,36 @@ class PublisherAPI:
             result["review_sessions"] = self.worker.session_ids()
             result['temporary_files'] = sum(1 for p in self.worker.cache.root.rglob('*.mp4') if p.is_file())
             mapping = self.root / "config" / "publisher_studio.json"
+            ffprobe = self._ffprobe_health()
+            drive_health = self._drive_health(conn)
+            authenticated_accounts = [
+                account.get("session_verified") and account.get("account_identity") == "ACCOUNT_CONFIRMED"
+                for account in result["accounts"]
+            ]
+            authenticated = any(authenticated_accounts)
+            connected = next((account.get("name") for account in result["accounts"] if account.get("session_verified") and account.get("account_identity") == "ACCOUNT_CONFIRMED"), None)
             result["worker_config"] = {
                 "tiktok_actions_paused": self.worker.actions_paused(),
                 "studio_validated": bool(json.loads(mapping.read_text(encoding="utf-8")).get("validated")) if mapping.exists() else False,
-                "ffprobe_available": bool(shutil.which("ffprobe")),
+                "ffprobe_available": ffprobe["available"],
+                "ffprobe_executable_valid": ffprobe["executable_valid"],
+                "ffprobe_path": ffprobe["path"],
+                "ffprobe_version": ffprobe["version"],
+                "ffprobe_error": ffprobe["error"],
+                "ffprobe_media_test": ffprobe["media_test"],
                 "durable_confirmation_validated": bool(json.loads(mapping.read_text(encoding='utf-8')).get('durable_confirmation_validated')) if mapping.exists() else False,
                 "publisher_concurrency": 1,
                 "auth_diagnostics_available": True,
                 "manual_profile_available": True,
                 "persistence_workflow_version": 1,
+            }
+            result["drive_health"] = drive_health
+            result["system_status"] = {
+                "ready": bool(ffprobe["executable_valid"] and ffprobe["media_test"] and authenticated and drive_health["available"]),
+                "system_label": "Sistema pronto" if ffprobe["executable_valid"] and ffprobe["media_test"] and authenticated and drive_health["available"] else "Atenção necessária",
+                "account_label": f"{connected} conectada" if connected else "Sessão TikTok pendente",
+                "drive_label": "Drive disponível" if drive_health["available"] else "Drive aguardando verificação",
+                "technical": {"ffprobe": ffprobe, "drive": drive_health},
             }
             handler._json(result)
 
@@ -121,7 +324,15 @@ class PublisherAPI:
                 with closing(connect(self.db)) as conn:
                     service = PublisherService(conn, self.root)
                     action = path.rsplit("/", 1)[-1]
-                    if action in {"products", "accounts", "presets"}:
+                    if path in {"/products/bulk", "/api/publisher/products/bulk"}:
+                        result = service.product_bulk_plan(data.get("ids", [])) if data.get("action") == "preview" else service.bulk_products(
+                            data.get("ids", []), data.get("action", "delete"), human_confirmed=data.get("human_confirmed") is True
+                        )
+                    elif action == "product-folder":
+                        result = service.set_product_folder(data.get("product_id"), data.get("folder_id"), data.get("action", "add"))
+                    elif action == "preferences":
+                        result = {"default_publisher_account_id": service.set_default_account(data.get("default_publisher_account_id"))}
+                    elif action in {"products", "accounts", "presets"}:
                         result = {"id": getattr(service, f"save_{action[:-1]}")(data)}
                     elif action == 'sync-media':
                         try:

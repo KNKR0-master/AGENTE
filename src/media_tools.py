@@ -9,9 +9,12 @@ from pathlib import Path
 
 
 class FFProbeError(RuntimeError):
-    def __init__(self, code, message):
+    def __init__(self, code, message, *, exception_type=None, winerror=None, process_started=None):
         super().__init__(message)
         self.code = code
+        self.exception_type = exception_type
+        self.winerror = winerror
+        self.process_started = process_started
 
 
 def _expand_path(value):
@@ -40,7 +43,13 @@ def resolve_ffprobe_path(root=None):
     configured = _configured_value(root or Path.cwd())
     if configured:
         candidate = _expand_path(configured)
-        if candidate.is_file():
+        try:
+            is_file = candidate.is_file()
+        except OSError:
+            # Keep the configured candidate so diagnostics can distinguish an
+            # inaccessible path from a missing executable.
+            return candidate
+        if is_file:
             return candidate
         return None
     discovered = shutil.which('ffprobe')
@@ -49,7 +58,7 @@ def resolve_ffprobe_path(root=None):
 
 def ffprobe_version(path, timeout=10):
     if not path:
-        raise FFProbeError('FFPROBE_NOT_FOUND', 'ffprobe nao encontrado')
+        raise FFProbeError('FFPROBE_NOT_FOUND', 'ffprobe nao encontrado', process_started=False)
     try:
         completed = subprocess.run(
             [str(path), '-version'],
@@ -60,11 +69,23 @@ def ffprobe_version(path, timeout=10):
             timeout=timeout,
         )
     except FileNotFoundError as exc:
-        raise FFProbeError('FFPROBE_NOT_FOUND', 'ffprobe nao encontrado') from exc
+        raise FFProbeError(
+            'FFPROBE_NOT_FOUND', 'ffprobe nao encontrado',
+            exception_type=type(exc).__name__, winerror=getattr(exc, 'winerror', None),
+            process_started=False,
+        ) from exc
     except subprocess.TimeoutExpired as exc:
-        raise FFProbeError('FFPROBE_TIMEOUT', 'ffprobe excedeu o timeout de inicializacao') from exc
+        raise FFProbeError(
+            'FFPROBE_TIMEOUT', 'ffprobe excedeu o timeout de inicializacao',
+            exception_type=type(exc).__name__, winerror=getattr(exc, 'winerror', None),
+            process_started=True,
+        ) from exc
     except OSError as exc:
-        raise FFProbeError('FFPROBE_EXIT_ERROR', 'ffprobe nao pode ser iniciado') from exc
+        raise FFProbeError(
+            'FFPROBE_EXIT_ERROR', 'ffprobe nao pode ser iniciado',
+            exception_type=type(exc).__name__, winerror=getattr(exc, 'winerror', None),
+            process_started=False,
+        ) from exc
     if completed.returncode != 0:
         raise FFProbeError('FFPROBE_EXIT_ERROR', f'ffprobe retornou exit code {completed.returncode}')
     first_line = (completed.stdout or completed.stderr or '').splitlines()

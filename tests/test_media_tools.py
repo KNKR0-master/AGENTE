@@ -66,6 +66,16 @@ class MediaToolsTests(unittest.TestCase):
             with self.assertRaisesRegex(FFProbeError, 'timeout'):
                 ffprobe_version(Path('C:/tools/ffprobe.exe'))
 
+    def test_permission_error_keeps_sanitized_process_diagnostics(self):
+        error = PermissionError(13, 'denied')
+        error.winerror = 5
+        with patch('src.media_tools.subprocess.run', side_effect=error):
+            with self.assertRaises(FFProbeError) as raised:
+                ffprobe_version(Path('C:/tools/ffprobe.exe'))
+        self.assertEqual(raised.exception.exception_type, 'PermissionError')
+        self.assertEqual(raised.exception.winerror, 5)
+        self.assertFalse(raised.exception.process_started)
+
 
 if __name__ == '__main__':
     unittest.main()

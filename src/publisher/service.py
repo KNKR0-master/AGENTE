@@ -23,6 +23,10 @@ def init_publisher(conn):
     CREATE TABLE IF NOT EXISTS publisher_products (
       product_id INTEGER PRIMARY KEY REFERENCES products(id),
       account_id INTEGER REFERENCES publisher_accounts(id), active INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS publisher_preferences (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      default_publisher_account_id INTEGER REFERENCES publisher_accounts(id),
+      updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS publisher_presets (
       id INTEGER PRIMARY KEY, name TEXT NOT NULL, account_id INTEGER REFERENCES publisher_accounts(id),
       visibility TEXT NOT NULL DEFAULT 'PUBLIC', comments INTEGER NOT NULL DEFAULT 1,
@@ -89,9 +93,14 @@ def init_publisher(conn):
         conn.execute("ALTER TABLE publisher_batch_executions ADD COLUMN auto_cleanup INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS publisher_media_reservation ON publisher_drafts(media_asset_id) WHERE media_asset_id IS NOT NULL AND status<>'ARCHIVED'")
     columns = {r[1] for r in conn.execute('PRAGMA table_info(publisher_products)')}
-    for name in ('name','short_name','default_caption','legacy_source','legacy_product_id','legacy_shop_url','created_at','updated_at'):
+    for name, definition in {
+        'name': 'TEXT', 'short_name': 'TEXT', 'default_caption': 'TEXT',
+        'flow_prompt': "TEXT NOT NULL DEFAULT ''", 'legacy_source': 'TEXT',
+        'legacy_product_id': 'TEXT', 'legacy_shop_url': 'TEXT',
+        'created_at': 'TEXT', 'updated_at': 'TEXT',
+    }.items():
         if name not in columns:
-            conn.execute(f'ALTER TABLE publisher_products ADD COLUMN {name} TEXT')
+            conn.execute(f'ALTER TABLE publisher_products ADD COLUMN {name} {definition}')
     conn.execute('CREATE TABLE IF NOT EXISTS publisher_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
     if not conn.execute("SELECT 1 FROM publisher_migrations WHERE name='internal_catalog_v2'").fetchone():
         # Snapshot once: later Analytics imports must not change the editorial catalog.
@@ -103,6 +112,16 @@ def init_publisher(conn):
               legacy_product_id=?,legacy_shop_url=?,created_at=?,updated_at=? WHERE product_id=?""",
               (product['name'],product['default_caption'] or '',source,product['tiktok_product_id'],product['tiktok_product_url'],timestamp,timestamp,product['id']))
         conn.execute("INSERT INTO publisher_migrations VALUES ('internal_catalog_v2',?)",(timestamp,))
+    preference = conn.execute('SELECT id FROM publisher_preferences WHERE id=1').fetchone()
+    if not preference:
+        active_accounts = conn.execute(
+            'SELECT id FROM publisher_accounts WHERE active=1 ORDER BY id'
+        ).fetchall()
+        default_account_id = active_accounts[0][0] if len(active_accounts) == 1 else None
+        conn.execute(
+            'INSERT INTO publisher_preferences(id,default_publisher_account_id,updated_at) VALUES (1,?,?)',
+            (default_account_id, now_iso()),
+        )
     conn.commit()
 
 
@@ -184,10 +203,12 @@ class PublisherService:
     def catalog(self):
         result = []
         for row in self.conn.execute("""SELECT x.product_id id,x.name,x.short_name,x.default_caption,
-          x.active,x.account_id,x.legacy_source,x.legacy_product_id,x.legacy_shop_url,x.created_at,x.updated_at
+          x.flow_prompt,x.active,x.account_id,x.legacy_source,x.legacy_product_id,x.legacy_shop_url,x.created_at,x.updated_at
           FROM publisher_products x ORDER BY x.name"""):
             item = dict(row)
             item["aliases"] = [r[0] for r in self.conn.execute("SELECT alias FROM product_aliases WHERE product_id=?", (item["id"],))]
+            item["folders"] = self.list_drive_folders(item["id"])
+            item["reference_count"], item["reference_types"] = self.product_reference_summary(item["id"])
             result.append(item)
         return result
 
@@ -197,6 +218,157 @@ class PublisherService:
             raise ValueError('Produto interno nao encontrado')
         return dict(row)
 
+    def get_preferences(self):
+        row = self.conn.execute(
+            "SELECT default_publisher_account_id,updated_at FROM publisher_preferences WHERE id=1"
+        ).fetchone()
+        if not row:
+            return {"default_publisher_account_id": None, "updated_at": None}
+        default_id = row["default_publisher_account_id"]
+        account = self.conn.execute(
+            "SELECT id,name,active FROM publisher_accounts WHERE id=?", (default_id,)
+        ).fetchone() if default_id else None
+        return {
+            "default_publisher_account_id": int(default_id) if default_id else None,
+            "default_publisher_account_name": account["name"] if account and account["active"] else None,
+            "default_account_active": bool(account and account["active"]),
+            "updated_at": row["updated_at"],
+        }
+
+    def default_account_id(self):
+        preferences = self.get_preferences()
+        account_id = preferences.get("default_publisher_account_id")
+        if not account_id:
+            return None
+        row = self.conn.execute(
+            "SELECT id FROM publisher_accounts WHERE id=? AND active=1", (account_id,)
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    def set_default_account(self, account_id):
+        account_id = int(account_id) if account_id else None
+        if account_id:
+            account = get_row(self.conn, "publisher_accounts", account_id)
+            if not account["active"]:
+                raise ValueError("A conta padrao precisa estar ativa")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO publisher_preferences(id,default_publisher_account_id,updated_at) VALUES (1,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET default_publisher_account_id=excluded.default_publisher_account_id,updated_at=excluded.updated_at",
+                (account_id, now_iso()),
+            )
+        return account_id
+
+    def list_drive_folders(self, product_id=None):
+        query = """SELECT drive_folder_id id,name,relative_path,parent_drive_folder_id,product_id,
+                    mapping_status,mapping_source,operational_status
+                   FROM drive_folders WHERE operational_status='ACTIVE'"""
+        params = []
+        if product_id is not None:
+            query += " AND product_id=?"
+            params.append(int(product_id))
+        query += " ORDER BY relative_path,name"
+        return [dict(row) for row in self.conn.execute(query, params)]
+
+    def product_reference_summary(self, product_id):
+        references = {}
+        checks = (
+            ("drafts", "publisher_drafts"),
+            ("batches", "publisher_batches", "id IN (SELECT batch_id FROM publisher_drafts WHERE product_id=?)"),
+            ("executions", "publisher_execution_items", "draft_id IN (SELECT id FROM publisher_drafts WHERE product_id=?)"),
+            ("production_tasks", "production_tasks"),
+            ("snapshots", "product_snapshots"),
+            ("videos", "video_metrics"),
+            ("creators", "creator_metrics"),
+            ("content", "content_items"),
+            ("order_items", "affiliate_order_items"),
+            ("external_products", "product_external_references"),
+            ("external_contents", "external_tiktok_contents"),
+            ("aliases", "product_aliases"),
+            ("prompts", "product_prompts"),
+            ("captions", "product_captions"),
+            ("drive_folders", "drive_folders"),
+            ("drive_files", "drive_files"),
+        )
+        total = 0
+        for item in checks:
+            label, table = item[:2]
+            if not self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone():
+                continue
+            if len(item) == 3:
+                where, params = item[2], (int(product_id),)
+            else:
+                where, params = "product_id=?", (int(product_id),)
+            count = int(self.conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", params).fetchone()[0])
+            if count:
+                references[label] = count
+                total += count
+        return total, references
+
+    def product_bulk_plan(self, product_ids):
+        ids = list(dict.fromkeys(int(item) for item in product_ids))
+        if not ids or len(ids) > 100:
+            raise ValueError("Selecione entre 1 e 100 produtos")
+        items = []
+        for product_id in ids:
+            product = self.get_product(product_id)
+            count, types = self.product_reference_summary(product_id)
+            items.append({
+                "id": product_id, "name": product["name"],
+                "reference_count": count, "reference_types": types,
+                "can_delete": count == 0, "will_archive": count > 0,
+            })
+        return {
+            "items": items,
+            "selected": len(items),
+            "will_delete": sum(item["can_delete"] for item in items),
+            "will_archive": sum(item["will_archive"] for item in items),
+        }
+
+    def bulk_products(self, product_ids, action, *, human_confirmed=False):
+        if action not in {"archive", "delete"}:
+            raise ValueError("Acao de produto invalida")
+        plan = self.product_bulk_plan(product_ids)
+        if human_confirmed is not True:
+            raise ValueError("CONFIRM_PRODUCT_ACTION")
+        timestamp = now_iso()
+        with self.conn:
+            for item in plan["items"]:
+                if action == "archive" or not item["can_delete"]:
+                    self.conn.execute(
+                        "UPDATE publisher_products SET active=0,updated_at=? WHERE product_id=?",
+                        (timestamp, item["id"]),
+                    )
+                else:
+                    self.conn.execute("DELETE FROM publisher_products WHERE product_id=?", (item["id"],))
+                    self.conn.execute("DELETE FROM products WHERE id=?", (item["id"],))
+        return {**plan, "action": action, "archived": plan["selected"] if action == "archive" else plan["will_archive"],
+                "deleted": 0 if action == "archive" else plan["will_delete"]}
+
+    def set_product_folder(self, product_id, folder_id, action="add"):
+        product_id = int(product_id)
+        self.get_product(product_id)
+        folder_id = str(folder_id or "").strip()
+        if not folder_id:
+            raise ValueError("Pasta do Drive obrigatoria")
+        folder = self.conn.execute(
+            "SELECT product_id FROM drive_folders WHERE drive_folder_id=? AND operational_status='ACTIVE'",
+            (folder_id,),
+        ).fetchone()
+        if not folder:
+            raise ValueError("Pasta do Drive nao encontrada")
+        if action == "remove":
+            target = None
+        elif action == "add":
+            target = product_id
+        else:
+            raise ValueError("Acao de pasta invalida")
+        from src.drive_inventory import set_folder_mapping
+        set_folder_mapping(self.conn, folder_id, target, reason=f"Publisher product folder {action}")
+        return {"product_id": product_id, "folder_id": folder_id, "action": action}
+
     def snapshot(self):
         drafts = [dict(r) for r in self.conn.execute("""SELECT d.*,p.name product_name,a.name account_name,
           m.status media_status,m.remote_file_id,m.cleanup_error
@@ -205,7 +377,8 @@ class PublisherService:
           JOIN publisher_accounts a ON a.id=d.account_id ORDER BY d.id DESC""")]
         for draft in drafts:
             draft["checklist"] = json.loads(draft.pop("checklist_json"))
-        return {"products": self.catalog(), "drafts": drafts, "statuses": STATUSES,
+        return {"products": self.catalog(), "preferences": self.get_preferences(),
+                "drive_folders": self.list_drive_folders(), "drafts": drafts, "statuses": STATUSES,
                 "media_assets": [dict(r) for r in self.conn.execute("SELECT * FROM publisher_media_assets ORDER BY filename")],
                 "executions": [dict(r) for r in self.conn.execute("""SELECT e.*,
                   SUM(i.status='QUEUED') queued,SUM(i.status IN ('PROCESSING','CLEANUP')) processing,
@@ -268,6 +441,7 @@ class PublisherService:
         if not ids or len(ids) > 100:
             raise ValueError('Selecione entre 1 e 100 videos remotos')
         fields = {k: data.get(k) or None for k in ('product_id','account_id','preset_id','scheduled_at')}
+        fields['account_id'] = fields['account_id'] or self.default_account_id()
         fields['caption'] = ''
         product = self.validate_fields(fields)
         fields['caption'] = product.get('default_caption') or ''
@@ -305,6 +479,9 @@ class PublisherService:
         caption = str(data.get('default_caption') or '')
         if len(caption)>2200:
             raise ValueError('Legenda excede 2200 caracteres')
+        flow_prompt = str(data.get('flow_prompt') or '')
+        if len(flow_prompt) > 100000:
+            raise ValueError('Prompt do Flow excede 100000 caracteres')
         account_id = data.get("account_id") or None
         if account_id:
             get_row(self.conn, "publisher_accounts", account_id)
@@ -315,11 +492,11 @@ class PublisherService:
                 product_id = self.conn.execute("INSERT INTO products(product_key,name,created_at,updated_at) VALUES (?,?,?,?)",
                                                (f'publisher:{uuid.uuid4().hex}',name,timestamp,timestamp)).lastrowid
             self.conn.execute("""INSERT INTO publisher_products
-              (product_id,name,short_name,default_caption,account_id,active,created_at,updated_at)
-              VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET
-              name=excluded.name,short_name=excluded.short_name,default_caption=excluded.default_caption,
+              (product_id,name,short_name,default_caption,flow_prompt,account_id,active,created_at,updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET
+              name=excluded.name,short_name=excluded.short_name,default_caption=excluded.default_caption,flow_prompt=excluded.flow_prompt,
               account_id=excluded.account_id,active=excluded.active,updated_at=excluded.updated_at""",
-              (product_id,name,str(data.get('short_name') or '').strip(),caption,account_id,int(data.get('active',True)),timestamp,timestamp))
+              (product_id,name,str(data.get('short_name') or '').strip(),caption,flow_prompt,account_id,int(data.get('active',True)),timestamp,timestamp))
         return product_id
 
     def save_account(self, data):
@@ -336,6 +513,17 @@ class PublisherService:
             else:
                 profile = f"data/publisher/browser_profiles/{uuid.uuid4().hex}"
                 row_id = self.conn.execute("INSERT INTO publisher_accounts(name,browser_profile,created_at,updated_at) VALUES (?,?,?,?)", (name, profile, timestamp, timestamp)).lastrowid
+            preference = self.conn.execute(
+                "SELECT default_publisher_account_id FROM publisher_preferences WHERE id=1"
+            ).fetchone()
+            active_accounts = self.conn.execute(
+                "SELECT id FROM publisher_accounts WHERE active=1 ORDER BY id"
+            ).fetchall()
+            if preference and preference[0] is None and len(active_accounts) == 1:
+                self.conn.execute(
+                    "UPDATE publisher_preferences SET default_publisher_account_id=?,updated_at=? WHERE id=1",
+                    (active_accounts[0][0], timestamp),
+                )
         return row_id
 
     def save_preset(self, data):
@@ -383,6 +571,7 @@ class PublisherService:
 
     def create_batch(self, data, files, source="MANUAL"):
         fields = {k: data.get(k) or None for k in ("product_id", "account_id", "preset_id", "scheduled_at")}
+        fields["account_id"] = fields["account_id"] or self.default_account_id()
         fields["caption"] = data.get("caption", "")
         product = self.validate_fields(fields)
         if not fields["caption"]:
