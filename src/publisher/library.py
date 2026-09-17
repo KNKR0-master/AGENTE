@@ -54,7 +54,10 @@ def _base_query() -> str:
     SELECT df.*, f.name folder_name, f.relative_path folder_path,
            f.parent_drive_folder_id, f.product_id direct_folder_product_id,
            COALESCE(f.product_id, ancestor.product_id) inferred_product_id,
-           pp.name inferred_product_name, pp.default_caption inferred_caption,
+           pp.name inferred_product_name, pp.short_name inferred_product_short_name,
+           pp.default_caption inferred_caption,
+           direct_pp.name direct_folder_product_name,
+           ancestor_pp.name ancestor_product_name,
            ov.product_id override_product_id, dec.decision, dec.reason decision_reason,
            ma.id media_asset_id, ma.status media_status, ma.consumed_by_draft_id,
            d.id draft_id, d.status draft_status
@@ -67,6 +70,8 @@ def _base_query() -> str:
       LEFT JOIN publisher_media_assets ma ON ma.remote_file_id=df.drive_file_id
       LEFT JOIN publisher_drafts d ON d.media_asset_id=ma.id AND d.status<>'ARCHIVED'
       LEFT JOIN publisher_products pp ON pp.product_id=COALESCE(ov.product_id, f.product_id, ancestor.product_id)
+      LEFT JOIN publisher_products direct_pp ON direct_pp.product_id=f.product_id
+      LEFT JOIN publisher_products ancestor_pp ON ancestor_pp.product_id=ancestor.product_id
      WHERE df.missing_since IS NULL
        AND f.operational_status='ACTIVE'
     """
@@ -139,6 +144,7 @@ def _classify(row: dict) -> dict:
         "thumbnail_link": row.get("thumbnail_link"),
         "product_id": int(product_id) if product_id is not None else None,
         "product_name": product_name,
+        "product_short_name": row.get("inferred_product_short_name") or product_name,
         "caption": caption,
         "decision": decision,
         "decision_reason": row.get("decision_reason"),
@@ -151,6 +157,8 @@ def _classify(row: dict) -> dict:
                 "ANCESTOR_FOLDER" if row.get("inferred_product_id") is not None else "UNASSIGNED"
             )
         ),
+        "folder_product_id": row.get("direct_folder_product_id") or row.get("inferred_product_id"),
+        "folder_product_name": row.get("direct_folder_product_name") or row.get("ancestor_product_name"),
         "media_asset_id": row.get("media_asset_id"),
         "media_status": media_status or None,
         "draft_id": row.get("draft_id"),
@@ -213,15 +221,13 @@ def list_library(conn, *, page: int = 1, page_size: int = 50, search: str = "", 
         group = grouped.setdefault(item["folder_id"], {
             "folder_id": item["folder_id"], "folder_name": item["folder_name"],
             "folder_path": item["folder_path"], "video_count": 0,
-            "recognized_count": 0, "product_id": item["product_id"],
-            "product_name": item["product_name"],
+            "recognized_count": 0, "product_id": item["folder_product_id"],
+            "product_name": item["folder_product_name"],
         })
         group["video_count"] += 1
         if item["classification_confidence"] in {"HIGH", "MEDIUM"}:
             group["recognized_count"] += 1
-        if group["product_id"] is None and item["product_id"] is not None:
-            group["product_id"], group["product_name"] = item["product_id"], item["product_name"]
-    folder_summaries = [group for group in grouped.values() if group["product_id"] is None]
+    folder_summaries = list(grouped.values())
     start = (page - 1) * page_size
     return {"items": items[start:start + page_size], "folder_summaries": folder_summaries,
             "page": page, "page_size": page_size, "total": total,

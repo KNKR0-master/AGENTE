@@ -2,6 +2,33 @@
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.PublisherUIState = factory();
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  function normalizeSearch(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  function stem(token) {
+    return token.replace(/(acoes|acao|antes|ante|es|s)$/g, '');
+  }
+
+  function searchProducts(products, query, context, limit = 10) {
+    const queryTokens = normalizeSearch(query).split(' ').filter(Boolean);
+    const contextTokens = normalizeSearch(context).split(' ').filter(token => token.length > 2);
+    const scored = (products || []).filter(product => product.active).map(product => {
+      const primary = normalizeSearch(product.short_name || product.name);
+      const full = normalizeSearch([product.short_name, product.name, ...(product.aliases || [])].join(' '));
+      const words = full.split(' ').filter(Boolean);
+      const matches = token => full.includes(token) || words.some(word => stem(word).includes(stem(token)) || stem(token).includes(stem(word)));
+      if (queryTokens.length && !queryTokens.every(matches)) return null;
+      let score = queryTokens.length ? 100 : 0;
+      if (queryTokens.length && primary.startsWith(queryTokens.join(' '))) score += 30;
+      score += contextTokens.filter(matches).length * 3;
+      return {product, score, label: product.short_name || product.name};
+    }).filter(Boolean);
+    scored.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, 'pt-BR'));
+    return scored.slice(0, Math.max(1, Math.min(10, limit))).map(item => item.product);
+  }
+
   function create() {
     const librarySelected = new Set();
     const librarySelectionDetails = new Map();
@@ -73,5 +100,5 @@
     };
   }
 
-  return {create};
+  return {create, normalizeSearch, searchProducts};
 });

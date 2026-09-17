@@ -178,6 +178,20 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         self.assertEqual(rows["medium"]["product_id"], self.product_b)
         self.assertEqual(rows["medium"]["product_resolution"], "MEDIA_OVERRIDE")
 
+    def test_embedded_gca_patterns_are_recognized_without_weakening_suspicious_names(self):
+        recognized = [
+            "KIT_5_BS_COROA_SEREIA_BRILHO_G1C3A1_0101.mp4",
+            "KIT_5_BS_COROA_SEREIA_BRILHO_G2C4A2_FINAL.mp4",
+        ]
+        suspicious = ["c1.mp4", "cta1.mp4", "VD1.mp4", "vd2.mp4", "SEMAUDIO.mp4", "REF MOTION.mp4"]
+        for index, name in enumerate(recognized):
+            self._file(f"recognized-{index}", name, "folder-a", "video/mp4", 1500 + index)
+        for index, name in enumerate(suspicious):
+            self._file(f"review-{index}", name, "folder-a", "video/mp4", 1600 + index)
+        rows = {row["drive_file_id"]: row for row in list_library(self.conn, file_type="VIDEO", page_size=50)["items"]}
+        self.assertTrue(all(rows[f"recognized-{index}"]["classification_label"] == "Reconhecido" for index in range(len(recognized))))
+        self.assertTrue(all(rows[f"review-{index}"]["classification_label"] == "Revisar" for index in range(len(suspicious))))
+
     def test_drive_delete_requires_confirmation_and_post_delete_verification(self):
         provider = FakeMediaProvider()
         with self.assertRaisesRegex(ValueError, "CONFIRM_MEDIA_DELETE"):

@@ -101,6 +101,32 @@ class PublisherUIStateTests(unittest.TestCase):
         self.assertEqual(result["afterLibraryRetry"], "health")
         self.assertIsNone(result["final"])
 
+    def test_product_search_is_normalized_limited_and_excludes_archived(self):
+        result = self.run_node(
+            f"""
+            const state = require({json.dumps(str(STATE_MODULE))});
+            const products = [
+              {{id: 1, name: 'NIVEA Kit 04 Hidratantes Milk Lotion', short_name: 'Nivea Kit 4 Hidratantes', aliases: [], active: 1}},
+              {{id: 2, name: 'Body Splash Coroa Sereia Brilho Bhaskar', short_name: 'Body Splash Kit 5', aliases: [], active: 1}},
+              {{id: 3, name: 'Hidratação corporal', short_name: '', aliases: [], active: 1}},
+              {{id: 4, name: 'Produto arquivado', short_name: 'Nivea antigo', aliases: [], active: 0}},
+              ...Array.from({{length: 15}}, (_, index) => ({{id: index + 10, name: 'Produto ' + index, short_name: '', aliases: [], active: 1}})),
+            ];
+            console.log(JSON.stringify({{
+              accent: state.searchProducts(products, 'hidratacao', '', 10).map(p => p.id),
+              plural: state.searchProducts(products, 'hidratante', '', 10).map(p => p.id),
+              context: state.searchProducts(products, '', 'BS KIT 5 COROA SEREIA', 10).map(p => p.id),
+              initialCount: state.searchProducts(products, '', '', 10).length,
+              archived: state.searchProducts(products, 'nivea', '', 10).map(p => p.id),
+            }}));
+            """
+        )
+        self.assertIn(3, result["accent"])
+        self.assertIn(1, result["plural"])
+        self.assertEqual(result["context"][0], 2)
+        self.assertEqual(result["initialCount"], 10)
+        self.assertEqual(result["archived"], [1])
+
 
 if __name__ == "__main__":
     unittest.main()
