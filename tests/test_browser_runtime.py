@@ -19,7 +19,7 @@ class FakeBrowser:
     def __init__(self):
         self.contexts = [SimpleNamespace(pages=[])]
         self._impl_obj = SimpleNamespace(_connection=FakeConnection())
-        self.close = MagicMock(side_effect=AssertionError('BROWSER_CLOSE_FORBIDDEN'))
+        self.close = MagicMock()
 
 
 class FakeOwnership:
@@ -143,6 +143,8 @@ class BrowserRuntimeTests(unittest.TestCase):
         runtime.get_context(self.playwright, self.profile)
         runtime.detach(self.profile, keep_browser=False)
         self.assertEqual(calls, [777])
+        self.assertTrue(self.browser._impl_obj._connection.stopped)
+        self.browser.close.assert_not_called()
         self.assertIn(('detach', str(self.profile.resolve()), False), self.ownership.calls)
 
     def test_duplicate_runtime_is_blocked(self):

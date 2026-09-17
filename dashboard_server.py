@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import cgi
+import ctypes
+import os
 import secrets
+import signal
 import shutil
+import threading
 import time
+from ctypes import wintypes
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -89,6 +94,7 @@ DASHBOARD = ROOT / "dashboard"
 DB_PATH = ROOT / "data" / "agent.db"
 UPLOADS = ROOT / "data" / "uploads"
 PUBLISHER = PublisherAPI(ROOT, DB_PATH)
+HTTP_SERVER = None
 
 
 def rows(conn: sqlite3.Connection, query: str, params: tuple = ()) -> list[dict]:
@@ -113,6 +119,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/publisher/shutdown":
+            if self.headers.get("Origin") and urlparse(self.headers["Origin"]).netloc != self.headers.get("Host"):
+                self._integration_error(ValueError("Origem nao autorizada"))
+                return
+            self._json({"ok": True, "code": "SHUTDOWN_REQUESTED"}, no_store=True)
+            if HTTP_SERVER is not None:
+                threading.Thread(
+                    target=HTTP_SERVER.shutdown,
+                    name="publisher-server-api-stop",
+                    daemon=True,
+                ).start()
+            return
         if parsed.path.startswith("/api/publisher/"):
             try:
                 PUBLISHER.post(self, parsed.path)
@@ -136,6 +154,9 @@ class Handler(SimpleHTTPRequestHandler):
     def _api_get(self, path: str, query: dict) -> None:
         if path.startswith('/api/publisher/accounts/') and path.endswith('/auth-diagnostics'):
             PUBLISHER.get_auth_diagnostics(self, path)
+            return
+        if path == "/api/publisher/runtime-info":
+            PUBLISHER.runtime_info(self)
             return
         if path in {"/api/publisher", "/api/publisher/library"}:
             PUBLISHER.get(self, query, path)
@@ -1064,6 +1085,58 @@ def _json_field(value):
         return {}
 
 
+def install_server_shutdown_handlers(server):
+    """Make console shutdown events leave the server through its normal finally."""
+    previous = {}
+
+    def request_shutdown(_signum, _frame):
+        # serve_forever must be stopped from another thread when a signal
+        # arrives on the thread currently running the loop.
+        threading.Thread(target=server.shutdown, name="publisher-server-stop", daemon=True).start()
+
+    for signal_name in ("SIGINT", "SIGBREAK"):
+        signal_value = getattr(signal, signal_name, None)
+        if signal_value is not None:
+            previous[signal_value] = signal.getsignal(signal_value)
+            signal.signal(signal_value, request_shutdown)
+    return previous
+
+
+def restore_server_shutdown_handlers(previous):
+    for signal_value, handler in previous.items():
+        signal.signal(signal_value, handler)
+
+
+def install_windows_console_shutdown_handler(server):
+    """Handle CTRL_CLOSE_EVENT before Windows tears down the console process."""
+    if os.name != "nt":
+        return None
+    kernel32 = ctypes.WinDLL("Kernel32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+    handled_events = {0, 1, 2, 5, 6}
+
+    def handle(event_code):
+        if event_code not in handled_events:
+            return False
+        threading.Thread(
+            target=server.shutdown,
+            name="publisher-server-console-stop",
+            daemon=True,
+        ).start()
+        return True
+
+    callback = callback_type(handle)
+    if not kernel32.SetConsoleCtrlHandler(callback, True):
+        # CREATE_NO_WINDOW is the normal launcher mode; the local shutdown
+        # endpoint remains available when there is no console to hook.
+        return None
+
+    def uninstall():
+        kernel32.SetConsoleCtrlHandler(callback, False)
+
+    return uninstall
+
+
 def main() -> None:
     load_env_file(ROOT / ".env")
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1075,14 +1148,33 @@ def main() -> None:
     report_config.import_dir.mkdir(parents=True, exist_ok=True)
     start_report_import_worker(DB_PATH, report_config)
     server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
+    global HTTP_SERVER
+    HTTP_SERVER = server
+    previous_signal_handlers = install_server_shutdown_handlers(server)
+    uninstall_console_handler = install_windows_console_shutdown_handler(server)
     print("Dashboard local: http://127.0.0.1:8765")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        PUBLISHER.worker.shutdown()
-        server.server_close()
+        try:
+            PUBLISHER.worker.shutdown()
+        except Exception as exc:
+            print(f"Publisher worker shutdown warning: {type(exc).__name__}: {str(exc)[:500]}", flush=True)
+        finally:
+            # Covers a worker thread that was interrupted while waiting on a
+            # browser operation; BrowserRuntimeManager remains idempotent.
+            try:
+                PUBLISHER.worker.release_owned_profiles()
+            except Exception as exc:
+                print(f"Publisher runtime shutdown warning: {type(exc).__name__}: {str(exc)[:500]}", flush=True)
+            finally:
+                server.server_close()
+                if uninstall_console_handler:
+                    uninstall_console_handler()
+                restore_server_shutdown_handlers(previous_signal_handlers)
+                HTTP_SERVER = None
 
 
 if __name__ == "__main__":

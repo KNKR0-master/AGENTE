@@ -1,7 +1,8 @@
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state = {drafts:[],products:[],accounts:[],presets:[],batches:[],logs:[],review_sessions:[],library:{items:[],page:1,pages:0,total:0}};
-let selected = new Set(), productSelected = new Set(), editing = [], librarySelected = new Set(), reviewing = null, libraryPage = 1;
+const uiState = window.PublisherUIState.create();
+let selected = new Set(), productSelected = new Set(), editing = [], librarySelected = uiState.librarySelected, reviewing = null, libraryPage = 1;
 const loginRequests = new Set();
 const authLabels = {NOT_AUTHENTICATED:'não verificada',LOGIN_IN_PROGRESS:'login em andamento',AUTHENTICATED:'autenticada',NEEDS_LOGIN:'requer login'};
 function renderAccounts(){
@@ -39,12 +40,19 @@ async function showAuthDiagnostics(id){
 const field = (form,name) => form.elements.namedItem(name);
 const productLabel = p => `${p.name} [${p.id}]`;
 const chosenProduct = text => state.products.find(p => productLabel(p) === text);
-const notice = (text,error=false) => { $('#notice').textContent=text; $('#notice').className=error?'error':''; };
+const renderNotice = () => {
+ const message=uiState.visibleMessage();
+ $('#notice').textContent=message?.text||'';
+ $('#notice').className=message?.error?'error':'';
+ $('#notice').dataset.scope=message?.scope||'';
+};
+const notice = (text,error=false,scope='general') => { uiState.setMessage(scope,text,error); renderNotice(); };
+const clearNotice = scope => { uiState.clearMessage(scope); renderNotice(); };
 async function api(path='',data){const r=await fetch('/api/publisher'+path,data===undefined?{}:{method:'POST',headers:data instanceof FormData?{}:{'Content-Type':'application/json'},body:data instanceof FormData?data:JSON.stringify(data)});const body=await r.json();if(!r.ok)throw Error(body.error||'Erro na operação');return body;}
-async function loadLibrary(){const params=new URLSearchParams({page:String(libraryPage),page_size:'50',search:$('#librarySearch')?.value||'',path:$('#libraryPath')?.value||'',product_id:$('#libraryProduct')?.value||'',type:$('#libraryType')?.value||'VIDEO',status:$('#libraryStatus')?.value||'',decision:$('#libraryDecision')?.value||''});const response=await fetch('/api/publisher/library?'+params);const body=await response.json();if(!response.ok)throw Error(body.error||'Falha ao consultar Biblioteca');state.library=body;}
+async function loadLibrary(){const params=new URLSearchParams({page:String(libraryPage),page_size:'50',search:$('#librarySearch')?.value||'',path:$('#libraryPath')?.value||'',product_id:$('#libraryProduct')?.value||'',type:$('#libraryType')?.value||'VIDEO',status:$('#libraryStatus')?.value||'',decision:$('#libraryDecision')?.value||''});const response=await fetch('/api/publisher/library?'+params);const body=await response.json();if(!response.ok){const error=Error(body.error||'Falha ao consultar Biblioteca');error.operationScope='library';throw error;}state.library=body;clearNotice('library');}
 function options(items,empty='Selecionar'){return `<option value="">${empty}</option>`+items.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('');}
 function fillSelect(el,items,empty){const old=el.value;el.innerHTML=options(items,empty);el.value=old;}
-async function refresh(){state={...state,...await api()};await loadLibrary();render();}
+async function refresh(){try{state={...state,...await api()};clearNotice('health');}catch(error){error.operationScope='health';throw error;}try{await loadLibrary();}catch(error){error.operationScope=error.operationScope||'library';throw error;}render();}
 function view(name){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===name));document.querySelectorAll('nav [data-view]').forEach(x=>x.classList.toggle('selected',x.dataset.view===name));}
 document.querySelectorAll('[data-view]').forEach(x=>x.onclick=()=>view(x.dataset.view));
 document.querySelectorAll('[data-close]').forEach(x=>x.onclick=()=>$('#'+x.dataset.close).close());
@@ -90,7 +98,7 @@ function renderProducts(){const rows=visibleProducts();productSelected=new Set([
  function renderCaptionPreview(){}
 function fillForm(form,data){for(const [k,v] of Object.entries(data)){const el=field(form,k);if(!el)continue;if(el.type==='checkbox')el.checked=!!v;else el.value=Array.isArray(v)?v.join(', '):(v??'');}}
 function formData(form){const data=Object.fromEntries(new FormData(form));form.querySelectorAll('input[type=checkbox]').forEach(x=>data[x.name]=x.checked);return data;}
-async function task(fn){try{await fn();}catch(e){notice(e.message,true);}}
+async function task(fn,scope='general'){try{await fn();}catch(e){notice(e.message,true,e.operationScope||scope);}}
 $('#refresh').onclick=()=>task(refresh);
 $('#refreshAuthDiagnostic').onclick=()=>task(()=>showAuthDiagnostics(diagnosticAccount));
 document.addEventListener('click',e=>{const button=e.target.closest('[data-auth-diagnostic]');if(button)task(()=>showAuthDiagnostics(Number(button.dataset.authDiagnostic)));});
@@ -131,27 +139,28 @@ function renderLibrary(){
  $('#libraryRows').innerHTML=items.map(item=>`<tr><td><input type="checkbox" data-library="${esc(item.drive_file_id)}" aria-label="Selecionar ${esc(item.filename)}" ${librarySelected.has(item.drive_file_id)?'checked':''}></td><td><strong>${esc(item.filename)}</strong><small>${esc(item.mime_type||item.file_type)} · ${item.size?`${(Number(item.size)/1048576).toFixed(1)} MB`:''}</small></td><td>${esc(item.folder_path||item.folder_name||'—')}</td><td>${esc(item.product_name||'Sem produto')}<small>${item.caption?.trim()?'Legenda cadastrada':'CAPTION_MISSING'}</small></td><td>${esc(item.classification_confidence||'LOW')}<small>${esc(item.classification_reason||'')}</small></td><td><span class="status ${item.status==='AVAILABLE'?'ready':item.status==='ATTENTION'?'warning':item.status==='IGNORED'?'muted':''}">${esc(item.status_label||item.status)}</span><small>${esc(item.reason||'')}</small></td><td>${item.web_view_link?`<a href="${esc(item.web_view_link)}" target="_blank" rel="noopener">Ver no Drive ↗</a>`:''}${!item.media_asset_id&&item.status!=='CONSUMED'&&item.status!=='RESERVED'?`<button type="button" data-delete-library="${esc(item.drive_file_id)}" data-delete-filename="${esc(item.filename)}" data-delete-size="${esc(item.size||0)}">Excluir do Drive</button>`:''}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">Nenhum arquivo encontrado nesta combinação de filtros.</td></tr>';
 }
 function renderBatchSummary(){
- const current=(state.library?.items||[]).filter(item=>librarySelected.has(item.drive_file_id));
- const extra=Math.max(0,librarySelected.size-current.length);
- $('#batchSelectionSummary').innerHTML=librarySelected.size?`<strong>${librarySelected.size} mídia(s) selecionada(s)</strong><span>${current.map(item=>esc(item.filename)).join(' · ')}${extra?` · +${extra} em outras páginas`:''}</span>`:'<span>Nenhuma mídia selecionada. Volte à Biblioteca para escolher os vídeos.</span>';
+ const summary=uiState.librarySelectionSummary();
+ const mappings=summary.details.map(item=>`${item.filename||item.drive_file_id} → ${item.product_name||'Sem produto'}`);
+ const extra=Math.max(0,summary.selected-summary.known);
+ $('#batchSelectionSummary').innerHTML=summary.selected?`<strong>${summary.selected} mídia(s) selecionada(s)</strong><span>${summary.productCount} produto(s) representado(s)</span><span>Prontas: ${summary.ready} · Sem produto: ${summary.withoutProduct} · Requer atenção: ${summary.attention}</span><span>${mappings.map(item=>esc(item)).join(' · ')}${extra?` · +${extra} em outras páginas`:''}</span><span>Conta padrão: ${esc(state.preferences?.default_publisher_account_name||'CECILIA FIGUEIREDO')}</span>`:'<span>Nenhuma mídia selecionada. Volte à Biblioteca para escolher os vídeos.</span>';
  const button=$('#createBatchFromLibrary');
- if(button)button.disabled=!librarySelected.size;
+ if(button)button.disabled=!summary.canCreate;
 }
 async function reloadLibrary(){libraryPage=1;await loadLibrary();renderLibrary();renderBatchSummary();}
-['#librarySearch','#libraryPath','#libraryProduct','#libraryType','#libraryStatus','#libraryDecision'].forEach(selector=>{const el=$(selector);if(el){el.oninput=()=>task(reloadLibrary);el.onchange=()=>task(reloadLibrary);}});
-$('#selectAllLibrary').onchange=e=>{(state.library?.items||[]).forEach(item=>e.target.checked?librarySelected.add(item.drive_file_id):librarySelected.delete(item.drive_file_id));renderLibrary();renderBatchSummary();};
-$('#selectLibraryPage').onclick=()=>{(state.library?.items||[]).forEach(item=>librarySelected.add(item.drive_file_id));renderLibrary();renderBatchSummary();};
-$('#clearLibrarySelection').onclick=()=>{librarySelected.clear();renderLibrary();renderBatchSummary();};
+['#librarySearch','#libraryPath','#libraryProduct','#libraryType','#libraryStatus','#libraryDecision'].forEach(selector=>{const el=$(selector);if(el){el.oninput=()=>task(reloadLibrary,'library');el.onchange=()=>task(reloadLibrary,'library');}});
+$('#selectAllLibrary').onchange=e=>{uiState.setLibraryPageSelection(state.library?.items||[],e.target.checked);renderLibrary();renderBatchSummary();};
+$('#selectLibraryPage').onclick=()=>{uiState.setLibraryPageSelection(state.library?.items||[],true);renderLibrary();renderBatchSummary();};
+$('#clearLibrarySelection').onclick=()=>{uiState.clearLibrarySelection();renderLibrary();renderBatchSummary();};
 async function decideSelected(decision){if(!librarySelected.size)throw Error('Selecione mídias');for(const drive_file_id of librarySelected)await api('/media-decision',{drive_file_id,decision});await refresh();notice(decision==='VALID'?'Mídias marcadas como válidas':'Mídias ignoradas');}
 $('#markLibraryValid').onclick=()=>task(()=>decideSelected('VALID'));
 $('#markLibraryIgnored').onclick=()=>task(()=>decideSelected('IGNORED'));
 $('#assignLibraryProduct').onclick=()=>task(async()=>{if(!librarySelected.size)throw Error('Selecione mídias');const product_id=$('#libraryAssignProduct').value;if(!product_id)throw Error('Selecione um produto');await api('/media-product',{drive_file_ids:[...librarySelected],product_id:Number(product_id)});await refresh();notice('Produto atribuído às mídias selecionadas');});
-$('#createBatchFromLibrary').onclick=()=>{if(!librarySelected.size){notice('Selecione ao menos uma mídia',true);return;}renderBatchSummary();view('batch');};
+$('#createBatchFromLibrary').onclick=()=>{const summary=uiState.librarySelectionSummary();if(!summary.canCreate){notice('A seleção precisa conter apenas mídias prontas, com produto e metadados confirmados',true,'library');return;}renderBatchSummary();view('batch');};
 $('#libraryPrevious').onclick=()=>task(async()=>{if(libraryPage<=1)return;libraryPage-=1;await loadLibrary();renderLibrary();renderBatchSummary();});
 $('#libraryNext').onclick=()=>task(async()=>{if(libraryPage>=(state.library?.pages||1))return;libraryPage+=1;await loadLibrary();renderLibrary();renderBatchSummary();});
 $('#batchForm').onsubmit=e=>{e.preventDefault();task(async()=>{if(!librarySelected.size)throw Error('Selecione mídias na Biblioteca');const data=formData(e.target);data.drive_file_ids=[...librarySelected];const button=e.target.querySelector('button[type=submit]');button.disabled=true;try{const result=await api('/library-batches',data);librarySelected.clear();e.target.reset();await refresh();selected=new Set(result.draft_ids);renderQueue();view('queue');notice(`${result.draft_ids.length} drafts criados sem baixar vídeos`);}finally{button.disabled=false;}});};
 function review(id){reviewing=id;const d=state.drafts.find(x=>x.id===id);const p=state.products.find(x=>x.id===d.product_id);const evidence=state.logs.find(l=>l.draft_id===id&&l.screenshot_path);$('#reviewBody').innerHTML=`<strong>${esc(d.filename)}</strong><div>Produto interno: ${esc(d.product_name)}<br>${esc(d.account_name)} · ${esc(d.status)}<br>Mídia: ${esc(d.media_status||'Legado local')}</div>${d.remote_file_id&&d.media_status!=='CONSUMED'?`<a href="https://drive.google.com/file/d/${encodeURIComponent(d.remote_file_id)}/view" target="_blank" rel="noopener">Ver no Drive ↗</a>`:''}<pre>${esc(d.caption)}</pre><p>Horário desejado: ${d.scheduled_at?esc(new Date(d.scheduled_at).toLocaleString()):'Não definido'}</p><p>${Object.entries({upload:'Vídeo enviado',caption:'Legenda preenchida',settings:'Configurações preparadas',durable:'Draft persistido'}).map(([k,label])=>`${d.checklist[k]?'✓':'○'} ${label}`).join(' · ')}</p><p class="shopping-warning">Produto TikTok Shop ainda precisa ser vinculado manualmente.</p>${d.error_code?`<p>${esc(d.error_code)}</p>`:''}<div class="actions"><button data-studio="${id}" ${state.worker_config?.tiktok_actions_paused?'disabled':''}>Abrir / continuar no Studio</button><button data-complete="published">Registrar publicado</button><button data-complete="scheduled">Registrar agendado</button>${!d.confirmed_at?'<button data-complete="reset">Reabrir draft</button>':''}${d.media_status==='CONSUMED_PENDING_DELETE'?`<button data-cleanup="${id}">Repetir limpeza remota</button>`:''}</div>${evidence?`<a href="/api/publisher?evidence=${evidence.id}" target="_blank">Última evidência</a><img alt="Última tela do Studio" src="/api/publisher?evidence=${evidence.id}">`:''}`;$('#reviewDialog').showModal();}
-document.addEventListener('change',e=>{if(e.target.dataset.media){const id=Number(e.target.dataset.media);e.target.checked?remoteSelected.add(id):remoteSelected.delete(id);renderMedia();}});
+document.addEventListener('change',e=>{if(e.target.dataset.media){const id=Number(e.target.dataset.media);e.target.checked?remoteSelected.add(id):remoteSelected.delete(id);renderMedia();}if(e.target.dataset.library){const item=(state.library?.items||[]).find(row=>String(row.drive_file_id)===String(e.target.dataset.library));uiState.setLibrarySelection(e.target.dataset.library,e.target.checked,item);renderLibrary();renderBatchSummary();}});
 document.addEventListener('click',e=>{const el=e.target.closest('[data-delete-library]');if(el)task(async()=>{if(!confirm(`Excluir permanentemente "${el.dataset.deleteFilename}" do Drive? Esta ação não cria draft e não pode ser desfeita.`))return;el.disabled=true;try{await api('/media-delete',{drive_file_id:el.dataset.deleteLibrary,filename:el.dataset.deleteFilename,size:Number(el.dataset.deleteSize),human_confirmed:true});await refresh();notice('Arquivo excluído do Drive e removido da Biblioteca.');}finally{el.disabled=false;}});});
 document.addEventListener('click',e=>{const el=e.target.closest('[data-cleanup]');if(el)task(async()=>{
  if(state.worker_config?.persistence_workflow_version!==1)throw Error('Reinicie o Publisher para ativar o novo ciclo de consumo.');

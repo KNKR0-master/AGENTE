@@ -83,6 +83,26 @@ que o ID deixou de existir pela mesma integracao antes de atualizar o
 inventario local. Ela nao pode ser usada para midia vinculada a draft; nesse
 caso o lifecycle do Publisher continua sendo a unica rota de cleanup.
 
+A selecao da Biblioteca tem uma unica fonte de verdade: o `Set`
+`librarySelected`, com os checkboxes identificados por `data-library` e
+alterados por um listener central. A selecao individual, a selecao da pagina,
+a remocao individual e a limpeza total atualizam o mesmo conjunto; isso tambem
+permite resumir uma selecao que atravessa paginas e produtos sem exigir um
+produto unico por lote. Erros de health, consulta da Biblioteca e outras
+operacoes usam escopos separados: uma nova leitura bem-sucedida remove apenas
+o erro daquela operacao, preservando alertas de outras areas.
+
+O inventario historico contem 2054 registros, dos quais 1759 tem extensao
+`.mp4`. A Biblioteca operacional atual consulta somente arquivos nao marcados
+como ausentes (`missing_since IS NULL`) em pastas com
+`operational_status='ACTIVE'`; essa interseccao contem 748 arquivos de todos
+os tipos e 515 videos. Os demais registros sao historico ausente (1192) ou
+estao em pastas fora do escopo operacional atual (114, incluindo pastas
+arquivadas, de reserva ou de sistema). Portanto, 515/748 e uma visao
+deliberadamente operacional, nao uma tentativa de fazer o inventario bruto
+igualar a Biblioteca. A sincronizacao futura pode reconciliar ausencias, mas
+nao deve ampliar o escopo silenciosamente.
+
 As tabelas `publisher_media_decisions` e `publisher_media_overrides` guardam
 as decisoes e atribuicoes sem apagar o inventario original. Nao ha Changes API,
 polling em background, sincronizacao automatica ou classificacao baseada em
@@ -240,6 +260,34 @@ vinculo automatico TikTok Shop    NAO IMPLEMENTADO / DESABILITADO
 
 O resultado operacional e um rascunho persistente para revisao humana. O
 vinculo de produto continua manual durante a revisao.
+
+## Inicializacao e encerramento no Windows
+
+O entrypoint oficial e `start-publisher.bat`, que localiza a raiz do projeto e
+executa `scripts/start_publisher.py`. O launcher impede uma segunda instancia
+quando o Publisher ja esta respondendo em `127.0.0.1:8765`.
+
+`Ctrl+C`, `Ctrl+Break` e o fechamento da janela do console pelo X sao tratados
+por uma unica coordenacao de shutdown idempotente. Ela sinaliza o servidor,
+aguarda o encerramento gracioso dentro de um limite curto e nao usa `taskkill`
+como caminho normal. O servidor continua responsavel por chamar
+`Publisher.worker.shutdown()`, que desanexa o Playwright, fecha apenas browsers
+que pertencem ao runtime, libera CDP e o mutex do profile. Browsers externos
+conectados via CDP permanecem sob responsabilidade do usuario.
+
+No `CTRL_CLOSE_EVENT`, o launcher primeiro envia uma solicitacao HTTP cooperativa
+curta e entao arma o mesmo coordenador de shutdown; a rotina completa continua
+fora do callback de console. Os eventos `*_RECEIVED`,
+`COOPERATIVE_SERVER_SHUTDOWN_CALLED`, `CHILD_PROCESS_EXIT_OBSERVED` e
+`HANDLER_RETURNED_BEFORE_CHILD_EXIT` sao registrados em
+`logs/publisher-launcher.log` sem credenciais ou conteudo de requests. O
+resultado de um teste real de fechamento pelo X deve ser considerado validado
+somente quando servidor, Chrome owned, CDP, mutex e porta forem observados
+liberados sem intervenção posterior.
+
+Se o encerramento for interrompido pelo Windows, a inicializacao seguinte
+continua usando a reconciliacao existente de mutex, profile e lifecycle; nenhum
+retry de draft e iniciado pelo launcher.
 
 ## Referencias historicas
 

@@ -258,15 +258,27 @@ class BrowserRuntimeManager:
         session = self.sessions.pop(key, None)
         if not session:
             return False
-        # Playwright's private transport stop detaches without Browser.close().
-        session.browser._impl_obj._connection.stop_sync()
         if session.browser_owned_by_runtime and not keep_browser:
-            self.closer(session.chrome_pid)
+            # Detach the CDP transport before asking the owned process to close.
+            # Browser.close can wait on a closing CDP transport, while
+            # CloseMainWindow remains a graceful, process-scoped fallback.
+            try:
+                session.browser._impl_obj._connection.stop_sync()
+            except Exception:
+                pass
+            close_requested = False
             deadline = time.monotonic() + 20
             while self.alive(session.chrome_pid) and time.monotonic() < deadline:
+                if not close_requested or int((deadline - time.monotonic()) * 4) % 4 == 0:
+                    # Repeated graceful requests handle a busy Chrome window;
+                    # no force-kill is used on the normal shutdown path.
+                    close_requested = self.closer(session.chrome_pid) or close_requested
                 self.sleep_fn(.25)
             self.ownership.detach(session.profile, session.token, keep_browser=False)
         else:
+            # Playwright's private transport stop detaches without closing an
+            # external browser that remains owned by the user.
+            session.browser._impl_obj._connection.stop_sync()
             self.ownership.detach(session.profile, session.token, keep_browser=True)
         return True
 

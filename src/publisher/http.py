@@ -1,8 +1,10 @@
 import json
 import getpass
+import os
 import re
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -16,10 +18,28 @@ from src.publisher.worker import PublisherWorker, recover_sessions
 from src.publisher.media import media_provider, TemporaryMediaCache
 
 
+PUBLISHER_API_VERSION = "publisher-api-v1"
+PUBLISHER_COMPATIBILITY = "publisher-ui-2a.2"
+
+
 class PublisherAPI:
     def __init__(self, root, db):
         self.root, self.db = Path(root), db
         self.worker = PublisherWorker(root, db)
+        self.started_at = datetime.now(timezone.utc).isoformat()
+
+    def runtime_info(self, handler):
+        handler._json(
+            {
+                "app": "publisher-desk",
+                "api_version": PUBLISHER_API_VERSION,
+                "compatibility": PUBLISHER_COMPATIBILITY,
+                "process_id": os.getpid(),
+                "instance_id": self.worker.profile_ownership.instance_id,
+                "started_at": self.started_at,
+            },
+            no_store=True,
+        )
 
     def initialize(self):
         self.worker.profile_ownership.reconcile_all()

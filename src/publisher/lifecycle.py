@@ -149,22 +149,26 @@ def cleanup_remote(conn, draft_id, provider, root=None):
     if not asset.get('remote_file_id') or not asset.get('filename') or asset.get('size_bytes') is None:
         raise ValueError('MANUAL_ACTION_REQUIRED')
 
-    # A reserved asset must be observed before intent is created. A 404 here
-    # is ambiguous and must never be promoted to successful cleanup.
+    # Serialize the first observation with creation of the delete intent. If
+    # the remote lookup happened before this lock, a concurrent cleanup could
+    # delete the file and make the losing caller misclassify that 404 as an
+    # ambiguous pre-intent absence.
     if asset['status'] == 'RESERVED':
-        if _remote_state(provider, asset) == 'NOT_FOUND':
-            raise ValueError('MANUAL_ACTION_REQUIRED')
         with conn:
             conn.execute('BEGIN IMMEDIATE')
             current = get_row(conn, 'publisher_media_assets', asset['id'])
             if current['status'] == 'RESERVED':
+                # A 404 before the intent is committed remains ambiguous and
+                # must never be promoted to successful cleanup.
+                if _remote_state(provider, current) == 'NOT_FOUND':
+                    raise ValueError('MANUAL_ACTION_REQUIRED')
                 timestamp = now_iso()
                 conn.execute(
                     "UPDATE publisher_media_assets SET status='CONSUMED_PENDING_DELETE',consumed_by_draft_id=?,updated_at=? WHERE id=?",
                     (draft_id, timestamp, current['id']))
                 log(conn, draft_id, 'REMOTE_DELETE_PENDING', 'PENDING',
                     f"Finalizacao explicita para media_asset_id={current['id']}; nenhum upload sera repetido")
-            asset = current
+            asset = get_row(conn, 'publisher_media_assets', current['id'])
 
     if asset['status'] == 'CONSUMED':
         return _remove_temp(conn, draft_id, draft.get('temp_path'), root) if draft.get('temp_path') else True
