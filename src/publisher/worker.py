@@ -48,6 +48,71 @@ _PT_DRAFT_TIMESTAMP = re.compile(
     r'(?P<year>\d{4}),\s*(?P<hour>\d{1,2}):(?P<minute>\d{2})$'
 )
 
+_INSPECTION_ALLOWED_HOSTS = frozenset({'www.tiktok.com'})
+_INSPECTION_BLOCKED_PATHS = frozenset({
+    '/login/qrcode',
+    '/login/qrconnect',
+    '/passport/web/get_qrcode',
+})
+
+
+def inspection_navigation_decision(url, *, navigation_request, main_frame):
+    """Return the least-privilege decision for read-only session inspection."""
+    if not navigation_request or not main_frame:
+        return {'blocked': False, 'reason': None, 'host': ''}
+    parsed = urlsplit(str(url))
+    host = (parsed.hostname or '').casefold()
+    path = parsed.path.rstrip('/').casefold() or '/'
+    if parsed.scheme == 'https' and host in _INSPECTION_ALLOWED_HOSTS:
+        if path in _INSPECTION_BLOCKED_PATHS:
+            return {'blocked': True, 'reason': 'TIKTOK_AUTH_QR_NAVIGATION', 'host': host}
+        return {'blocked': False, 'reason': None, 'host': host}
+    return {'blocked': True, 'reason': 'NON_TIKTOK_MAIN_FRAME', 'host': host}
+
+
+def classify_inspection_target_error(exc, *, context=None, page=None):
+    """Classify a closed Playwright target without treating it as auth loss."""
+    if type(exc).__name__ != 'TargetClosedError':
+        return None
+    if page is not None:
+        try:
+            if page.is_closed():
+                return 'STALE_PAGE_TARGET'
+        except Exception:
+            pass
+    if context is not None:
+        try:
+            list(context.pages)
+        except Exception:
+            return 'CONTEXT_LOST'
+        return 'STALE_PAGE_TARGET'
+    return 'BROWSER_LOST'
+
+
+def select_live_inspection_page(context, previous_page=None):
+    """Select one live page, re-enumerating once when a prior page is stale."""
+    if previous_page is not None:
+        try:
+            if not previous_page.is_closed():
+                return previous_page
+        except Exception as exc:
+            if type(exc).__name__ != 'TargetClosedError':
+                raise
+    pages = list(context.pages)
+    live_pages = []
+    for page in pages:
+        try:
+            if not page.is_closed():
+                live_pages.append(page)
+        except Exception as exc:
+            if type(exc).__name__ != 'TargetClosedError':
+                raise
+    if len(live_pages) > 1:
+        raise ValueError('Mais de uma pagina restaurada; nenhuma navegacao efetuada')
+    if live_pages:
+        return live_pages[0]
+    return context.new_page()
+
 
 def _parse_checkpoint_time(value):
     if not value:
@@ -878,6 +943,8 @@ class PublisherWorker:
 
     def handle_existing_session(self, playwright, conn, account_id, navigate):
         session = self.login_sessions[account_id]
+        ctx = None
+        page = None
         try:
             account = get_row(conn, 'publisher_accounts', account_id)
             if not (self.root / account['browser_profile']).is_dir():
@@ -886,25 +953,23 @@ class PublisherWorker:
             if account_id not in self.inspection_guards:
                 def guard(route):
                     request = route.request
-                    parsed = urlsplit(request.url)
-                    host, path = parsed.hostname or '', parsed.path.lower()
-                    tiktok = host == 'tiktok.com' or host.endswith('.tiktok.com')
-                    denied = (tiktok and ('/login' in path or 'qrcode' in path or 'qrconnect' in path))
-                    denied = denied or (request.is_navigation_request() and not tiktok)
-                    if denied:
-                        main_auth = request.is_navigation_request() and request.frame.parent_frame is None
-                        session.blocked_auth_navigation |= bool(main_auth and tiktok)
-                        self.auth_diagnostics.record(account_id, 'AUTH_ENTRY_BLOCKED',
-                            url=safe_url(request.url), main_frame=main_auth)
+                    navigation = request.is_navigation_request()
+                    main_frame = navigation and request.frame.parent_frame is None
+                    decision = inspection_navigation_decision(
+                        request.url, navigation_request=navigation, main_frame=main_frame
+                    )
+                    if decision['blocked']:
+                        session.blocked_auth_navigation |= decision['reason'] == 'TIKTOK_AUTH_QR_NAVIGATION'
+                        self.auth_diagnostics.record(account_id, 'ROUTE_GUARD_BLOCKED_NAVIGATION',
+                            blocked=True, blocked_url_host=decision['host'],
+                            reason=decision['reason'], main_frame=main_frame)
                         route.abort('blockedbyclient')
                     else:
                         route.continue_()
                 ctx.route('**/*', guard)
                 self.inspection_guards[account_id] = (ctx, guard)
             if session.page is None or session.page.is_closed():
-                if len(ctx.pages) > 1:
-                    raise ValueError('Mais de uma pagina restaurada; nenhuma navegacao efetuada')
-                session.page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                session.page = select_live_inspection_page(ctx, session.page)
                 page = session.page
                 page.on('close', lambda: self.login_page_closed(account_id, page))
             if navigate:
@@ -914,7 +979,11 @@ class PublisherWorker:
                 self.auth_diagnostics.record(account_id, 'CONTROLLED_STUDIO_NAVIGATION', url=STUDIO_URL)
                 session.page.goto(STUDIO_URL, wait_until='domcontentloaded', timeout=30000)
         except Exception as exc:
-            self.auth_diagnostics.record(account_id, 'INSPECTION_ERROR', **safe_error('existing_session', exc))
+            error = safe_error('existing_session', exc)
+            target_classification = classify_inspection_target_error(exc, context=ctx, page=page)
+            if target_classification:
+                error['target_classification'] = target_classification
+            self.auth_diagnostics.record(account_id, 'INSPECTION_ERROR', **error)
         finally:
             if session.blocked_auth_navigation:
                 session.status = NEEDS_LOGIN

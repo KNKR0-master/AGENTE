@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 from src.publisher.auth import STUDIO_URL
 from src.publisher.service import PublisherService, init_publisher
-from src.publisher.worker import PublisherWorker
+from src.publisher.worker import PublisherWorker, classify_inspection_target_error
 from src.store import connect, init_db
 from tests.test_publisher_diagnostics import Context, Page
 
@@ -67,12 +67,30 @@ class ExistingSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "navegacao unica"):
             self.worker.inspect_existing_session(self.account, True)
 
-    def test_login_and_qr_navigations_are_blocked_by_inspection_guard(self):
+    def test_tiktok_navigation_is_allowed_but_qr_is_blocked(self):
         self.process()
         guard = self.context.route.call_args.args[1]
+        self.worker.auth_diagnostics.record = MagicMock()
+        for url in [
+            "https://www.tiktok.com/",
+            "https://www.tiktok.com/tiktokstudio",
+            "https://www.tiktok.com/tiktokstudio/content",
+            "https://www.tiktok.com/login",
+            "https://www.tiktok.com/login?redirect_url=https%3A%2F%2Fwww.tiktok.com%2Ftiktokstudio",
+        ]:
+            request = SimpleNamespace(
+                url=url,
+                is_navigation_request=lambda: True,
+                frame=SimpleNamespace(parent_frame=None),
+            )
+            route = SimpleNamespace(request=request, abort=MagicMock(), continue_=MagicMock())
+            guard(route)
+            route.abort.assert_not_called()
+            route.continue_.assert_called_once_with()
+
         for url in [
             "https://www.tiktok.com/login/qrcode",
-            "https://www.tiktok.com/login",
+            "https://www.tiktok.com/login/qrconnect",
             "https://www.tiktok.com/passport/web/get_qrcode/",
         ]:
             request = SimpleNamespace(
@@ -85,6 +103,71 @@ class ExistingSessionTests(unittest.TestCase):
             route.abort.assert_called_once_with("blockedbyclient")
             route.continue_.assert_not_called()
         self.assertTrue(self.worker.login_sessions[self.account].blocked_auth_navigation)
+        self.worker.auth_diagnostics.record.assert_any_call(
+            self.account, "ROUTE_GUARD_BLOCKED_NAVIGATION", blocked=True,
+            blocked_url_host="www.tiktok.com", reason="TIKTOK_AUTH_QR_NAVIGATION", main_frame=True
+        )
+
+    def test_external_main_frame_is_blocked_and_subframe_is_not(self):
+        self.process()
+        guard = self.context.route.call_args.args[1]
+        self.worker.auth_diagnostics.record = MagicMock()
+        external = SimpleNamespace(
+            url="https://example.com/",
+            is_navigation_request=lambda: True,
+            frame=SimpleNamespace(parent_frame=None),
+        )
+        route = SimpleNamespace(request=external, abort=MagicMock(), continue_=MagicMock())
+        guard(route)
+        route.abort.assert_called_once_with("blockedbyclient")
+        route.continue_.assert_not_called()
+        self.worker.auth_diagnostics.record.assert_any_call(
+            self.account, "ROUTE_GUARD_BLOCKED_NAVIGATION", blocked=True,
+            blocked_url_host="example.com", reason="NON_TIKTOK_MAIN_FRAME", main_frame=True
+        )
+
+        subframe = SimpleNamespace(
+            url="https://example.com/embedded",
+            is_navigation_request=lambda: True,
+            frame=SimpleNamespace(parent_frame=object()),
+        )
+        route = SimpleNamespace(request=subframe, abort=MagicMock(), continue_=MagicMock())
+        guard(route)
+        route.abort.assert_not_called()
+        route.continue_.assert_called_once_with()
+
+    def test_stale_page_is_reconciled_to_the_single_live_page(self):
+        self.process()
+        old_page = self.worker.login_sessions[self.account].page
+        old_page.closed = True
+        live_page = Page(STUDIO_URL)
+        self.context.pages = [live_page]
+        self.process()
+        self.assertIs(self.worker.login_sessions[self.account].page, live_page)
+        self.context.new_page.assert_not_called()
+
+    def test_target_closed_error_is_classified_without_auth_failure(self):
+        TargetClosedError = type('TargetClosedError', (Exception,), {})
+        self.assertEqual(
+            classify_inspection_target_error(TargetClosedError()),
+            'BROWSER_LOST',
+        )
+        closed_page = Page()
+        closed_page.closed = True
+        self.assertEqual(
+            classify_inspection_target_error(TargetClosedError(), page=closed_page),
+            'STALE_PAGE_TARGET',
+        )
+
+        class LostContext:
+            @property
+            def pages(self):
+                raise TargetClosedError()
+
+        self.assertEqual(
+            classify_inspection_target_error(TargetClosedError(), context=LostContext()),
+            'CONTEXT_LOST',
+        )
 
     def test_missing_profile_never_creates_one(self):
         with self.conn:
