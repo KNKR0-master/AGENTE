@@ -1027,6 +1027,7 @@ def _migrate_drive_inventory(conn: sqlite3.Connection) -> None:
         _add_column(conn, "drive_folders", name, definition)
     file_columns = {
         "file_kind": "TEXT NOT NULL DEFAULT 'OTHER'",
+        "thumbnail_link": "TEXT",
         "text_content": "TEXT",
         "text_content_hash": "TEXT",
         "text_read_error": "TEXT",

@@ -63,8 +63,7 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         self._file("suspicious", "NOTFINALIZED.mp4", "folder-a", "video/mp4", 1250)
         self._file("image", "capa.png", "folder-a", "image/png", 300)
         self._file("empty-caption", "OUTRO_G1C1A1_0101.mp4", "folder-unknown", "video/mp4", 1300)
-        with self.conn:
-            self.conn.execute("UPDATE drive_files SET product_id=? WHERE drive_file_id='empty-caption'", (self.product_empty,))
+        self.service.assign_media_product({"drive_file_ids": ["empty-caption"], "product_id": self.product_empty})
 
     def _product(self, name, caption):
         return self.service.save_product({"name": name, "default_caption": caption})
@@ -90,12 +89,16 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         self.assertEqual(by_id["medium"]["status"], "AVAILABLE")
         self.assertEqual(by_id["medium"]["classification_confidence"], "MEDIUM")
         self.assertEqual(by_id["medium"]["product_id"], self.product_a)
+        self.assertEqual(by_id["medium"]["product_resolution"], "ANCESTOR_FOLDER")
         self.assertEqual(by_id["low"]["status"], "ATTENTION")
-        self.assertIn("produto não identificado", by_id["low"]["reason"].lower())
+        self.assertEqual(by_id["low"]["reason"], "Produto da pasta ainda não associado")
         self.assertEqual(by_id["suspicious"]["classification_confidence"], "LOW")
         self.assertEqual(by_id["image"]["status"], "OUT_OF_SCOPE")
         self.assertEqual(by_id["empty-caption"]["status"], "ATTENTION")
-        self.assertIn("CAPTION_MISSING", by_id["empty-caption"]["reason"])
+        self.assertEqual(by_id["empty-caption"]["reason"], "Legenda do produto não configurada")
+        self.assertEqual(by_id["high"]["classification_label"], "Reconhecido")
+        self.assertEqual(by_id["medium"]["classification_label"], "Provável")
+        self.assertEqual(by_id["suspicious"]["classification_label"], "Revisar")
 
     def test_decision_and_product_override_are_persistent(self):
         self.service.decide_media({"drive_file_id": "low", "decision": "VALID"})
@@ -141,9 +144,39 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publisher_execution_logs WHERE step='CREATE'").fetchone()[0], 2)
 
     def test_batch_rejects_missing_caption_before_reserving_media(self):
-        with self.assertRaisesRegex(ValueError, "CAPTION_MISSING"):
+        with self.assertRaisesRegex(ValueError, "Legenda do produto n.o configurada"):
             self.service.create_library_batch({"drive_file_ids": ["empty-caption"], "account_id": self.account})
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publisher_media_assets").fetchone()[0], 0)
+
+    def test_folder_assignment_applies_to_existing_and_future_files(self):
+        before = list_library(self.conn, product_id="UNASSIGNED", file_type="VIDEO")
+        summary = next(row for row in before["folder_summaries"] if row["folder_id"] == "folder-unknown")
+        self.assertGreaterEqual(summary["video_count"], 1)
+
+        result = self.service.assign_media_product({
+            "scope": "folder", "folder_id": "folder-unknown", "product_id": self.product_b,
+        })
+        self.assertEqual(result["scope"], "folder")
+        current = {row["drive_file_id"]: row for row in list_library(self.conn, file_type="VIDEO", page_size=20)["items"]}
+        self.assertEqual(current["low"]["product_id"], self.product_b)
+        self.assertEqual(current["low"]["product_resolution"], "DIRECT_FOLDER")
+
+        self._file("future", "NOVO_G4C2A1.mp4", "folder-unknown", "video/mp4", 1400)
+        future = {row["drive_file_id"]: row for row in list_library(self.conn, file_type="VIDEO", page_size=20)["items"]}["future"]
+        self.assertEqual(future["product_id"], self.product_b)
+        self.assertEqual(future["status"], "AVAILABLE")
+        history = self.conn.execute(
+            "SELECT new_product_id FROM drive_folder_mapping_history WHERE drive_folder_id='folder-unknown' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(history[0], self.product_b)
+
+    def test_media_override_wins_over_direct_and_ancestor_folder(self):
+        self.service.assign_media_product({"drive_file_ids": ["high", "medium"], "product_id": self.product_b})
+        rows = {row["drive_file_id"]: row for row in list_library(self.conn, file_type="VIDEO", page_size=20)["items"]}
+        self.assertEqual(rows["high"]["product_id"], self.product_b)
+        self.assertEqual(rows["high"]["product_resolution"], "MEDIA_OVERRIDE")
+        self.assertEqual(rows["medium"]["product_id"], self.product_b)
+        self.assertEqual(rows["medium"]["product_resolution"], "MEDIA_OVERRIDE")
 
     def test_drive_delete_requires_confirmation_and_post_delete_verification(self):
         provider = FakeMediaProvider()

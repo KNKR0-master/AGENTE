@@ -53,7 +53,7 @@ def _base_query() -> str:
     return _ancestor_product_sql() + """
     SELECT df.*, f.name folder_name, f.relative_path folder_path,
            f.parent_drive_folder_id, f.product_id direct_folder_product_id,
-           COALESCE(df.product_id, f.product_id, ancestor.product_id) inferred_product_id,
+           COALESCE(f.product_id, ancestor.product_id) inferred_product_id,
            pp.name inferred_product_name, pp.default_caption inferred_caption,
            ov.product_id override_product_id, dec.decision, dec.reason decision_reason,
            ma.id media_asset_id, ma.status media_status, ma.consumed_by_draft_id,
@@ -66,7 +66,7 @@ def _base_query() -> str:
       LEFT JOIN publisher_media_decisions dec ON dec.drive_file_id=df.drive_file_id
       LEFT JOIN publisher_media_assets ma ON ma.remote_file_id=df.drive_file_id
       LEFT JOIN publisher_drafts d ON d.media_asset_id=ma.id AND d.status<>'ARCHIVED'
-      LEFT JOIN publisher_products pp ON pp.product_id=COALESCE(ov.product_id, df.product_id, f.product_id, ancestor.product_id)
+      LEFT JOIN publisher_products pp ON pp.product_id=COALESCE(ov.product_id, f.product_id, ancestor.product_id)
      WHERE df.missing_since IS NULL
        AND f.operational_status='ACTIVE'
     """
@@ -91,9 +91,9 @@ def _raw_rows(conn, *, drive_file_ids: Iterable[str] | None = None, search: str 
         params.append(f"%{path.strip()}%")
     if product_id not in (None, "", "ALL"):
         if str(product_id).upper() in {"UNASSIGNED", "0"}:
-            clauses.append("COALESCE(ov.product_id, df.product_id, f.product_id, ancestor.product_id) IS NULL")
+            clauses.append("COALESCE(ov.product_id, f.product_id, ancestor.product_id) IS NULL")
         else:
-            clauses.append("COALESCE(ov.product_id, df.product_id, f.product_id, ancestor.product_id)=?")
+            clauses.append("COALESCE(ov.product_id, f.product_id, ancestor.product_id)=?")
             params.append(int(product_id))
     if file_type and str(file_type).upper() != "ALL":
         if str(file_type).upper() == "VIDEO":
@@ -136,6 +136,7 @@ def _classify(row: dict) -> dict:
         "created_time": row.get("created_time"),
         "md5_checksum": row.get("md5_checksum"),
         "web_view_link": row.get("web_view_link"),
+        "thumbnail_link": row.get("thumbnail_link"),
         "product_id": int(product_id) if product_id is not None else None,
         "product_name": product_name,
         "caption": caption,
@@ -144,6 +145,12 @@ def _classify(row: dict) -> dict:
         "classification": technical,
         "classification_confidence": confidence,
         "classification_reason": confidence_reason,
+        "classification_label": {"HIGH": "Reconhecido", "MEDIUM": "Provável", "LOW": "Revisar"}[confidence],
+        "product_resolution": "MEDIA_OVERRIDE" if row.get("override_product_id") is not None else (
+            "DIRECT_FOLDER" if row.get("direct_folder_product_id") is not None else (
+                "ANCESTOR_FOLDER" if row.get("inferred_product_id") is not None else "UNASSIGNED"
+            )
+        ),
         "media_asset_id": row.get("media_asset_id"),
         "media_status": media_status or None,
         "draft_id": row.get("draft_id"),
@@ -169,10 +176,10 @@ def _classify(row: dict) -> dict:
         result.update(reason=row.get("classification_reason") or "Inventário marcou o arquivo como não elegível")
         return result
     if not product_id:
-        result.update(reason="Produto não identificado; atribua um produto antes de criar lote")
+        result.update(reason="Produto da pasta ainda não associado")
         return result
     if not caption.strip():
-        result.update(reason="Produto sem legenda padrão (CAPTION_MISSING)")
+        result.update(reason="Legenda do produto não configurada")
         return result
     valid_metadata = bool(row.get("size") and int(row.get("size") or 0) > 0 and str(row.get("mime_type") or "").lower().startswith("video/"))
     manually_valid = decision == "VALID"
@@ -198,8 +205,26 @@ def list_library(conn, *, page: int = 1, page_size: int = 50, search: str = "", 
     if decision:
         items = [item for item in items if (item["decision"] or "NONE") == decision]
     total = len(items)
+    folder_summaries = []
+    grouped = {}
+    for item in items:
+        if item["file_type"] != "VIDEO":
+            continue
+        group = grouped.setdefault(item["folder_id"], {
+            "folder_id": item["folder_id"], "folder_name": item["folder_name"],
+            "folder_path": item["folder_path"], "video_count": 0,
+            "recognized_count": 0, "product_id": item["product_id"],
+            "product_name": item["product_name"],
+        })
+        group["video_count"] += 1
+        if item["classification_confidence"] in {"HIGH", "MEDIUM"}:
+            group["recognized_count"] += 1
+        if group["product_id"] is None and item["product_id"] is not None:
+            group["product_id"], group["product_name"] = item["product_id"], item["product_name"]
+    folder_summaries = [group for group in grouped.values() if group["product_id"] is None]
     start = (page - 1) * page_size
-    return {"items": items[start:start + page_size], "page": page, "page_size": page_size, "total": total,
+    return {"items": items[start:start + page_size], "folder_summaries": folder_summaries,
+            "page": page, "page_size": page_size, "total": total,
             "pages": (total + page_size - 1) // page_size, "filters": {"search": search, "path": path, "product_id": product_id, "file_type": file_type, "status": status, "decision": decision}}
 
 

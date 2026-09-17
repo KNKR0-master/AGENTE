@@ -110,6 +110,20 @@ class DriveInventoryTests(unittest.TestCase):
         self.assertEqual(row["classification"], "NEEDS_REVIEW")
         self.assertIn("ffprobe", row["classification_reason"])
 
+    def test_thumbnail_link_is_persisted_without_downloading_media(self) -> None:
+        video = drive_video(
+            "preview", "Produto_Alfa_G1C1A1.mp4", "product-folder",
+            thumbnail_link="https://drive.google.com/thumbnail?id=preview",
+        )
+        self.provider.children["product-folder"] = [video]
+
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+
+        row = self.conn.execute(
+            "SELECT thumbnail_link FROM drive_files WHERE drive_file_id='preview'"
+        ).fetchone()
+        self.assertEqual(row["thumbnail_link"], video.thumbnail_link)
+
     def test_same_hash_is_marked_duplicate(self) -> None:
         first = drive_video("first", "Produto_Alfa_G1C1A1.mp4", "product-folder", md5="same")
         second = drive_video("second", "Produto_Alfa_G2C1A1.mp4", "product-folder", md5="same")
@@ -253,6 +267,7 @@ def drive_video(
     parent: str,
     md5: str | None = None,
     size: int = 100,
+    thumbnail_link: str | None = None,
 ) -> DriveEntry:
     return DriveEntry(
         file_id=file_id,
@@ -264,6 +279,7 @@ def drive_video(
         created_time="2026-08-08T10:00:00+00:00",
         modified_time="2026-08-08T10:00:00+00:00",
         web_view_link=f"https://drive.google.com/file/d/{file_id}/view",
+        thumbnail_link=thumbnail_link,
     )
 
 

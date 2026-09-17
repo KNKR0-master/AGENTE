@@ -14,12 +14,13 @@
 #library .status-badge.reserved{background:#e8e4f6;color:#4b3e83}
 #library .status-badge.ignored,#library .status-badge.consumed,#library .status-badge.out_of_scope{background:#e7eaec;color:#59646e}
 #library .pagination{display:flex;justify-content:center;align-items:center;gap:16px;margin-top:14px}
+#library .media-file{display:flex;align-items:flex-start;gap:10px}.media-thumbnail{width:48px;height:64px;object-fit:cover;background:#e6eaec;border:1px solid #d1d7da;border-radius:4px;flex:0 0 48px}.media-thumbnail.placeholder{display:grid;place-items:center;color:#64717a;font-size:18px}.folder-assignment td{background:#eef7f3;padding:10px 14px}.folder-assignment td>div{display:grid;grid-template-columns:minmax(220px,1fr) minmax(180px,260px) auto;gap:12px;align-items:end}.folder-assignment small{margin-top:3px}.library-row-actions{display:flex;align-items:center;gap:8px}.row-menu{position:relative}.row-menu>summary,.bulk-secondary>summary{cursor:pointer;list-style:none;border:1px solid #cbd0d5;border-radius:5px;padding:7px 10px;background:#fff}.row-menu>summary{font-size:18px;line-height:1}.row-menu>div,.bulk-secondary>div{position:absolute;right:0;z-index:4;display:grid;gap:4px;min-width:170px;padding:6px;background:#fff;border:1px solid #cbd0d5;box-shadow:0 4px 14px #1d2a3030}.row-menu button,.bulk-secondary button{text-align:left;border:0}.row-menu .danger{color:#9b2929}.bulk-secondary{position:relative}.library-primary-actions>span{margin-right:0}.library-primary-actions .primary{margin-left:auto}
 .inline-control{display:flex;align-items:center;gap:6px;color:#43505b}
 .inline-control select{width:auto;min-width:180px;padding:8px}
 .selection-summary{padding:14px;background:#eef7f3;border-left:4px solid #007e68;margin:15px 0;min-height:48px}
 #executionProgress{margin-bottom:16px}
 #executionProgress progress{accent-color:#007e68;max-width:100%;margin-top:8px}
-@media(max-width:700px){#library .filters{grid-template-columns:1fr 1fr}#library .table-wrap{max-height:340px}}
+@media(max-width:700px){#library .filters{grid-template-columns:1fr 1fr}#library .table-wrap{max-height:340px}.folder-assignment td>div{grid-template-columns:1fr}.library-primary-actions .primary{margin-left:0}}
 .shopping-warning{border-left:4px solid #b44734;background:#fff0e9;color:#7d291c;padding:12px;font-weight:bold}
 #productLegacy{overflow-wrap:anywhere;line-height:1.6}
 @media(max-width:700px){#accountList .record{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#accountList .record>div{grid-column:1/-1}}

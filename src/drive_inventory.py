@@ -58,6 +58,7 @@ class DriveEntry:
     created_time: str | None = None
     modified_time: str | None = None
     web_view_link: str | None = None
+    thumbnail_link: str | None = None
 
     @property
     def is_folder(self) -> bool:
@@ -76,6 +77,7 @@ class DriveEntry:
             created_time=payload.get("createdTime") or payload.get("created_time"),
             modified_time=payload.get("modifiedTime") or payload.get("modified_time"),
             web_view_link=payload.get("webViewLink") or payload.get("web_view_link"),
+            thumbnail_link=payload.get("thumbnailLink") or payload.get("thumbnail_link"),
         )
 
 
@@ -1344,17 +1346,18 @@ def _upsert_drive_file(
         """
         INSERT INTO drive_files (
             drive_file_id, drive_folder_id, name, mime_type, size, md5_checksum,
-            created_time, modified_time, web_view_link, product_id, content_id,
+            created_time, modified_time, web_view_link, thumbnail_link, product_id, content_id,
             classification, classification_reason, duplicate_reason,
             canonical_drive_file_id, last_scan_id, last_seen_at, missing_since,
             file_kind, text_content, text_content_hash, text_read_error,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(drive_file_id) DO UPDATE SET
             drive_folder_id = excluded.drive_folder_id, name = excluded.name,
             mime_type = excluded.mime_type, size = excluded.size,
             md5_checksum = excluded.md5_checksum, created_time = excluded.created_time,
             modified_time = excluded.modified_time, web_view_link = excluded.web_view_link,
+            thumbnail_link = excluded.thumbnail_link,
             product_id = excluded.product_id, content_id = excluded.content_id,
             classification = excluded.classification,
             classification_reason = excluded.classification_reason,
@@ -1377,6 +1380,7 @@ def _upsert_drive_file(
             entry.created_time,
             entry.modified_time,
             entry.web_view_link,
+            entry.thumbnail_link,
             folder.get("product_id"),
             classification.get("content_id"),
             classification["classification"],
@@ -1804,7 +1808,7 @@ def _file_kind(entry: DriveEntry) -> str:
 
 
 def _drive_fields() -> str:
-    return "id,name,mimeType,parents,size,md5Checksum,createdTime,modifiedTime,webViewLink"
+    return "id,name,mimeType,parents,size,md5Checksum,createdTime,modifiedTime,webViewLink,thumbnailLink"
 
 
 def _safe_provider_error(exc: Exception) -> str:
