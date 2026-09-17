@@ -31,6 +31,7 @@ from src.publisher.login_trace import LoginTrace
 from src.publisher.auth_test_lock import AuthTestLock
 from src.publisher.manual_profile import ProfileOwnership
 from src.publisher.browser_runtime import BrowserRuntimeManager
+from src.publisher.profile_paths import resolve_browser_profile
 
 
 class PreparationError(Exception):
@@ -803,7 +804,7 @@ class PublisherWorker:
         self.assert_actions_allowed()
         with self.account_lock(account_id), closing(connect(self.db)) as conn:
             account = get_row(conn, 'publisher_accounts', account_id)
-            profile = (self.root / account['browser_profile']).resolve()
+            profile = self.account_profile(account, require_existing=False)
             if not account['active'] or not profile.is_dir():
                 raise ValueError('Conta inativa ou profile existente ausente')
             session = self.login_sessions.setdefault(account_id, LoginSession(status=account['auth_status']))
@@ -840,7 +841,7 @@ class PublisherWorker:
         self.auth_diagnostics.event_sinks[account_id] = trace.event
         try:
             account = get_row(conn, 'publisher_accounts', account_id)
-            if not (self.root / account['browser_profile']).is_dir():
+            if not self.account_profile(account, require_existing=False).is_dir():
                 raise ValueError('Profile existente ausente')
             ctx = self.context(playwright, account)
             if len(ctx.pages) != 1:
@@ -896,8 +897,8 @@ class PublisherWorker:
                     'login_active': bool(session and not session.verification_only and (session.queued or session.page is not None))}
 
     def account_profile(self, account, require_existing=True):
-        profile = (self.root / account['browser_profile']).resolve()
-        if not profile.is_relative_to((self.root / 'data/publisher/browser_profiles').resolve()) or (require_existing and not profile.is_dir()):
+        profile = resolve_browser_profile(account['browser_profile'])
+        if require_existing and not profile.is_dir():
             raise ValueError('EXISTING_PROFILE_REQUIRED')
         return profile
 
@@ -926,7 +927,7 @@ class PublisherWorker:
         account_id = int(account_id)
         with self.account_lock(account_id), closing(connect(self.db)) as conn:
             account = get_row(conn, 'publisher_accounts', account_id)
-            if not account['active'] or not (self.root / account['browser_profile']).is_dir():
+            if not account['active'] or not self.account_profile(account, require_existing=False).is_dir():
                 raise ValueError('Conta inativa ou perfil persistente ausente; nenhum perfil sera criado')
             if self.profile_ownership.state(self.account_profile(account)) in {'MANUAL_STARTING', 'MANUAL_BROWSER_ACTIVE'}:
                 raise ValueError('MANUAL_BROWSER_ACTIVE')
@@ -947,7 +948,7 @@ class PublisherWorker:
         page = None
         try:
             account = get_row(conn, 'publisher_accounts', account_id)
-            if not (self.root / account['browser_profile']).is_dir():
+            if not self.account_profile(account, require_existing=False).is_dir():
                 raise ValueError('Perfil existente ausente')
             ctx = self.context(playwright, account)
             if account_id not in self.inspection_guards:

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,6 +39,9 @@ class PublisherRemoteTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(dir=qa)
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
+        self.profile_root=self.root/'browser-profiles'
+        environment=patch.dict(os.environ,{'PUBLISHER_BROWSER_PROFILE_ROOT':str(self.profile_root)})
+        environment.start();self.addCleanup(environment.stop)
         self.conn=connect(self.root/'test.db')
         self.addCleanup(self.conn.close)
         init_db(self.conn); init_publisher(self.conn)
@@ -45,7 +49,7 @@ class PublisherRemoteTests(unittest.TestCase):
         self.product=self.service.save_product({'name':'Produto','default_caption':'Legenda'})
         self.account=self.service.save_account({'name':'Ceci'})
         account=get_row(self.conn,'publisher_accounts',self.account)
-        (self.root/account['browser_profile']).mkdir(parents=True)
+        (self.profile_root/Path(account['browser_profile']).name).mkdir(parents=True)
         with self.conn:
             self.conn.execute("UPDATE publisher_accounts SET session_verified=1,account_identity='ACCOUNT_CONFIRMED' WHERE id=?",(self.account,))
         ownership=patch('src.publisher.worker.ProfileOwnership.state',return_value='SESSION_REQUIRES_VERIFICATION')

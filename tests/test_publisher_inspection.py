@@ -1,9 +1,10 @@
 """Offline tests for read-only existing-session inspection over the CDP runtime."""
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.publisher.auth import STUDIO_URL
 from src.publisher.service import PublisherService, init_publisher
@@ -17,6 +18,10 @@ class ExistingSessionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.profile_root = self.root / "browser-profiles"
+        self.env = patch.dict(os.environ, {"PUBLISHER_BROWSER_PROFILE_ROOT": str(self.profile_root)})
+        self.env.start()
+        self.addCleanup(self.env.stop)
         self.db = self.root / "publisher.db"
         self.conn = connect(self.db)
         self.addCleanup(self.conn.close)
@@ -26,7 +31,7 @@ class ExistingSessionTests(unittest.TestCase):
         self.profile = self.conn.execute(
             "SELECT browser_profile FROM publisher_accounts WHERE id=?", (self.account,)
         ).fetchone()[0]
-        (self.root / self.profile).mkdir(parents=True)
+        (self.profile_root / Path(self.profile).name).mkdir(parents=True)
         (self.root / "config").mkdir()
         (self.root / "config/publisher_studio.json").write_text(
             '{"tiktok_actions_paused":false,"experimental_qr_enabled":false}',
@@ -52,7 +57,7 @@ class ExistingSessionTests(unittest.TestCase):
     def test_initial_inspection_uses_existing_cdp_context_read_only(self):
         self.process()
         self.worker.browser_runtime.get_context.assert_called_once_with(
-            self.playwright, (self.root / self.profile).resolve()
+            self.playwright, (self.profile_root / Path(self.profile).name).resolve()
         )
         self.page.goto.assert_not_called()
         self.context.new_page.assert_not_called()
@@ -178,7 +183,7 @@ class ExistingSessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.worker.inspect_existing_session(self.account)
         self.worker.start.assert_not_called()
-        self.assertFalse((self.root / "data/publisher/browser_profiles/absent").exists())
+        self.assertFalse((self.profile_root / "absent").exists())
 
     def test_verified_studio_is_not_redirected_to_login(self):
         self.process()

@@ -268,11 +268,14 @@ class WorkerDiagnosticTests(unittest.TestCase):
         (self.root/'config/publisher_studio.json').write_text('{"tiktok_actions_paused":false}')
         playwright=MagicMock()
         profile='data/publisher/browser_profiles/existing-fixture'
-        (self.root/profile).mkdir(parents=True)
+        profile_root=self.root/'browser-profiles'
+        expected=profile_root/'existing-fixture'
+        expected.mkdir(parents=True)
         runtime_get_context=MagicMock(return_value=self.context)
         self.worker.browser_runtime.get_context=runtime_get_context
-        self.worker.context(playwright,{'id':1,'browser_profile':profile})
-        runtime_get_context.assert_called_once_with(playwright,(self.root/profile).resolve())
+        with patch.dict('os.environ',{'PUBLISHER_BROWSER_PROFILE_ROOT':str(profile_root)}):
+            self.worker.context(playwright,{'id':1,'browser_profile':profile})
+        runtime_get_context.assert_called_once_with(playwright,expected.resolve())
         playwright.chromium.launch_persistent_context.assert_not_called()
         self.assertIn('response',self.page.listeners)
         self.assertIn('console',self.page.listeners)

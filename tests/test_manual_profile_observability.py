@@ -165,16 +165,17 @@ class ManualProfileTests(unittest.TestCase):
     def test_worker_context_rejects_manual_owner_before_playwright_launch(self):
         (self.root/'config').mkdir()
         (self.root/'config/publisher_studio.json').write_text('{"tiktok_actions_paused": false}')
-        profile = self.root/'data/publisher/browser_profiles/fixture'
+        profile = self.root/'browser-profiles/fixture'
         profile.mkdir(parents=True)
-        worker = PublisherWorker(self.root, self.root/'offline.db')
-        worker.profile_ownership.inventory = lambda p: []
-        token = worker.profile_ownership.acquire(profile, 'MANUAL')
-        worker.profile_ownership.activate(profile, token, 'MANUAL_BROWSER_ACTIVE')
-        playwright = MagicMock()
-        with self.assertRaisesRegex(ValueError, 'BROWSER_PROFILE_BUSY'):
-            worker.context(playwright, {'id': 1, 'browser_profile': str(profile.relative_to(self.root))})
-        playwright.chromium.launch_persistent_context.assert_not_called()
+        with patch.dict('os.environ', {'PUBLISHER_BROWSER_PROFILE_ROOT': str(profile.parent)}):
+            worker = PublisherWorker(self.root, self.root/'offline.db')
+            worker.profile_ownership.inventory = lambda p: []
+            token = worker.profile_ownership.acquire(profile, 'MANUAL')
+            worker.profile_ownership.activate(profile, token, 'MANUAL_BROWSER_ACTIVE')
+            playwright = MagicMock()
+            with self.assertRaisesRegex(ValueError, 'BROWSER_PROFILE_BUSY'):
+                worker.context(playwright, {'id': 1, 'browser_profile': 'fixture'})
+            playwright.chromium.launch_persistent_context.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()

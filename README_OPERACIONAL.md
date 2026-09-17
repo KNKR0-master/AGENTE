@@ -11,7 +11,9 @@ Shop permanece manual, assim como publicar/agendar.
 
 O runtime de producao usa Chrome com o mesmo `userDataDir`, lancamento por
 `subprocess.Popen(args, shell=False)` e attach Playwright via CDP somente em
-`127.0.0.1`. O handle esperado da conta e `cecilia.figueired65`.
+`127.0.0.1`. O root canonico dos profiles e resolvido a partir de
+`%LOCALAPPDATA%\PublisherDesk\browser_profiles`; somente o ID estavel da conta
+identifica o profile. O handle esperado da conta e `cecilia.figueired65`.
 Consulte [Publisher Desk](docs/publisher-desk.md) e o
 [checkpoint estavel](docs/publisher-stable-checkpoint.md) para o estado atual.
 
@@ -108,11 +110,11 @@ abre `/publisher.html` quando o servidor fica pronto. A verificacao de sessao
 usa a rota read-only existente e o `BrowserRuntimeManager`; o launcher nao
 possui logica propria de Chrome, CDP, profile ou autenticacao.
 
-Para encerrar normalmente, pressione `Ctrl+C` na janela do launcher. O
-supervisor envia um sinal de encerramento ao servidor, que executa o shutdown
-do worker e libera o mutex do profile. Nao use `taskkill` como procedimento
-normal; a sessao TikTok, cookies, storage e `userDataDir` permanecem no mesmo
-profile persistente.
+Para encerrar normalmente, pressione `Ctrl+C`, `Ctrl+Break` ou feche a janela
+do launcher pelo X. O supervisor envia a mesma solicitacao idempotente de
+encerramento ao servidor, que executa o shutdown do worker e libera o mutex do
+profile. Nao use `taskkill` como procedimento normal; a sessao TikTok, cookies,
+storage e `userDataDir` permanecem no mesmo profile persistente.
 
 A aba `Inteligencia de videos` reune distribuicao, retencao, engajamento,
 conciliacao comercial por Content ID, Investment Score, decay, reposicao de

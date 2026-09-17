@@ -641,7 +641,7 @@ class PublisherService:
                 self.assert_config_editable("account_id", row_id)
                 self.conn.execute("UPDATE publisher_accounts SET name=?,active=?,updated_at=? WHERE id=?", (name, int(data.get("active", True)), timestamp, row_id))
             else:
-                profile = f"data/publisher/browser_profiles/{uuid.uuid4().hex}"
+                profile = uuid.uuid4().hex
                 row_id = self.conn.execute("INSERT INTO publisher_accounts(name,browser_profile,created_at,updated_at) VALUES (?,?,?,?)", (name, profile, timestamp, timestamp)).lastrowid
             preference = self.conn.execute(
                 "SELECT default_publisher_account_id FROM publisher_preferences WHERE id=1"
