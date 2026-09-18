@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.store import now_iso
 from src.publisher.library import get_library_items, list_library, save_decision, set_product_overrides
+from src.publisher.folder_catalog import decide_folder_role, list_folder_reviews
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -107,6 +108,8 @@ def init_publisher(conn):
         'flow_prompt': "TEXT NOT NULL DEFAULT ''", 'legacy_source': 'TEXT',
         'legacy_product_id': 'TEXT', 'legacy_shop_url': 'TEXT',
         'created_at': 'TEXT', 'updated_at': 'TEXT',
+        'name_source': "TEXT NOT NULL DEFAULT 'MANUAL'",
+        'source_drive_folder_id': 'TEXT',
     }.items():
         if name not in columns:
             conn.execute(f'ALTER TABLE publisher_products ADD COLUMN {name} {definition}')
@@ -212,7 +215,8 @@ class PublisherService:
     def catalog(self):
         result = []
         for row in self.conn.execute("""SELECT x.product_id id,x.name,x.short_name,x.default_caption,
-          x.flow_prompt,x.active,x.account_id,x.legacy_source,x.legacy_product_id,x.legacy_shop_url,x.created_at,x.updated_at
+          x.flow_prompt,x.active,x.account_id,x.legacy_source,x.legacy_product_id,x.legacy_shop_url,
+          x.name_source,x.source_drive_folder_id,x.created_at,x.updated_at
           FROM publisher_products x ORDER BY x.name"""):
             item = dict(row)
             item["aliases"] = [r[0] for r in self.conn.execute("SELECT alias FROM product_aliases WHERE product_id=?", (item["id"],))]
@@ -490,6 +494,27 @@ class PublisherService:
             decision=params.get("decision", ""),
         )
 
+    def folder_catalog_reviews(self, params=None):
+        return {"items": list_folder_reviews(
+            self.conn, review_filter=(params or {}).get("filter", "REVIEW_REQUIRED")
+        )}
+
+    def decide_folder_catalog(self, data):
+        role = str(data.get("role") or "").upper()
+        product_id = data.get("product_id")
+        if data.get("create_product"):
+            folder = self.conn.execute(
+                "SELECT name FROM drive_folders WHERE drive_folder_id=?", (str(data.get("folder_id")),)
+            ).fetchone()
+            if not folder:
+                raise ValueError("FOLDER_NOT_FOUND")
+            product_id = self.save_product({"name": folder[0], "short_name": folder[0],
+                                            "name_source": "DRIVE",
+                                            "source_drive_folder_id": str(data.get("folder_id"))})
+            role = "PRODUCT"
+        return decide_folder_role(self.conn, str(data.get("folder_id") or ""), role,
+                                  product_id=product_id)
+
     def decide_media(self, data):
         return save_decision(self.conn, data.get("drive_file_id"), data.get("decision"), data.get("reason", ""))
 
@@ -599,7 +624,10 @@ class PublisherService:
 
     def save_product(self, data):
         if data.get('id'):
-            data = {**self.get_product(data['id']), **data}
+            explicit = dict(data)
+            data = {**self.get_product(data['id']), **explicit}
+            if "name" in explicit and "name_source" not in explicit:
+                data["name_source"] = "MANUAL"
         name = str(data.get("name", "")).strip()
         if not name:
             raise ValueError("Nome do produto obrigatorio")
@@ -622,11 +650,15 @@ class PublisherService:
                 product_id = self.conn.execute("INSERT INTO products(product_key,name,created_at,updated_at) VALUES (?,?,?,?)",
                                                (f'publisher:{uuid.uuid4().hex}',name,timestamp,timestamp)).lastrowid
             self.conn.execute("""INSERT INTO publisher_products
-              (product_id,name,short_name,default_caption,flow_prompt,account_id,active,created_at,updated_at)
-              VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET
+              (product_id,name,short_name,default_caption,flow_prompt,account_id,active,created_at,updated_at,
+               name_source,source_drive_folder_id)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET
               name=excluded.name,short_name=excluded.short_name,default_caption=excluded.default_caption,flow_prompt=excluded.flow_prompt,
-              account_id=excluded.account_id,active=excluded.active,updated_at=excluded.updated_at""",
-              (product_id,name,str(data.get('short_name') or '').strip(),caption,flow_prompt,account_id,int(data.get('active',True)),timestamp,timestamp))
+              account_id=excluded.account_id,active=excluded.active,updated_at=excluded.updated_at,
+              name_source=CASE WHEN excluded.name_source='DRIVE' THEN publisher_products.name_source ELSE 'MANUAL' END,
+              source_drive_folder_id=COALESCE(publisher_products.source_drive_folder_id,excluded.source_drive_folder_id)""",
+              (product_id,name,str(data.get('short_name') or '').strip(),caption,flow_prompt,account_id,int(data.get('active',True)),timestamp,timestamp,
+               str(data.get('name_source') or 'MANUAL'),data.get('source_drive_folder_id')))
         return product_id
 
     def save_account(self, data):

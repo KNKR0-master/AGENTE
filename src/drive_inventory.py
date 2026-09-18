@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from src.store import now_iso, upsert_product
 from src.product_assets import sync_folder_prompts
 from src.product_catalog import product_catalog_options, sync_affiliate_product_catalog
+from src.publisher.folder_catalog import sync_drive_product_name
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1116,14 +1117,16 @@ def _sync_creator_drive_profiles(
             ON CONFLICT(drive_folder_id) DO UPDATE SET
                 parent_drive_folder_id = excluded.parent_drive_folder_id,
                 name = excluded.name, relative_path = excluded.relative_path,
-                depth = 0, folder_type = excluded.folder_type,
+                depth = 0, folder_type = CASE
+                    WHEN drive_folders.role_source IN ('MANUAL', 'MIGRATION_HIGH_CONFIDENCE')
+                    THEN drive_folders.folder_type ELSE excluded.folder_type END,
                 mapping_status = excluded.mapping_status,
                 mapping_source = CASE
-                    WHEN drive_folders.mapping_source IN ('MANUAL', 'MANUAL_MAPPING')
+                    WHEN drive_folders.mapping_source IN ('MANUAL', 'MANUAL_MAPPING', 'MIGRATION_HIGH_CONFIDENCE')
                          AND excluded.operational_status = 'ACTIVE'
                     THEN drive_folders.mapping_source ELSE excluded.mapping_source END,
                 product_id = CASE
-                    WHEN drive_folders.mapping_source IN ('MANUAL', 'MANUAL_MAPPING')
+                    WHEN drive_folders.mapping_source IN ('MANUAL', 'MANUAL_MAPPING', 'MIGRATION_HIGH_CONFIDENCE')
                          AND excluded.operational_status = 'ACTIVE'
                     THEN drive_folders.product_id ELSE NULL END,
                 creator_profile_id = excluded.creator_profile_id,
@@ -1260,7 +1263,10 @@ def _upsert_scanned_folder(
         ON CONFLICT(drive_folder_id) DO UPDATE SET
             parent_drive_folder_id = excluded.parent_drive_folder_id,
             name = excluded.name, relative_path = excluded.relative_path, depth = excluded.depth,
-            folder_type = excluded.folder_type, mapping_status = excluded.mapping_status,
+            folder_type = CASE
+                WHEN drive_folders.role_source IN ('MANUAL', 'MIGRATION_HIGH_CONFIDENCE')
+                THEN drive_folders.folder_type ELSE excluded.folder_type END,
+            mapping_status = excluded.mapping_status,
             product_id = excluded.product_id, mapping_source = excluded.mapping_source,
             mapping_confidence = excluded.mapping_confidence,
             suggested_product_id = excluded.suggested_product_id,
@@ -1301,6 +1307,7 @@ def _upsert_scanned_folder(
             timestamp,
         ),
     )
+    sync_drive_product_name(conn, entry.file_id, entry.name)
     return dict(conn.execute(
         "SELECT * FROM drive_folders WHERE drive_folder_id = ?", (entry.file_id,)
     ).fetchone())
@@ -1409,11 +1416,13 @@ def _resolve_folder_mapping(
     folder_type: str,
     products: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if existing and existing.get("mapping_source") in {"MANUAL", "MANUAL_MAPPING"}:
+    if existing and existing.get("mapping_source") in {
+        "MANUAL", "MANUAL_MAPPING", "MIGRATION_HIGH_CONFIDENCE"
+    }:
         return {
             "mapping_status": existing["mapping_status"],
             "product_id": existing.get("product_id"),
-            "mapping_source": "MANUAL",
+            "mapping_source": existing["mapping_source"],
             "mapping_confidence": existing.get("mapping_confidence"),
         }
     if entry.file_id in config.ignored_folder_ids:

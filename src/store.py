@@ -1022,6 +1022,11 @@ def _migrate_drive_inventory(conn: sqlite3.Connection) -> None:
         "operational_status": "TEXT NOT NULL DEFAULT 'ACTIVE'",
         "direct_prompt_count": "INTEGER NOT NULL DEFAULT 0",
         "direct_other_file_count": "INTEGER NOT NULL DEFAULT 0",
+        "role_source": "TEXT NOT NULL DEFAULT 'HEURISTIC'",
+        "role_confidence": "TEXT",
+        "role_reason": "TEXT",
+        "role_review_status": "TEXT NOT NULL DEFAULT 'PENDING'",
+        "role_decided_at": "TEXT",
     }
     for name, definition in folder_columns.items():
         _add_column(conn, "drive_folders", name, definition)

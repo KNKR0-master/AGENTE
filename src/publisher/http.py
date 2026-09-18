@@ -235,6 +235,12 @@ class PublisherAPI:
                 })
                 handler._json(result, no_store=True)
                 return
+            if path == "/api/publisher/folder-catalog":
+                result = PublisherService(conn, self.root).folder_catalog_reviews({
+                    key: values[0] for key, values in query.items() if values
+                })
+                handler._json(result, no_store=True)
+                return
             if "media" in query or "evidence" in query:
                 if "media" in query:
                     row = get_row(conn, "publisher_drafts", query["media"][0])
@@ -373,6 +379,8 @@ class PublisherAPI:
                         result = service.decide_media(data)
                     elif action == 'media-product':
                         result = service.assign_media_product(data)
+                    elif action == 'folder-catalog-decision':
+                        result = service.decide_folder_catalog(data)
                     elif action == 'media-delete':
                         result = service.delete_library_media(data, media_provider())
                     elif action == "bulk":
