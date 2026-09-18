@@ -3,9 +3,13 @@ import unittest
 from pathlib import Path
 
 from src.publisher.folder_catalog import (
+    apply_bulk_role,
     apply_catalog_migration,
     decide_folder_role,
+    grouped_folder_reviews,
+    is_safe_direct_child_candidate,
     preview_catalog_migration,
+    set_container_auto_create,
     sync_drive_product_name,
 )
 from src.publisher.library import list_library
@@ -112,6 +116,46 @@ class PublisherFolderCatalogTests(unittest.TestCase):
         result = _resolve_folder_mapping(self.conn, object(), existing, None, entry, "/Renamed", "UNKNOWN", [])
         self.assertEqual(result["product_id"], 42)
         self.assertEqual(result["mapping_source"], "MIGRATION_HIGH_CONFIDENCE")
+
+    def test_grouping_and_direct_child_semantics_do_not_promote_descendants(self):
+        apply_catalog_migration(self.conn, self.plan())
+        stamp = now_iso()
+        with self.conn:
+            self.conn.execute("INSERT INTO drive_folders(drive_folder_id,parent_drive_folder_id,name,relative_path,role_confidence,role_reason,role_review_status,created_at,updated_at) VALUES ('direct','container','Direct','/Body Splash/Direct','MEDIUM','estrutura','REVIEW_REQUIRED',?,?)", (stamp, stamp))
+            self.conn.execute("INSERT INTO drive_folders(drive_folder_id,parent_drive_folder_id,name,relative_path,role_confidence,role_reason,role_review_status,created_at,updated_at) VALUES ('grandchild','direct','Material','/Body Splash/Direct/Material','MEDIUM','estrutura','REVIEW_REQUIRED',?,?)", (stamp, stamp))
+        direct = dict(self.conn.execute("SELECT * FROM drive_folders WHERE drive_folder_id='direct'").fetchone())
+        grandchild = dict(self.conn.execute("SELECT * FROM drive_folders WHERE drive_folder_id='grandchild'").fetchone())
+        self.assertTrue(is_safe_direct_child_candidate(self.conn, direct))
+        self.assertFalse(is_safe_direct_child_candidate(self.conn, grandchild))
+        grouped = grouped_folder_reviews(self.conn)
+        self.assertIn("direct", {row["drive_folder_id"] for row in grouped["groups"]["structurally_likely_products"]})
+        self.assertNotIn("grandchild", {row["drive_folder_id"] for row in grouped["groups"]["structurally_likely_products"]})
+
+    def test_conflict_exclusion_and_bulk_preview_confirmation(self):
+        apply_catalog_migration(self.conn, self.plan())
+        suggested = self.service.save_product({"name": "Existente"})
+        with self.conn:
+            self.conn.execute("UPDATE drive_folders SET suggested_product_id=? WHERE drive_folder_id='medium'", (suggested,))
+        preview = apply_bulk_role(self.conn, ["medium", "duplicate"], "CATEGORY", confirmed=False)
+        self.assertEqual(preview["folders_affected"], 0)
+        self.assertEqual(preview["conflicts_excluded"], 2)
+        self.assertFalse(self.conn.execute("SELECT role_source='MANUAL' FROM drive_folders WHERE drive_folder_id='medium'").fetchone()[0])
+
+    def test_bulk_product_creation_is_confirmed_and_idempotent(self):
+        apply_catalog_migration(self.conn, self.plan())
+        preview = apply_bulk_role(self.conn, ["medium"], "PRODUCT", confirmed=False)
+        self.assertEqual(preview["products_to_create"], 1)
+        result = apply_bulk_role(self.conn, ["medium"], "PRODUCT", confirmed=True)
+        self.assertEqual(result["products_created"], 1)
+        again = apply_bulk_role(self.conn, ["medium"], "PRODUCT", confirmed=True)
+        self.assertEqual(again["products_created"], 0)
+
+    def test_container_auto_create_is_per_container_and_defaults_false(self):
+        apply_catalog_migration(self.conn, self.plan())
+        self.assertEqual(self.conn.execute("SELECT auto_create_new_direct_children FROM drive_folders WHERE drive_folder_id='container'").fetchone()[0], 0)
+        result = set_container_auto_create(self.conn, "container", True)
+        self.assertTrue(result["auto_create_new_direct_children"])
+        self.assertEqual(self.conn.execute("SELECT auto_create_new_direct_children FROM drive_folders WHERE drive_folder_id='container'").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

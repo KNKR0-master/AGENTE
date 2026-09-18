@@ -1027,6 +1027,8 @@ def _migrate_drive_inventory(conn: sqlite3.Connection) -> None:
         "role_reason": "TEXT",
         "role_review_status": "TEXT NOT NULL DEFAULT 'PENDING'",
         "role_decided_at": "TEXT",
+        "role_review_metadata": "TEXT NOT NULL DEFAULT '{}'",
+        "auto_create_new_direct_children": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in folder_columns.items():
         _add_column(conn, "drive_folders", name, definition)

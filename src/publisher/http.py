@@ -381,6 +381,10 @@ class PublisherAPI:
                         result = service.assign_media_product(data)
                     elif action == 'folder-catalog-decision':
                         result = service.decide_folder_catalog(data)
+                    elif action == 'folder-catalog-bulk':
+                        result = service.bulk_folder_catalog(data)
+                    elif action == 'folder-container-settings':
+                        result = service.configure_product_container(data)
                     elif action == 'media-delete':
                         result = service.delete_library_media(data, media_provider())
                     elif action == "bulk":

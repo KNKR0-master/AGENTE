@@ -139,6 +139,7 @@ def apply_catalog_migration(conn, plan: dict) -> dict:
             conn.execute(
                 """UPDATE drive_folders SET folder_type=?, role_source=?, role_confidence=?,
                    role_reason=?, role_review_status=?, role_decided_at=?,
+                   role_review_metadata=?,
                    suggested_product_id=COALESCE(?,suggested_product_id),
                    suggestion_confidence=COALESCE(?,suggestion_confidence),
                    suggestion_reason=COALESCE(?,suggestion_reason),
@@ -147,7 +148,11 @@ def apply_catalog_migration(conn, plan: dict) -> dict:
                    mapping_source=CASE WHEN ? IS NOT NULL THEN 'MIGRATION_HIGH_CONFIDENCE' ELSE mapping_source END,
                    updated_at=? WHERE drive_folder_id=?""",
                 (persisted_role, source, confidence, folder.get("reason"), review_status,
-                 timestamp if apply_role else None, suggestion.get("product_id"), suggestion.get("score"),
+                 timestamp if apply_role else None, json.dumps({
+                     "proposed_role": folder.get("proposed_role"),
+                     "deduplication": folder.get("deduplication"),
+                     "possible_existing_product_matches": suggestions,
+                 }, ensure_ascii=False), suggestion.get("product_id"), suggestion.get("score"),
                  suggestion.get("match"), existing_product, existing_product,
                  existing_product, timestamp, folder_id),
             )
@@ -187,6 +192,166 @@ def list_folder_reviews(conn, *, review_filter: str = "REVIEW_REQUIRED") -> list
              WHERE {' AND '.join(clauses)} ORDER BY f.relative_path COLLATE NOCASE""", params,
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _metadata(row: dict) -> dict:
+    try:
+        return json.loads(row.get("role_review_metadata") or "{}")
+    except (TypeError, ValueError):
+        return {}
+
+
+def _history_conflict(conn, folder_id: str) -> bool:
+    return conn.execute(
+        """SELECT COUNT(DISTINCT new_product_id) FROM drive_folder_mapping_history
+           WHERE drive_folder_id=? AND new_product_id IS NOT NULL""", (folder_id,),
+    ).fetchone()[0] > 1
+
+
+def is_safe_direct_child_candidate(conn, row: dict) -> bool:
+    parent = conn.execute(
+        "SELECT folder_type FROM drive_folders WHERE drive_folder_id=? AND operational_status='ACTIVE'",
+        (row.get("parent_drive_folder_id"),),
+    ).fetchone()
+    metadata = _metadata(row)
+    return bool(
+        parent and parent[0] == "PRODUCT_CONTAINER"
+        and row.get("product_id") is None
+        and row.get("suggested_product_id") is None
+        and metadata.get("deduplication") in {None, "NO_MATCH"}
+        and row.get("role_review_status") not in {"IGNORED", "APPLIED"}
+        and not _history_conflict(conn, str(row["drive_folder_id"]))
+    )
+
+
+def grouped_folder_reviews(conn) -> dict:
+    folders = [dict(row) for row in conn.execute(
+        """SELECT f.*,p.name suggested_product_name,p.short_name suggested_product_short_name
+           FROM drive_folders f
+           LEFT JOIN publisher_products p ON p.product_id=f.suggested_product_id
+           WHERE f.operational_status='ACTIVE' ORDER BY f.relative_path COLLATE NOCASE"""
+    )]
+    groups = {key: [] for key in (
+        "probable_matches", "duplicates", "medium", "ambiguous",
+        "containers_to_confirm", "structurally_likely_products",
+    )}
+    for row in folders:
+        metadata = _metadata(row)
+        matches = metadata.get("possible_existing_product_matches") or []
+        row["existing_product_candidates"] = matches
+        row["metadata_proposed_role"] = metadata.get("proposed_role")
+        row["deduplication"] = metadata.get("deduplication")
+        row["existing_folder_associations"] = []
+        for match in matches:
+            match["folder_associations"] = [dict(item) for item in conn.execute(
+                "SELECT drive_folder_id,name,relative_path FROM drive_folders WHERE product_id=? AND operational_status='ACTIVE'",
+                (match.get("product_id"),),
+            )]
+        if row.get("role_review_status") not in {"REVIEW_REQUIRED", "DEFERRED"}:
+            continue
+        if row["deduplication"] == "PROBABLE_EXISTING_PRODUCT_MATCH":
+            groups["probable_matches"].append(row)
+        elif _is_duplicate({"folder_name": row["name"]}):
+            groups["duplicates"].append(row)
+        elif row["metadata_proposed_role"] == "PRODUCT_CONTAINER":
+            groups["containers_to_confirm"].append(row)
+        elif is_safe_direct_child_candidate(conn, row):
+            row["structural_reason"] = "Filho direto de PRODUCT_CONTAINER confirmado, sem match ou conflito"
+            groups["structurally_likely_products"].append(row)
+        elif row.get("role_confidence") == "MEDIUM":
+            groups["medium"].append(row)
+        else:
+            groups["ambiguous"].append(row)
+    containers = []
+    for row in folders:
+        if row.get("folder_type") != "PRODUCT_CONTAINER":
+            continue
+        children = [dict(item) for item in conn.execute(
+            """SELECT drive_folder_id,name,relative_path,folder_type,role_confidence,
+               role_review_status,direct_video_count FROM drive_folders
+               WHERE parent_drive_folder_id=? AND operational_status='ACTIVE' ORDER BY name COLLATE NOCASE""",
+            (row["drive_folder_id"],),
+        )]
+        containers.append({
+            "folder_id": row["drive_folder_id"], "folder_name": row["name"],
+            "full_path": row["relative_path"], "direct_child_folder_count": len(children),
+            "direct_video_count": row["direct_video_count"], "reason": row.get("role_reason"),
+            "confidence": row.get("role_confidence"),
+            "auto_create_new_direct_children": bool(row.get("auto_create_new_direct_children")),
+            "product_children": [item for item in children if item["folder_type"] == "PRODUCT"],
+            "unclassified_children": [item for item in children if item["folder_type"] != "PRODUCT"],
+        })
+    return {"groups": groups, "counts": {key: len(value) for key, value in groups.items()},
+            "current_product_containers": containers}
+
+
+def preview_bulk_role(conn, folder_ids: list[str], role: str) -> dict:
+    role = str(role).upper()
+    if role not in {"CATEGORY", "PRODUCT", "PRODUCT_CONTAINER"}:
+        raise ValueError("BULK_FOLDER_ROLE_INVALID")
+    ids = list(dict.fromkeys(str(value) for value in folder_ids if str(value).strip()))
+    rows = [dict(row) for row in conn.execute(
+        f"SELECT * FROM drive_folders WHERE drive_folder_id IN ({','.join('?' for _ in ids)}) AND operational_status='ACTIVE'",
+        ids,
+    )] if ids else []
+    if len(rows) != len(ids):
+        raise ValueError("BULK_FOLDER_SELECTION_INVALID")
+    conflicts = [row for row in rows if row.get("suggested_product_id") is not None or _is_duplicate({"folder_name": row["name"]}) or _history_conflict(conn, row["drive_folder_id"])]
+    eligible = [row for row in rows if row not in conflicts]
+    return {"role": role, "folders_affected": len(eligible),
+            "products_to_create": sum(role == "PRODUCT" and row.get("product_id") is None for row in eligible),
+            "existing_associations_preserved": sum(row.get("product_id") is not None for row in rows),
+            "conflicts_excluded": len(conflicts), "eligible_folder_ids": [row["drive_folder_id"] for row in eligible]}
+
+
+def apply_bulk_role(conn, folder_ids: list[str], role: str, *, confirmed: bool) -> dict:
+    preview = preview_bulk_role(conn, folder_ids, role)
+    if not confirmed:
+        return preview
+    timestamp = now_iso()
+    created = 0
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for folder_id in preview["eligible_folder_ids"]:
+            product_id = None
+            if preview["role"] == "PRODUCT":
+                row = dict(conn.execute("SELECT * FROM drive_folders WHERE drive_folder_id=?", (folder_id,)).fetchone())
+                product_id = row.get("product_id")
+                if product_id is None:
+                    product_id = _create_drive_product(conn, {
+                        "folder_id": folder_id, "folder_name": row["name"],
+                        "suggested_product_name": row["name"], "suggested_short_name": row["name"],
+                    }, timestamp)
+                    created += 1
+            decide_folder_role(conn, folder_id, preview["role"], product_id=product_id)
+    return {**preview, "products_created": created, "applied": True}
+
+
+def set_container_auto_create(conn, folder_id: str, enabled: bool) -> dict:
+    row = conn.execute("SELECT folder_type FROM drive_folders WHERE drive_folder_id=?", (folder_id,)).fetchone()
+    if not row or row[0] != "PRODUCT_CONTAINER":
+        raise ValueError("PRODUCT_CONTAINER_REQUIRED")
+    with conn:
+        conn.execute("UPDATE drive_folders SET auto_create_new_direct_children=?,updated_at=? WHERE drive_folder_id=?",
+                     (int(bool(enabled)), now_iso(), folder_id))
+    return {"folder_id": folder_id, "auto_create_new_direct_children": bool(enabled)}
+
+
+def reject_suggested_match(conn, folder_id: str) -> dict:
+    row = conn.execute("SELECT * FROM drive_folders WHERE drive_folder_id=?", (folder_id,)).fetchone()
+    if not row:
+        raise ValueError("FOLDER_NOT_FOUND")
+    metadata = _metadata(dict(row))
+    metadata["match_rejected_by_user"] = True
+    metadata["deduplication"] = "NO_MATCH"
+    with conn:
+        conn.execute(
+            """UPDATE drive_folders SET suggested_product_id=NULL,suggestion_confidence=NULL,
+               suggestion_reason='Rejeitado pelo usuário',role_review_metadata=?,updated_at=?
+               WHERE drive_folder_id=?""",
+            (json.dumps(metadata, ensure_ascii=False), now_iso(), folder_id),
+        )
+    return {"folder_id": folder_id, "match_rejected": True}
 
 
 def decide_folder_role(conn, folder_id: str, role: str, *, product_id=None) -> dict:

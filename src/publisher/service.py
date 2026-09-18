@@ -7,7 +7,14 @@ from pathlib import Path
 
 from src.store import now_iso
 from src.publisher.library import get_library_items, list_library, save_decision, set_product_overrides
-from src.publisher.folder_catalog import decide_folder_role, list_folder_reviews
+from src.publisher.folder_catalog import (
+    apply_bulk_role,
+    decide_folder_role,
+    grouped_folder_reviews,
+    list_folder_reviews,
+    reject_suggested_match,
+    set_container_auto_create,
+)
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -495,11 +502,14 @@ class PublisherService:
         )
 
     def folder_catalog_reviews(self, params=None):
-        return {"items": list_folder_reviews(
-            self.conn, review_filter=(params or {}).get("filter", "REVIEW_REQUIRED")
-        )}
+        params = params or {}
+        if params.get("grouped") in {"1", "true", "True"}:
+            return grouped_folder_reviews(self.conn)
+        return {"items": list_folder_reviews(self.conn, review_filter=params.get("filter", "REVIEW_REQUIRED"))}
 
     def decide_folder_catalog(self, data):
+        if data.get("action") == "reject_match":
+            return reject_suggested_match(self.conn, str(data.get("folder_id") or ""))
         role = str(data.get("role") or "").upper()
         product_id = data.get("product_id")
         if data.get("create_product"):
@@ -514,6 +524,14 @@ class PublisherService:
             role = "PRODUCT"
         return decide_folder_role(self.conn, str(data.get("folder_id") or ""), role,
                                   product_id=product_id)
+
+    def bulk_folder_catalog(self, data):
+        return apply_bulk_role(self.conn, data.get("folder_ids") or [], data.get("role"),
+                               confirmed=data.get("human_confirmed") is True)
+
+    def configure_product_container(self, data):
+        return set_container_auto_create(self.conn, str(data.get("folder_id") or ""),
+                                         bool(data.get("auto_create_new_direct_children", False)))
 
     def decide_media(self, data):
         return save_decision(self.conn, data.get("drive_file_id"), data.get("decision"), data.get("reason", ""))
