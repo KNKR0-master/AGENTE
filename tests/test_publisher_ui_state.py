@@ -127,6 +127,77 @@ class PublisherUIStateTests(unittest.TestCase):
         self.assertEqual(result["initialCount"], 10)
         self.assertEqual(result["archived"], [1])
 
+    def test_rate_limited_with_cooldown_renders_release_time(self):
+        result = self.run_node(
+            f"""
+            const state = require({json.dumps(str(STATE_MODULE))});
+            const view = state.protectionPresentation({{
+              state:'RATE_LIMITED', reason_code:'RATE_LIMIT_EXCEEDED',
+              cooldown_until:'2026-09-20T21:40:00Z'
+            }}, new Date('2026-09-20T18:00:00Z'));
+            console.log(JSON.stringify(view));
+            """
+        )
+        self.assertIn("pausada temporariamente", result["message"])
+        self.assertIn("Hoje", result["nextAction"])
+
+    def test_rate_limited_without_cooldown_requires_review(self):
+        result = self.run_node(
+            f"""
+            const state = require({json.dumps(str(STATE_MODULE))});
+            console.log(JSON.stringify(state.protectionPresentation({{state:'RATE_LIMITED'}}, new Date('2026-09-20T18:00:00Z'))));
+            """
+        )
+        self.assertIn("possui hor", result["nextAction"])
+        self.assertIn("Revise", result["nextAction"])
+
+    def test_manual_clear_context_contains_friendly_complete_fields(self):
+        result = self.run_node(
+            f"""
+            const state = require({json.dumps(str(STATE_MODULE))});
+            console.log(JSON.stringify(state.protectionPresentation({{
+              state:'SPAM_RISK',reason_code:'SPAM_RISK',observed_at:'2026-09-20T19:42:00Z',
+              evidence_summary:'spam risk fixture'
+            }},new Date('2026-09-20T20:00:00Z'))));
+            """
+        )
+        self.assertEqual(result["stateLabel"], "Risco de spam detectado")
+        self.assertIn("restri", result["reasonLabel"])
+        self.assertNotIn("informado", result["detectedAt"])
+        self.assertEqual(result["evidence"], "spam risk fixture")
+
+    def test_transfer_unknown_has_safe_message_and_no_retry_language(self):
+        result = self.run_node(
+            f"""
+            const state=require({json.dumps(str(STATE_MODULE))});
+            console.log(JSON.stringify(state.ambiguousDraftPresentation({{upload_status:'TRANSFER_UNKNOWN'}})));
+            """
+        )
+        self.assertIn("pode ter recebido", result["message"])
+        self.assertIn("tente novamente", result["message"])
+        self.assertEqual(result["action"], "Verificar status")
+        self.assertNotIn("Reenviar", result["action"])
+
+    def test_needs_reconciliation_has_safe_message_and_no_reupload(self):
+        result = self.run_node(
+            f"""
+            const state=require({json.dumps(str(STATE_MODULE))});
+            console.log(JSON.stringify(state.ambiguousDraftPresentation({{media_status:'NEEDS_RECONCILIATION'}})));
+            """
+        )
+        self.assertIn("envie novamente", result["message"])
+        self.assertEqual(result["action"], "Verificar status")
+        self.assertNotIn("upload", result["action"].lower())
+
+    def test_manual_clear_dialog_is_explicit_and_cancel_is_non_submit(self):
+        html = (ROOT / "dashboard" / "publisher.html").read_text(encoding="utf-8")
+        script = (ROOT / "dashboard" / "publisher.js").read_text(encoding="utf-8")
+        self.assertIn('id="accountProtectionDialog"', html)
+        self.assertIn('name="human_confirmed"', html)
+        self.assertIn('data-close="accountProtectionDialog">Cancelar', html)
+        self.assertIn('<button type="submit">Limpar proteção</button>', html)
+        self.assertNotIn("data-clear-protection", script)
+
 
 if __name__ == "__main__":
     unittest.main()

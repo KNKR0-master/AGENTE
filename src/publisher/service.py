@@ -403,6 +403,14 @@ class PublisherService:
         for account in self.conn.execute("SELECT id,name FROM publisher_accounts WHERE active=1 ORDER BY id"):
             item = AccountSafetyGuard(self.conn).snapshot(account['id'])
             item['account_name'] = account['name']
+            item['account_handle'] = self.conn.execute(
+                "SELECT tiktok_username FROM publisher_accounts WHERE id=?", (account['id'],)
+            ).fetchone()[0]
+            latest = self.conn.execute("""SELECT created_at,evidence_json FROM account_protection_events
+              WHERE account_id=? ORDER BY id DESC LIMIT 1""", (account['id'],)).fetchone()
+            evidence = json.loads(latest['evidence_json'] or '{}') if latest else {}
+            item['observed_at'] = latest['created_at'] if latest else item.get('activated_at')
+            item['evidence_summary'] = evidence.get('ui_marker') or evidence.get('provider_code') or evidence.get('operation') or ''
             item['blocked'] = item['state'] != 'NORMAL'
             protections.append(item)
         return {"products": self.catalog(), "preferences": self.get_preferences(),

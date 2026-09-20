@@ -29,6 +29,75 @@
     return scored.slice(0, Math.max(1, Math.min(10, limit))).map(item => item.product);
   }
 
+  const protectionLabels = {
+    RATE_LIMITED: 'Operação pausada temporariamente',
+    POSTING_LIMIT_REACHED: 'Limite de atividade atingido',
+    SPAM_RISK: 'Risco de spam detectado',
+    POSTING_BANNED: 'Publicações bloqueadas na conta',
+    MANUAL_REVIEW_REQUIRED: 'Revisão manual necessária',
+  };
+
+  const reasonLabels = {
+    RATE_LIMIT_EXCEEDED: 'O TikTok pediu uma pausa temporária nas ações desta conta.',
+    POSTING_LIMIT_REACHED: 'O limite seguro de atividade desta conta foi atingido.',
+    TOO_MANY_PENDING_SHARES: 'Há compartilhamentos pendentes demais para continuar com segurança.',
+    SPAM_RISK: 'O TikTok apresentou um sinal de restrição de atividade.',
+    ACCOUNT_POSTING_BANNED: 'O TikTok bloqueou novas publicações nesta conta.',
+  };
+
+  function localDateTime(value, now = new Date()) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    const sameDay = date.toDateString() === now.toDateString();
+    const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+    const time = date.toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'});
+    if (sameDay) return `Hoje às ${time}`;
+    if (date.toDateString() === tomorrow.toDateString()) return `Amanhã às ${time}`;
+    return `${date.toLocaleDateString('pt-BR', {day: '2-digit', month: '2-digit'})} às ${time}`;
+  }
+
+  function protectionPresentation(protection, now = new Date()) {
+    if (!protection || protection.state === 'NORMAL') return null;
+    const release = localDateTime(protection.cooldown_until, now);
+    const cooldownExpired = !!protection.cooldown_until && new Date(protection.cooldown_until) <= now;
+    let message = 'Novas ações no TikTok estão pausadas para proteger esta conta.';
+    let nextAction = 'Revise o estado da conta antes de continuar.';
+    if (protection.state === 'RATE_LIMITED' && release && !cooldownExpired) {
+      message = 'Operação pausada temporariamente para proteger esta conta.';
+      nextAction = `Novas ações estarão disponíveis após ${release}.`;
+    } else if (protection.state === 'RATE_LIMITED' && cooldownExpired) {
+      message = 'O período de pausa terminou.';
+      nextAction = 'A próxima ação ainda será validada pelo sistema antes de continuar.';
+    } else if (!protection.cooldown_until) {
+      nextAction = 'Esta pausa não possui horário automático de liberação. Revise o estado da conta antes de continuar.';
+    }
+    return {
+      title: protectionLabels[protection.state] || 'Conta protegida',
+      message,
+      nextAction,
+      stateLabel: protectionLabels[protection.state] || protection.state,
+      reasonLabel: reasonLabels[protection.reason_code] || 'O sistema registrou uma condição que exige revisão.',
+      detectedAt: localDateTime(protection.observed_at || protection.activated_at, now) || 'Não informado',
+      evidence: protection.evidence_summary || 'Nenhuma evidência adicional disponível.',
+    };
+  }
+
+  function ambiguousDraftPresentation(draft) {
+    if (!draft) return null;
+    if (draft.upload_status === 'TRANSFER_UNKNOWN') return {
+      title: 'Envio aguardando verificação',
+      message: 'O TikTok pode ter recebido este vídeo. Não tente novamente enquanto a verificação estiver pendente.',
+      action: 'Verificar status',
+    };
+    if (draft.media_status === 'NEEDS_RECONCILIATION' || draft.processing_status === 'NEEDS_RECONCILIATION') return {
+      title: 'Rascunho aguardando verificação',
+      message: 'Ainda não foi possível confirmar se o rascunho foi salvo. Como o TikTok pode já ter recebido o vídeo, não envie novamente. Use a verificação de status antes de qualquer nova tentativa.',
+      action: 'Verificar status',
+    };
+    return null;
+  }
+
   function create() {
     const librarySelected = new Set();
     const librarySelectionDetails = new Map();
@@ -100,5 +169,5 @@
     };
   }
 
-  return {create, normalizeSearch, searchProducts};
+  return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation};
 });
