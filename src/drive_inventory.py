@@ -228,6 +228,76 @@ class GoogleApiDriveInventoryProvider:
         except Exception as exc:
             raise DriveInventoryError(f"Falha ao listar pasta: {_safe_provider_error(exc)}") from exc
 
+    def get_start_page_token(self) -> str:
+        try:
+            payload = self._service.changes().getStartPageToken(
+                supportsAllDrives=True,
+            ).execute(num_retries=0)
+            token = str(payload.get("startPageToken") or "")
+            if not token:
+                raise DriveInventoryError("Google Drive nao retornou startPageToken")
+            return token
+        except DriveInventoryError:
+            raise
+        except Exception as exc:
+            raise DriveInventoryError(f"Falha ao obter cursor do Drive: {_safe_provider_error(exc)}") from exc
+
+    def list_changes(self, page_token: str) -> dict[str, Any]:
+        fields = (
+            "nextPageToken,newStartPageToken,changes(removed,fileId,"
+            "file(id,name,mimeType,parents,trashed,modifiedTime,createdTime,size,"
+            "md5Checksum,webViewLink,thumbnailLink))"
+        )
+        try:
+            payload = self._service.changes().list(
+                pageToken=page_token,
+                spaces="drive",
+                includeRemoved=True,
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+                pageSize=1000,
+                fields=fields,
+            ).execute(num_retries=0)
+        except Exception as exc:
+            error = DriveInventoryError(f"Falha ao consultar changes do Drive: {_safe_provider_error(exc)}")
+            error.__cause__ = exc
+            raise error
+        changes = []
+        for raw in payload.get("changes", []):
+            item = raw.get("file") or {}
+            changes.append({
+                "file_id": str(raw.get("fileId") or item.get("id") or ""),
+                "removed": bool(raw.get("removed")),
+                "file": item or None,
+            })
+        return {
+            "changes": changes,
+            "next_page_token": payload.get("nextPageToken"),
+            "new_start_page_token": payload.get("newStartPageToken"),
+        }
+
+    def is_within_root(self, file_id: str, root_id: str) -> bool | None:
+        pending, seen = [file_id], set()
+        while pending:
+            current = pending.pop()
+            if current == root_id:
+                return True
+            if current in seen or len(seen) > 200:
+                continue
+            seen.add(current)
+            try:
+                payload = self._service.files().get(
+                    fileId=current,
+                    fields="id,parents,trashed",
+                    supportsAllDrives=True,
+                ).execute(num_retries=0)
+            except Exception:
+                return None
+            if payload.get("trashed"):
+                return False
+            pending.extend(payload.get("parents") or [])
+        return False
+
     def read_text(self, entry: DriveEntry) -> str:
         try:
             if entry.mime_type == "application/vnd.google-apps.document":

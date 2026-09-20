@@ -69,6 +69,20 @@ def init_publisher(conn):
     CREATE TABLE IF NOT EXISTS publisher_media_overrides (
       drive_file_id TEXT PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES publisher_products(product_id),
       updated_at TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '');
+    CREATE TABLE IF NOT EXISTS publisher_drive_sync_state (
+      id INTEGER PRIMARY KEY,
+      account_identity TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      root_folder_id TEXT NOT NULL,
+      current_cursor TEXT,
+      cursor_status TEXT NOT NULL DEFAULT 'UNINITIALIZED'
+        CHECK(cursor_status IN ('UNINITIALIZED','READY','INVALID','FULL_SCAN_REQUIRED','ERROR')),
+      last_successful_sync_at TEXT,
+      last_full_scan_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(account_identity,provider,root_folder_id));
     CREATE TABLE IF NOT EXISTS publisher_batch_executions (
       id INTEGER PRIMARY KEY, batch_id INTEGER, total INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'QUEUED', started_at TEXT NOT NULL, finished_at TEXT,
@@ -110,6 +124,7 @@ def init_publisher(conn):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS publisher_media_reservation ON publisher_drafts(media_asset_id) WHERE media_asset_id IS NOT NULL AND status<>'ARCHIVED'")
     conn.execute("CREATE INDEX IF NOT EXISTS publisher_media_decisions_decision ON publisher_media_decisions(decision, updated_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS publisher_media_overrides_product ON publisher_media_overrides(product_id, updated_at)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS publisher_drive_sync_scope ON publisher_drive_sync_state(account_identity,provider,root_folder_id)")
     columns = {r[1] for r in conn.execute('PRAGMA table_info(publisher_products)')}
     for name, definition in {
         'name': 'TEXT', 'short_name': 'TEXT', 'default_caption': 'TEXT',

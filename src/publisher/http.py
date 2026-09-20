@@ -17,6 +17,7 @@ from src.publisher.service import PublisherService, get_row, init_publisher
 from src.publisher.worker import PublisherWorker, recover_sessions
 from src.publisher.media import media_provider, TemporaryMediaCache
 from src.publisher.account_safety import AccountSafetyGuard
+from src.publisher.drive_sync import incremental_drive_sync
 
 
 PUBLISHER_API_VERSION = "publisher-api-v1"
@@ -377,6 +378,8 @@ class PublisherAPI:
                             result = service.index_media(media_provider())
                         except Exception as exc:
                             raise ValueError(f'Falha ao sincronizar Drive ({type(exc).__name__}). Verifique acesso da Cecilia e conexao.') from exc
+                    elif path == '/api/publisher/drive-sync/incremental':
+                        result = incremental_drive_sync(conn, bootstrap=data.get('bootstrap') is True)
                     elif action == 'batches':
                         result = service.create_remote_batch(data)
                     elif action == 'library-batches':
