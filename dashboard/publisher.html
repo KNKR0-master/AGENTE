@@ -1,9 +1,10 @@
 <!doctype html>
 <html lang="pt-BR">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Publisher Desk</title><link rel="stylesheet" href="/publisher.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Publisher Desk</title><link rel="stylesheet" href="/publisher.css"><style>.account-protection{padding:14px 28px;background:#fff1e8;border-bottom:1px solid #e3b79f;color:#702f18}.account-protection>div{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.account-protection span{flex:1}.account-protection details{width:100%;font-size:12px}</style></head>
 <body>
 <header><div><a href="/">TikTok Shop</a><h1>Publisher Desk</h1><small id="workerStatus"></small></div><button id="refresh" title="Atualizar">↻</button></header>
 <section id="systemStatus" class="system-status" aria-live="polite"></section>
+<section id="accountProtection" class="account-protection" aria-live="assertive" hidden></section>
 <nav aria-label="Publisher"><button data-view="queue" class="selected">Fila</button><button data-view="library">Biblioteca</button><button data-view="catalog">Revisão de pastas</button><button data-view="batch">Criar lote</button><button data-view="products">Produtos</button><button data-view="accounts">Contas</button><button data-view="presets">Presets</button><button data-view="logs">Logs</button></nav>
 <p id="notice" role="status" aria-live="polite"></p>
 <main>

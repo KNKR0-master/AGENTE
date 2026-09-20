@@ -198,6 +198,12 @@ def probe_video(path: Path, ffprobe_bin: str = "ffprobe") -> VideoProbeResult:
     near_9_16 = abs(aspect_ratio - 9 / 16) <= 0.05
     file_size = int(payload.get("format", {}).get("size") or path.stat().st_size)
     codec = video_stream.get("codec_name")
+    rate = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
+    try:
+        numerator, denominator = str(rate).split("/", 1)
+        fps = float(numerator) / float(denominator) if float(denominator) else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        fps = None
 
     result = {
         "valid_file": True,
@@ -206,6 +212,7 @@ def probe_video(path: Path, ffprobe_bin: str = "ffprobe") -> VideoProbeResult:
         "duration": duration,
         "width": width,
         "height": height,
+        "fps": fps,
         "resolution": f"{width}x{height}" if width and height else None,
         "aspect_ratio": aspect_ratio,
         "vertical": vertical,

@@ -16,6 +16,7 @@ from src.store import connect
 from src.publisher.service import PublisherService, get_row, init_publisher
 from src.publisher.worker import PublisherWorker, recover_sessions
 from src.publisher.media import media_provider, TemporaryMediaCache
+from src.publisher.account_safety import AccountSafetyGuard
 
 
 PUBLISHER_API_VERSION = "publisher-api-v1"
@@ -364,6 +365,11 @@ class PublisherAPI:
                         result = service.set_product_folder(data.get("product_id"), data.get("folder_id"), data.get("action", "add"))
                     elif action == "preferences":
                         result = {"default_publisher_account_id": service.set_default_account(data.get("default_publisher_account_id"))}
+                    elif action == "account-protection-clear":
+                        result = AccountSafetyGuard(conn).clear_manual(
+                            data.get("account_id"), human_confirmed=data.get("human_confirmed"),
+                            reason=data.get("reason"),
+                        )
                     elif action in {"products", "accounts", "presets"}:
                         result = {"id": getattr(service, f"save_{action[:-1]}")(data)}
                     elif action == 'sync-media':

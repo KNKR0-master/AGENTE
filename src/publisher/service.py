@@ -15,6 +15,7 @@ from src.publisher.folder_catalog import (
     reject_suggested_match,
     set_container_auto_create,
 )
+from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -121,6 +122,7 @@ def init_publisher(conn):
         if name not in columns:
             conn.execute(f'ALTER TABLE publisher_products ADD COLUMN {name} {definition}')
     conn.execute('CREATE TABLE IF NOT EXISTS publisher_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
+    init_account_safety(conn)
     if not conn.execute("SELECT 1 FROM publisher_migrations WHERE name='internal_catalog_v2'").fetchone():
         # Snapshot once: later Analytics imports must not change the editorial catalog.
         timestamp = now_iso()
@@ -397,6 +399,12 @@ class PublisherService:
           JOIN publisher_accounts a ON a.id=d.account_id ORDER BY d.id DESC""")]
         for draft in drafts:
             draft["checklist"] = json.loads(draft.pop("checklist_json"))
+        protections = []
+        for account in self.conn.execute("SELECT id,name FROM publisher_accounts WHERE active=1 ORDER BY id"):
+            item = AccountSafetyGuard(self.conn).snapshot(account['id'])
+            item['account_name'] = account['name']
+            item['blocked'] = item['state'] != 'NORMAL'
+            protections.append(item)
         return {"products": self.catalog(), "preferences": self.get_preferences(),
                 "drive_folders": self.list_drive_folders(), "drafts": drafts, "statuses": STATUSES,
                 "media_assets": [dict(r) for r in self.conn.execute("SELECT * FROM publisher_media_assets ORDER BY filename")],
@@ -413,6 +421,7 @@ class PublisherService:
                   GROUP BY e.id ORDER BY e.id DESC LIMIT 30""")],
                 **{name: [dict(r) for r in self.conn.execute(f"SELECT * FROM publisher_{name} ORDER BY id DESC")]
                    for name in ("accounts", "presets", "batches")},
+                "account_protection": protections,
                 "logs": [dict(r) for r in self.conn.execute("SELECT * FROM publisher_execution_logs ORDER BY id DESC LIMIT 300")]}
 
     def index_media(self, provider):
@@ -590,6 +599,10 @@ class PublisherService:
         account_id = data.get("account_id") or self.default_account_id()
         if not account_id:
             raise ValueError("Selecione uma conta Publisher ativa")
+        try:
+            AccountSafetyGuard(self.conn).assert_allowed(account_id)
+        except AccountProtectionBlocked as exc:
+            raise ValueError(f'BLOCKED_BY_ACCOUNT_PROTECTION: {exc.reason_code}') from exc
         preset_id = data.get("preset_id") or None
         items = get_library_items(self.conn, ids)
         by_id = {item["drive_file_id"]: item for item in items}

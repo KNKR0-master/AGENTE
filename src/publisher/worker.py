@@ -32,6 +32,9 @@ from src.publisher.auth_test_lock import AuthTestLock
 from src.publisher.manual_profile import ProfileOwnership
 from src.publisher.browser_runtime import BrowserRuntimeManager
 from src.publisher.profile_paths import resolve_browser_profile
+from src.publisher.account_safety import (
+    AccountSafetyGuard, AccountProtectionBlocked, BLOCKED_BY_ACCOUNT_PROTECTION, map_risk_signal,
+)
 
 
 class PreparationError(Exception):
@@ -280,8 +283,11 @@ class StudioInterruptionHandler:
 
 class StudioPage:
     """All site-specific selectors live in the mapping, and all actions fail closed."""
-    def __init__(self, page, mapping):
+    def __init__(self, page, mapping, before_mutation=None, after_mutation=None, risk_observer=None):
         self.page, self.mapping = page, mapping
+        self.before_mutation = before_mutation or (lambda operation: None)
+        self.after_mutation = after_mutation or (lambda operation: None)
+        self.risk_observer = risk_observer or (lambda text: None)
         self.interruptions = StudioInterruptionHandler(page)
         self.transfer_confirmed = False
         self.save_attempted = False
@@ -296,6 +302,7 @@ class StudioPage:
 
     def challenge(self):
         text = self.page.locator("body").inner_text(timeout=5000).lower()
+        self.risk_observer(text)
         if any(x in text for x in ("captcha", "verify you are human", "verifique se", "verification code", "codigo de verificacao")):
             raise PreparationError("MANUAL_ACTION_REQUIRED", "Resolva a verificacao no navegador e reexecute")
         if is_login_url(self.page.url):
@@ -319,6 +326,7 @@ class StudioPage:
         check = {"file": True}
         upload = self.element("file_input")
         upload = self.wait_for_single(upload, 'Campo de arquivo')
+        self.before_mutation('VIDEO_UPLOAD')
         evidence('UPLOAD_STARTED','Selecao unica do arquivo; qualquer falha exige reconciliacao')
         upload.set_input_files(str(path))
         self._set_upload_state(draft, 'TRANSFER_IN_PROGRESS', 'PROCESSING')
@@ -329,6 +337,7 @@ class StudioPage:
         check["media_ready"] = media_state["media_ready_for_edit"]
         check['upload_confirmed_at'] = now_iso()
         evidence("UPLOAD_CONFIRMED", "Enviado + preview + verificacoes concluidas")
+        self.after_mutation('VIDEO_UPLOAD')
         caption = self.element("caption")
         if caption.count()!=1:
             raise PreparationError('STUDIO_CHANGED','Campo de legenda ambiguo')
@@ -476,6 +485,7 @@ class StudioPage:
         if len(candidates)!=1 or not candidates[0][1].is_enabled():
             raise PreparationError('STUDIO_CHANGED','Salvar rascunho ausente ou ambiguo')
         evidence('SAVE_DRAFT',f'role=button; name={candidates[0][0]}; enabled=true; draft-only allowlist')
+        self.before_mutation('SAVE_DRAFT')
         self.save_attempted = True
         candidates[0][1].click(timeout=10000)
         deadline=monotonic()+60
@@ -491,12 +501,13 @@ class StudioPage:
                 if ('rascunhos' in text.casefold() and 'todos os computadores' in text.casefold() and
                     self.page.get_by_text(draft['caption'], exact=True).count() >= 1):
                     evidence('TIKTOK_DRAFT_CONFIRMED','Apos salvar: lista Rascunhos, legenda exata unica e disponibilidade entre computadores')
+                    self.after_mutation('SAVE_DRAFT')
                     return {'durable':True,'tiktok_draft_url':self.page.url,'persisted_at':now_iso()}
             self.page.wait_for_timeout(500)
         raise PreparationError('MANUAL_ACTION_REQUIRED','Persistencia nao comprovada; nao repetir upload')
 
 
-def prepare_job(adapter, draft, preset, path, evidence, ffprobe_bin=None):
+def prepare_job(adapter, draft, preset, path, evidence, ffprobe_bin=None, media_validator=None):
     if not draft.get("caption", "").strip():
         raise PreparationError("CAPTION_MISSING", "Defina uma legenda no draft antes de preparar")
     if not path.is_file():
@@ -506,6 +517,11 @@ def prepare_job(adapter, draft, preset, path, evidence, ffprobe_bin=None):
         raise PreparationError("UPLOAD_FAILED", "Arquivo sem stream de video valido")
     if not probe.results.get("ffprobe_available"):
         raise PreparationError("MANUAL_ACTION_REQUIRED", "Instale ffprobe para validar o arquivo antes do upload")
+    if media_validator:
+        try:
+            media_validator(probe.results)
+        except ValueError as exc:
+            raise PreparationError('UPLOAD_FAILED', str(exc)) from exc
     before = file_sha256(path)
     checks = adapter.prepare(draft, preset, path, evidence)
     if file_sha256(path) != before:
@@ -591,6 +607,10 @@ class PublisherWorker:
                 row = get_row(conn, "publisher_drafts", row_id)
                 assert_upload_allowed(conn,row_id)
                 account = get_row(conn, 'publisher_accounts', row['account_id'])
+                try:
+                    AccountSafetyGuard(conn).assert_allowed(account['id'])
+                except AccountProtectionBlocked as exc:
+                    raise ValueError(f'{BLOCKED_BY_ACCOUNT_PROTECTION}: {exc.reason_code}') from exc
                 if account.get('account_identity') == 'ACCOUNT_MISMATCH':
                     raise ValueError('ACCOUNT_MISMATCH')
                 if self.profile_ownership.state(self.account_profile(account)) in {'MANUAL_STARTING', 'MANUAL_BROWSER_ACTIVE'}:
@@ -1460,6 +1480,8 @@ class PublisherWorker:
                                         (row_id,),
                                     ).fetchone()
                                     transition_code = (
+                                        'MANUAL_ACTION_REQUIRED' if code == BLOCKED_BY_ACCOUNT_PROTECTION
+                                        else
                                         'MANUAL_ACTION_REQUIRED' if upload_started and code == 'FAILED'
                                         else code if row["status"] == "PREPARING"
                                         else "MANUAL_ACTION_REQUIRED"
@@ -1484,7 +1506,7 @@ class PublisherWorker:
                                         )
                                         conn.execute("UPDATE publisher_media_assets SET status=?,updated_at=? WHERE id=? AND status='PROCESSING'",(asset_status,now_iso(),row['media_asset_id']))
                                     ready = row.get('confirmed_at') and row['status']=='READY_FOR_REVIEW'
-                                    self.finish_item(conn,row_id,'SUCCEEDED' if ready else 'WAITING_MANUAL' if code in {'NEEDS_LOGIN','MANUAL_ACTION_REQUIRED','STUDIO_CHANGED'} else 'FAILED',None if ready else code)
+                                    self.finish_item(conn,row_id,'SUCCEEDED' if ready else 'WAITING_MANUAL' if code in {'NEEDS_LOGIN','MANUAL_ACTION_REQUIRED','STUDIO_CHANGED',BLOCKED_BY_ACCOUNT_PROTECTION} else 'FAILED',None if ready else code)
                                 elif command == 'reconcile':
                                     self.finish_item(
                                         conn, row_id, 'WAITING_MANUAL',
@@ -1528,7 +1550,7 @@ class PublisherWorker:
             return
         execution = item[0]
         conn.execute('UPDATE publisher_execution_items SET status=?,error_code=? WHERE execution_id=? AND draft_id=?',(status,code,execution,row_id))
-        if code in {'NEEDS_LOGIN','MANUAL_ACTION_REQUIRED','STUDIO_CHANGED'}:
+        if code in {'NEEDS_LOGIN','MANUAL_ACTION_REQUIRED','STUDIO_CHANGED',BLOCKED_BY_ACCOUNT_PROTECTION}:
             for pending in conn.execute("SELECT draft_id FROM publisher_execution_items WHERE execution_id=? AND status='QUEUED'",(execution,)).fetchall():
                 pending_row = get_row(conn, 'publisher_drafts', pending[0])
                 if (pending_row['status'] == 'PREPARING' and
@@ -1607,7 +1629,25 @@ class PublisherWorker:
         adapter = None
         try:
             mapping = json.loads((self.root / "config" / "publisher_studio.json").read_text(encoding="utf-8"))
-            adapter = StudioPage(page, mapping)
+            safety = AccountSafetyGuard(conn)
+            mutation_keys = {
+                'VIDEO_UPLOAD': f'draft:{row_id}:VIDEO_UPLOAD',
+                'SAVE_DRAFT': f'draft:{row_id}:SAVE_DRAFT',
+            }
+            def before_mutation(operation):
+                safety.start_mutation(account['id'], mutation_keys[operation], operation, draft_id=row_id)
+                log(conn, row_id, 'ACCOUNT_SAFETY_GUARD', 'OK', f'{operation} autorizado e registrado antes do efeito remoto')
+                conn.commit()
+            def after_mutation(operation):
+                safety.complete_mutation(account['id'], mutation_keys[operation])
+                conn.commit()
+            def observe_risk(text):
+                signal = map_risk_signal(text)
+                if signal:
+                    safety.activate(account['id'], signal.state, signal.reason_code,
+                                    'OBSERVED_TIKTOK_UI', evidence={'ui_marker': signal.reason_code, 'draft_id': row_id})
+                    raise AccountProtectionBlocked(signal.state, signal.reason_code)
+            adapter = StudioPage(page, mapping, before_mutation, after_mutation, observe_risk)
             if not mapping.get("validated") or not mapping.get('durable_confirmation_validated'):
                 page.goto("https://www.tiktok.com/tiktokstudio/upload", wait_until="domcontentloaded")
                 adapter.challenge()
@@ -1627,7 +1667,10 @@ class PublisherWorker:
                     path.rename(target)
                 with conn:
                     conn.execute('UPDATE publisher_drafts SET temp_path=? WHERE id=?',(str(target),row_id))
-                checklist = prepare_job(adapter,draft,preset,target,evidence,ffprobe_bin=ffprobe_bin)
+                checklist = prepare_job(
+                    adapter,draft,preset,target,evidence,ffprobe_bin=ffprobe_bin,
+                    media_validator=lambda metadata: safety.validate_media(account['id'], metadata),
+                )
                 conn.execute("UPDATE publisher_drafts SET upload_status=?,processing_status=?,updated_at=? WHERE id=?",
                              (draft.get('_upload_status', 'TRANSFER_CONFIRMED'), draft.get('_processing_status', 'MEDIA_READY_FOR_EDIT'), now_iso(), row_id))
                 conn.commit()
