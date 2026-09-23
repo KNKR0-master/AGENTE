@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+from threading import Lock
 from pathlib import Path
 
 from src.tiktok_shop_api import TokenCipher
@@ -113,8 +114,28 @@ def user_drive_service(store_path, expected, *, store=None, credential_factory=N
     except Exception:
         raise DriveAuthError('GOOGLE_USER_CREDENTIAL_REFRESH_FAILED') from None
     validate_account(service, expected)
-    # Only verified user credentials may replace the encrypted local store.
-    store.save(json.loads(credentials.to_json()))
+
+    # Access-token/expiry changes stay in memory. Only a rotated refresh token
+    # needs to survive a restart, and only after account validation.
+    persisted_refresh_token = info['refresh_token']
+    refresh_lock = Lock()
+
+    def persist_rotated_refresh_token():
+        nonlocal persisted_refresh_token
+        with refresh_lock:
+            current = credentials.refresh_token
+            if current and current != persisted_refresh_token:
+                store.save(json.loads(credentials.to_json()))
+                persisted_refresh_token = current
+
+    persist_rotated_refresh_token()
+    original_refresh = credentials.refresh
+
+    def refresh_and_persist(request):
+        original_refresh(request)
+        persist_rotated_refresh_token()
+
+    credentials.refresh = refresh_and_persist
     return service
 
 

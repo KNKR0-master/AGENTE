@@ -16,6 +16,7 @@ class UserOAuthTests(unittest.TestCase):
                    'client_secret':'fixture-secret','scopes':[DRIVE_SCOPE]}
         self.store.load.return_value=self.info
         self.creds=MagicMock();self.creds.valid=True
+        self.creds.refresh_token=self.info['refresh_token']
         self.creds.granted_scopes=None
         self.creds.to_json.return_value=json.dumps(self.info)
         self.service=MagicMock()
@@ -28,15 +29,52 @@ class UserOAuthTests(unittest.TestCase):
             request_factory=MagicMock(return_value='mock-request'))
 
     def test_existing_credential_reused_and_identity_checked(self):
+        original_refresh=self.creds.refresh
         self.assertIs(self.load(),self.service)
-        self.creds.refresh.assert_not_called()
+        original_refresh.assert_not_called()
         self.service.about.return_value.get.assert_called_with(fields='user(emailAddress,me)')
-        self.store.save.assert_called_once()
+        self.store.save.assert_not_called()
+
+    def test_read_only_api_use_does_not_persist_credential(self):
+        service=self.load()
+        service.files().get(fileId='fixture-root').execute()
+        self.store.save.assert_not_called()
 
     def test_expired_token_refreshes_without_browser(self):
         self.creds.valid=False
+        original_refresh=self.creds.refresh
         self.load()
-        self.creds.refresh.assert_called_once_with('mock-request')
+        original_refresh.assert_called_once_with('mock-request')
+        self.store.save.assert_not_called()
+
+    def test_new_refresh_token_is_persisted_after_identity_validation(self):
+        self.creds.valid=False
+        self.creds.refresh_token=self.info['refresh_token']
+        def rotate(_request):
+            self.creds.refresh_token='rotated-fixture-refresh'
+        self.creds.refresh.side_effect=rotate
+        self.creds.to_json.return_value=json.dumps({**self.info,'refresh_token':'rotated-fixture-refresh'})
+        self.load()
+        self.store.save.assert_called_once()
+
+    def test_later_refresh_token_rotation_is_persisted_once(self):
+        self.creds.refresh_token=self.info['refresh_token']
+        original_refresh=self.creds.refresh
+        self.load()
+        self.store.save.assert_not_called()
+        def rotate(_request):
+            self.creds.refresh_token='later-fixture-refresh'
+        original_refresh.side_effect=rotate
+        self.creds.to_json.return_value=json.dumps({**self.info,'refresh_token':'later-fixture-refresh'})
+        self.creds.refresh('mock-request')
+        self.creds.refresh('mock-request')
+        self.store.save.assert_called_once()
+
+    def test_manual_authorization_still_persists(self):
+        self.creds.has_scopes.return_value=True
+        self.creds.refresh_token='fixture-refresh'
+        save_authorized_user(self.creds,'unused',builder=self.builder,store=self.store)
+        self.store.save.assert_called_once()
 
     def test_refresh_failure_sanitized(self):
         self.creds.valid=False
