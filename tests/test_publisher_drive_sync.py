@@ -1,11 +1,20 @@
 import sqlite3
+import threading
+import tempfile
 import unittest
+from contextlib import closing
+from io import BytesIO
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from src.drive_inventory import DriveInventoryConfig, FOLDER_MIME_TYPE, GoogleApiDriveInventoryProvider
 from src.publisher.drive_sync import (
     IncrementalDriveSync,
     SyncScope,
     get_sync_state,
+    drive_sync_status,
+    incremental_drive_sync,
     project_drive_inventory_to_publisher_media,
 )
 from src.publisher.service import PublisherService, init_publisher
@@ -152,6 +161,7 @@ class PublisherDriveSyncTests(unittest.TestCase):
         result = sync.cycle()
         self.assertEqual((result["pages_processed"], result["files_upserted"]), (2, 2))
         self.assertEqual(self.conn.execute("SELECT current_cursor FROM publisher_drive_sync_state").fetchone()[0], "C2")
+        self.assertEqual(self.conn.execute("SELECT last_sync_mode FROM publisher_drive_sync_state").fetchone()[0], "INCREMENTAL")
 
     def test_transaction_failure_preserves_previous_cursor(self):
         self.add_product_folder(); self.ready()
@@ -282,6 +292,61 @@ class PublisherDriveSyncTests(unittest.TestCase):
         result = sync.bootstrap(full_scan)
         row = self.conn.execute("SELECT name FROM drive_files WHERE drive_file_id='state-b'").fetchone()
         self.assertEqual((result["cursor_status"], row["name"]), ("READY", "STATE_B_G1C1A1.mp4"))
+        self.assertEqual(self.conn.execute("SELECT last_sync_mode FROM publisher_drive_sync_state").fetchone()[0], "FULL")
+
+    def test_status_read_does_not_create_cursor_or_expose_token(self):
+        with patch('src.publisher.drive_sync.DriveInventoryConfig.from_env', return_value=self.config):
+            before=drive_sync_status(self.conn)
+            self.ready('private-fixture-token')
+            after=drive_sync_status(self.conn)
+        self.assertEqual(before['cursor_status'], 'UNINITIALIZED')
+        self.assertEqual(after['cursor_status'], 'READY')
+        self.assertNotIn('current_cursor', after)
+        self.assertNotIn('private-fixture-token', str(after))
+
+    def test_scoped_lock_rejects_overlapping_sync(self):
+        entered=threading.Event(); release=threading.Event(); results=[]
+        fake=Mock()
+        def cycle():
+            entered.set(); release.wait(5); return {'status':'READY'}
+        fake.cycle.side_effect=cycle
+        with patch('src.publisher.drive_sync.DriveInventoryConfig.from_env', return_value=self.config), \
+             patch('src.publisher.drive_sync.GoogleApiDriveInventoryProvider.from_config'), \
+             patch('src.publisher.drive_sync.IncrementalDriveSync', return_value=fake):
+            thread=threading.Thread(target=lambda: results.append(incremental_drive_sync(self.conn)))
+            thread.start()
+            self.assertTrue(entered.wait(2))
+            duplicate=incremental_drive_sync(self.conn)
+            release.set();thread.join(3)
+        self.assertEqual(duplicate['status'],'SYNC_IN_PROGRESS')
+        self.assertEqual(results,[{'status':'READY'}])
+
+    def test_legacy_route_delegates_and_bootstrap_requires_confirmation(self):
+        from src.publisher.http import PublisherAPI
+        from src.store import connect, init_db
+        with tempfile.TemporaryDirectory() as directory:
+            db=Path(directory)/'test.db'
+            with closing(connect(db)) as conn:
+                init_db(conn);init_publisher(conn)
+            api=object.__new__(PublisherAPI);api.db=db;api.root=Path(directory)
+            def request(path,body):
+                import json
+                payload=json.dumps(body).encode()
+                handler=SimpleNamespace(headers={'Content-Length':str(len(payload)),'Content-Type':'application/json'},
+                                        rfile=BytesIO(payload),_json=Mock())
+                api.post(handler,path)
+                return handler._json.call_args.args[0]
+            with patch('src.publisher.http.incremental_drive_sync',return_value={'status':'READY'}) as sync, \
+                 patch('src.publisher.http.media_provider') as old_provider:
+                self.assertEqual(request('/api/publisher/sync-media',{})['status'],'READY')
+                sync.assert_called_once()
+                self.assertFalse(sync.call_args.kwargs['bootstrap'])
+                old_provider.assert_not_called()
+                with self.assertRaisesRegex(ValueError,'FULL_DRIVE_RESCAN_REQUIRES_CONFIRMATION'):
+                    request('/api/publisher/drive-sync/incremental',{'bootstrap':True})
+                self.assertEqual(sync.call_count,1)
+                request('/api/publisher/drive-sync/incremental',{'bootstrap':True,'human_confirmed':True})
+                self.assertTrue(sync.call_args.kwargs['bootstrap'])
 
     def test_invalid_cursor_requests_full_scan_without_remote_mutation(self):
         self.ready()

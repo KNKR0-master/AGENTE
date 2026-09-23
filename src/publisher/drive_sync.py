@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Callable
 
 from src.drive_inventory import (
@@ -28,6 +29,10 @@ class SyncScope:
     account_identity: str
     provider: str
     root_folder_id: str
+
+
+_scope_locks: dict[SyncScope, Lock] = {}
+_scope_locks_guard = Lock()
 
 
 def configured_scope(config: DriveInventoryConfig) -> SyncScope:
@@ -134,7 +139,7 @@ class IncrementalDriveSync:
         state = get_sync_state(self.conn, self.scope)
         if state["cursor_status"] != READY or not state.get("current_cursor"):
             return self._summary(state["cursor_status"], full_scan_required=True)
-        return self._consume(state["current_cursor"])
+        return self._consume(state["current_cursor"], mode="INCREMENTAL")
 
     def bootstrap(self, scanner: Callable[[], dict[str, Any]] | None = None) -> dict[str, Any]:
         start_token = self.provider.get_start_page_token()
@@ -155,9 +160,9 @@ class IncrementalDriveSync:
                 "UPDATE publisher_drive_sync_state SET last_full_scan_at=?,updated_at=? WHERE id=?",
                 (now_iso(), now_iso(), state["id"]),
             )
-        return self._consume(start_token)
+        return self._consume(start_token, mode="FULL")
 
-    def _consume(self, cursor: str) -> dict[str, Any]:
+    def _consume(self, cursor: str, *, mode: str) -> dict[str, Any]:
         totals = self._summary(READY)
         while cursor:
             try:
@@ -182,9 +187,9 @@ class IncrementalDriveSync:
                 finished = now_iso()
                 self.conn.execute(
                     """UPDATE publisher_drive_sync_state SET current_cursor=?,cursor_status='READY',
-                       last_successful_sync_at=?,last_error=NULL,updated_at=?
+                       last_successful_sync_at=?,last_sync_mode=?,last_error=NULL,updated_at=?
                        WHERE account_identity=? AND provider=? AND root_folder_id=?""",
-                    (next_cursor, finished, finished, self.scope.account_identity,
+                    (next_cursor, finished, mode, finished, self.scope.account_identity,
                      self.scope.provider, self.scope.root_folder_id),
                 )
                 self.conn.commit()
@@ -372,6 +377,26 @@ class IncrementalDriveSync:
 
 def incremental_drive_sync(conn, *, bootstrap: bool = False) -> dict[str, Any]:
     config = DriveInventoryConfig.from_env()
-    provider = GoogleApiDriveInventoryProvider.from_config(config)
-    sync = IncrementalDriveSync(conn, provider, config)
-    return sync.bootstrap() if bootstrap else sync.cycle()
+    scope = configured_scope(config)
+    with _scope_locks_guard:
+        lock = _scope_locks.setdefault(scope, Lock())
+    if not lock.acquire(blocking=False):
+        return {"status": "SYNC_IN_PROGRESS", "cursor_status": "SYNC_IN_PROGRESS"}
+    try:
+        provider = GoogleApiDriveInventoryProvider.from_config(config)
+        sync = IncrementalDriveSync(conn, provider, config)
+        return sync.bootstrap() if bootstrap else sync.cycle()
+    finally:
+        lock.release()
+
+
+def drive_sync_status(conn) -> dict[str, Any]:
+    scope = configured_scope(DriveInventoryConfig.from_env())
+    row = conn.execute(
+        """SELECT cursor_status,last_successful_sync_at,last_full_scan_at,last_sync_mode,last_error
+           FROM publisher_drive_sync_state
+           WHERE account_identity=? AND provider=? AND root_folder_id=?""",
+        (scope.account_identity, scope.provider, scope.root_folder_id),
+    ).fetchone()
+    return dict(row) if row else {"cursor_status": "UNINITIALIZED", "last_successful_sync_at": None,
+                                  "last_full_scan_at": None, "last_sync_mode": None, "last_error": None}

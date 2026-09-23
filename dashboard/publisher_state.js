@@ -169,5 +169,26 @@
     };
   }
 
-  return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation};
+  function driveSyncPresentation(record = {}, result = null, phase = 'IDLE') {
+    const status = result?.status || record.cursor_status || 'UNINITIALIZED';
+    const counts = ['changes_seen', 'files_upserted', 'folders_upserted', 'items_marked_unavailable']
+      .map(key => Number(result?.[key] || 0));
+    const summary = result?.status === 'READY'
+      ? counts[0] === 0 ? 'Tudo atualizado. Nenhuma alteração nova encontrada.'
+        : `${counts[0]} alterações · ${counts[1]} arquivos · ${counts[2]} pastas · ${counts[3]} indisponíveis`
+      : '';
+    if (phase === 'SYNCING') return {label: 'Sincronizando', message: 'Consultando alterações no Drive.', needsRebuild: false, summary: ''};
+    if (status === 'FULL_SCAN_REQUIRED' || status === 'UNINITIALIZED') return {
+      label: 'Verificação necessária', needsRebuild: true, summary: '',
+      message: 'A sincronização incremental precisa ser reconstruída. Execute uma verificação completa do Drive.',
+    };
+    if (status === 'ERROR' || status === 'SYNC_IN_PROGRESS') return {
+      label: 'Atenção necessária', needsRebuild: false, summary: '',
+      message: status === 'SYNC_IN_PROGRESS' ? 'Já existe uma sincronização em andamento.'
+        : 'Sincronização não concluída. Seus arquivos do Drive não foram modificados. Verifique o diagnóstico antes de tentar novamente.',
+    };
+    return {label: 'Atualizado', message: summary || 'Sincronização pronta.', summary, needsRebuild: false};
+  }
+
+  return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation, driveSyncPresentation};
 });

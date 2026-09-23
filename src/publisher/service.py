@@ -93,6 +93,9 @@ def init_publisher(conn):
       status TEXT NOT NULL DEFAULT 'QUEUED', error_code TEXT,
       PRIMARY KEY(execution_id,draft_id));
     """)
+    sync_columns = {row[1] for row in conn.execute('PRAGMA table_info(publisher_drive_sync_state)')}
+    if 'last_sync_mode' not in sync_columns:
+        conn.execute('ALTER TABLE publisher_drive_sync_state ADD COLUMN last_sync_mode TEXT')
     columns = {r[1] for r in conn.execute('PRAGMA table_info(publisher_accounts)')}
     for name, definition in {
         'auth_status': "TEXT NOT NULL DEFAULT 'NOT_AUTHENTICATED'",

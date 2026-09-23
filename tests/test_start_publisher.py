@@ -25,7 +25,7 @@ class StartPublisherShutdownTests(unittest.TestCase):
         current = {
             "app": "publisher-desk",
             "api_version": "publisher-api-v1",
-            "compatibility": "publisher-ui-2a.2",
+            "compatibility": "publisher-ui-2a.3.2",
             "process_id": 123,
             "instance_id": "instance",
             "started_at": "2026-09-16T00:00:00+00:00",
@@ -42,6 +42,16 @@ class StartPublisherShutdownTests(unittest.TestCase):
             status, payload = classify_runtime_instance()
         self.assertEqual(status, OLD_OR_INCOMPATIBLE_PUBLISHER)
         self.assertIsNone(payload)
+
+    def test_previous_ui_version_is_not_reused(self):
+        previous = {
+            "app": "publisher-desk", "api_version": "publisher-api-v1",
+            "compatibility": "publisher-ui-2a.2", "process_id": 123,
+            "instance_id": "previous", "started_at": "2026-09-16T00:00:00+00:00",
+        }
+        with patch("scripts.start_publisher._runtime_info_probe", return_value=(previous, 200)):
+            status, _ = classify_runtime_instance()
+        self.assertEqual(status, OLD_OR_INCOMPATIBLE_PUBLISHER)
 
     def test_foreign_port_and_free_port_are_distinguished(self):
         with patch("scripts.start_publisher._runtime_info_probe", return_value=(None, None)), patch(

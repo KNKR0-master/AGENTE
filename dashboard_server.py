@@ -158,7 +158,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/publisher/runtime-info":
             PUBLISHER.runtime_info(self)
             return
-        if path in {"/api/publisher", "/api/publisher/library", "/api/publisher/folder-catalog"}:
+        if path in {"/api/publisher", "/api/publisher/library", "/api/publisher/folder-catalog", "/api/publisher/drive-sync/status"}:
             PUBLISHER.get(self, query, path)
             return
         conn = connect(DB_PATH)

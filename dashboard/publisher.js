@@ -4,6 +4,7 @@ let state = {drafts:[],products:[],accounts:[],presets:[],batches:[],logs:[],rev
 const uiState = window.PublisherUIState.create();
 let selected = new Set(), productSelected = new Set(), editing = [], librarySelected = uiState.librarySelected, reviewing = null, libraryPage = 1;
 let folderCatalogSelected = new Set(), activeFolderCatalogGroup = 'probable_matches';
+let driveSyncRecord = {}, driveSyncResult = null, driveSyncPhase = 'IDLE', driveSyncBusy = false;
 const loginRequests = new Set();
 const authLabels = {NOT_AUTHENTICATED:'não verificada',LOGIN_IN_PROGRESS:'login em andamento',AUTHENTICATED:'autenticada',NEEDS_LOGIN:'requer login'};
 function renderAccounts(){
@@ -80,6 +81,7 @@ function render(){
  $('#systemStatus').innerHTML=`<div><strong>${esc(system.system_label||'Sistema em verificação')}</strong><span>${esc(system.account_label||'Sessão não verificada')}</span><span>${esc(system.drive_label||'Drive em verificação')}</span></div><details><summary>Detalhes técnicos</summary><small>ffprobe: ${esc(state.worker_config?.ffprobe_version||state.worker_config?.ffprobe_error||'desconhecido')} · Drive: ${esc(state.drive_health?.diagnosis||'desconhecido')}</small></details>`;
  const protection=(state.account_protection||[]).find(item=>item.blocked),protectionBox=$('#accountProtection'),protectionView=PublisherUIState.protectionPresentation(protection);protectionBox.hidden=!protectionView;protectionBox.innerHTML=protectionView?`<div><strong>${esc(protectionView.title)}</strong><span>${esc(protectionView.message)} ${esc(protectionView.nextAction)}</span><button data-review-protection="${protection.account_id}">Revisar estado</button><details><summary>Detalhes técnicos</summary>${esc(protection.state)} · ${esc(protection.reason_code||'motivo não informado')} · ${esc(protection.source||'fonte não informada')}</details></div>`:'';
  renderLibrary();
+ renderDriveSync();
  renderFolderCatalog();
  renderBatchSummary();
  $('#executionProgress').innerHTML=(state.executions||[]).slice(0,3).map(e=>`<div class="record"><div>Execução #${e.id} · Lote ${e.batch_id??'múltiplo'} · ${esc(e.status)}<small>${e.succeeded} preparados · ${e.failed} falharam · ${e.waiting_manual} aguardam ação · ${e.processing} processando · ${e.queued} na fila</small><progress value="${e.succeeded+e.failed+e.waiting_manual}" max="${e.total}"></progress> ${e.succeeded+e.failed+e.waiting_manual} / ${e.total}<small>Drive: ${e.remote_deleted} removidos · ${e.remote_preserved} preservados · ${e.remote_delete_pending} limpezas pendentes</small></div></div>`).join('')+`<small>Cache temporário: ${state.temporary_files||0} arquivos</small>`;
@@ -144,7 +146,43 @@ function visibleMedia(){const q=$('#mediaSearch').value.toLocaleLowerCase(),stat
 function renderMedia(){const items=visibleMedia();remoteSelected=new Set([...remoteSelected].filter(id=>(state.media_assets||[]).some(m=>m.id===id&&m.status==='AVAILABLE')));$('#fileCount').textContent=`(${remoteSelected.size} selecionados)`;$('#mediaCount').textContent=`${items.length} arquivos`;$('#selectAllMedia').checked=items.some(m=>m.status==='AVAILABLE')&&items.filter(m=>m.status==='AVAILABLE').every(m=>remoteSelected.has(m.id));$('#mediaRows').innerHTML=items.map(m=>`<tr><td><input type="checkbox" data-media="${m.id}" aria-label="Selecionar ${esc(m.filename)}" ${m.status!=='AVAILABLE'?'disabled':''} ${remoteSelected.has(m.id)?'checked':''}></td><td>${esc(m.filename)}<small>${esc(m.remote_file_id)}</small>${m.status!=='CONSUMED'?`<a href="https://drive.google.com/file/d/${encodeURIComponent(m.remote_file_id)}/view" target="_blank" rel="noopener">Ver no Drive ↗</a>`:''}</td><td>${esc(m.folder_path)}</td><td>${(m.size_bytes/1048576).toFixed(1)} MB<small>${esc(m.remote_modified_at||m.remote_created_at||'')}</small></td><td>${esc(m.status)}${m.cleanup_error?`<small>${esc(m.cleanup_error)}</small>`:''}${m.status==='CONSUMED_PENDING_DELETE'?`<button data-cleanup="${m.consumed_by_draft_id}">Repetir limpeza</button>`:''}</td></tr>`).join('')||'<tr><td colspan="5">Nenhum vídeo neste filtro.</td></tr>';}
 if($('#mediaSearch'))$('#mediaSearch').oninput=renderMedia;if($('#mediaStatus'))$('#mediaStatus').onchange=renderMedia;
 if($('#selectAllMedia'))$('#selectAllMedia').onchange=e=>{visibleMedia().filter(m=>m.status==='AVAILABLE').forEach(m=>e.target.checked?remoteSelected.add(m.id):remoteSelected.delete(m.id));renderMedia();};
-$('#syncMedia').onclick=()=>task(async()=>{const button=$('#syncMedia');button.disabled=true;button.textContent='Sincronizando…';try{const r=await api('/sync-media',{});await refresh();notice(`${r.indexed} vídeos indexados; nenhum download realizado`);}finally{button.disabled=false;button.textContent='Sincronizar Drive';}});
+const driveSyncPanel=document.createElement('div');
+driveSyncPanel.className='drive-sync-panel';
+driveSyncPanel.innerHTML='<div><strong id="driveSyncLabel"></strong><span id="driveSyncTime"></span><span id="driveSyncMode"></span><span id="driveSyncMessage" role="status" aria-live="polite"></span></div><button id="rebuildDriveSync" type="button">Verificação completa do Drive</button><details><summary>Detalhes técnicos</summary><small id="driveSyncDetails"></small></details>';
+$('#syncMedia').closest('.heading').insertAdjacentElement('afterend',driveSyncPanel);
+async function loadDriveSyncStatus(){
+ const response=await fetch('/api/publisher/drive-sync/status',{cache:'no-store'});
+ if(response.ok)driveSyncRecord=await response.json();
+ else driveSyncRecord={cursor_status:'ERROR'};
+}
+function renderDriveSync(){
+ const view=PublisherUIState.driveSyncPresentation(driveSyncRecord,driveSyncResult,driveSyncPhase);
+ $('#driveSyncLabel').textContent=view.label;
+ $('#driveSyncTime').textContent=driveSyncRecord.last_successful_sync_at?`Última sincronização: ${new Date(driveSyncRecord.last_successful_sync_at).toLocaleString('pt-BR')}`:'Nenhuma sincronização concluída';
+ $('#driveSyncMode').textContent=driveSyncRecord.last_sync_mode?`Modo: ${driveSyncRecord.last_sync_mode==='FULL'?'Verificação completa':'Incremental'}`:'';
+ $('#driveSyncMessage').textContent=view.message;
+ const counts=driveSyncResult&&driveSyncResult.status==='READY'?['pages_processed','changes_seen','changes_in_scope','files_upserted','folders_upserted','items_marked_unavailable','projection_updates'].map(key=>`${key}: ${Number(driveSyncResult[key]||0)}`).join(' · '):'';
+ $('#driveSyncDetails').textContent=`Estado: ${driveSyncRecord.cursor_status||'desconhecido'}${counts?` · ${counts}`:''}`;
+ $('#syncMedia').disabled=driveSyncBusy||view.needsRebuild;
+ $('#syncMedia').textContent=driveSyncBusy?'Sincronizando…':'Sincronizar agora';
+ $('#rebuildDriveSync').disabled=driveSyncBusy;
+}
+async function runDriveSync(bootstrap=false){
+ if(driveSyncBusy)return;
+ if(bootstrap&&!confirm('Verificar novamente toda a pasta operacional do Drive? Isso pode demorar. Nenhum arquivo remoto será excluído ou modificado.'))return;
+ driveSyncBusy=true;driveSyncPhase='SYNCING';renderDriveSync();
+ try{
+  driveSyncResult=await api('/drive-sync/incremental',bootstrap?{bootstrap:true,human_confirmed:true}:{});
+  driveSyncPhase=driveSyncResult.status==='READY'?'SUCCESS':driveSyncResult.status==='FULL_SCAN_REQUIRED'||driveSyncResult.status==='UNINITIALIZED'?'FULL_SCAN_REQUIRED':'ERROR';
+  await loadDriveSyncStatus();
+  if(driveSyncPhase==='SUCCESS'){
+   await loadLibrary();renderLibrary();renderBatchSummary();
+  }
+ }catch(error){driveSyncPhase='ERROR';driveSyncResult={status:'ERROR'};await loadDriveSyncStatus();}
+ finally{driveSyncBusy=false;renderDriveSync();}
+}
+$('#syncMedia').onclick=()=>runDriveSync();
+$('#rebuildDriveSync').onclick=()=>runDriveSync(true);
 const legacyProductSearch=field($('#batchForm'),'product_search');if(legacyProductSearch)legacyProductSearch.onchange=e=>{const p=chosenProduct(e.target.value);renderCaptionPreview();if(p?.account_id)field($('#batchForm'),'account_id').value=p.account_id;};
 field($('#batchForm'),'preset_id').onchange=e=>{const p=state.presets.find(x=>x.id===Number(e.target.value));if(p?.account_id)field($('#batchForm'),'account_id').value=p.account_id;};
 $('#batchForm').onsubmit=e=>{e.preventDefault();task(async()=>{const p=chosenProduct(field(e.target,'product_search').value);if(!p)throw Error('Selecione um produto da lista');const data=formData(e.target);data.product_id=p.id;data.media_asset_ids=[...remoteSelected];const button=e.target.querySelector('button[type=submit]');button.disabled=true;try{const result=await api('/batches',data);e.target.reset();remoteSelected.clear();await refresh();selected=new Set(result.draft_ids);renderQueue();view('queue');notice(`${result.draft_ids.length} drafts criados sem baixar vídeos`);}finally{button.disabled=false;}});};
@@ -219,4 +257,4 @@ $('#accountProtectionForm').onsubmit=e=>{e.preventDefault();task(async()=>{const
 document.addEventListener('change',e=>{if(e.target.dataset.select){const id=Number(e.target.dataset.select);e.target.checked?selected.add(id):selected.delete(id);renderQueue();}if(e.target.dataset.productSelect){const id=Number(e.target.dataset.productSelect);e.target.checked?productSelected.add(id):productSelected.delete(id);renderProducts();}});
 document.addEventListener('click',e=>{const el=e.target.closest('[data-remove-product-folder]');if(el)task(async()=>{const productId=Number($('#productForm').dataset.productId);if(!productId)throw Error('Produto não selecionado');if(!confirm('Remover somente a associação desta pasta? Nenhum arquivo será movido.'))return;await api('/product-folder',{product_id:productId,folder_id:el.dataset.removeProductFolder,action:'remove'});await refresh();const product=state.products.find(p=>p.id===productId);if(product){fillForm($('#productForm'),product);renderProductEditor(product);}notice('Associação removida e registrada no histórico.');});});
 document.addEventListener('click',e=>task(async()=>{const el=e.target.closest('button');if(!el||el.disabled)return;const d=el.dataset;if(d.productEdit){const p=state.products.find(x=>x.id===Number(d.productEdit));fillForm($('#productForm'),p);$('#productLegacy').innerHTML=`Fonte: ${esc(p.legacy_source||'Cadastro interno')}<br>ID legado: ${esc(p.legacy_product_id||'—')}<br>URL legada: ${esc(p.legacy_shop_url||'—')}`;renderProductEditor(p);}if(d.accountEdit)fillForm($('#accountForm'),state.accounts.find(x=>x.id===Number(d.accountEdit)));if(d.presetEdit)fillForm($('#presetForm'),state.presets.find(x=>x.id===Number(d.presetEdit)));if(d.login)await openAccountLogin(Number(d.login));if(d.edit)edit([Number(d.edit)]);if(d.review)review(Number(d.review));if(d.studio){await api('/review',{id:Number(d.studio)});notice('Abrindo a aba mantida pelo worker');}if(d.complete){const prompt=d.complete==='reset'?'Você encerrou ou descartou a preparação anterior no Studio?':'Você vinculou o produto TikTok Shop e concluiu esta ação manualmente no Studio?';if(!confirm(prompt))return;await api('/bulk',{ids:[reviewing],action:d.complete,human_confirmed:true});$('#reviewDialog').close();await refresh();notice('Estado registrado');}}));
-task(refresh);setInterval(()=>task(refresh),5000);
+task(refresh);loadDriveSyncStatus().then(renderDriveSync).catch(()=>{driveSyncRecord={cursor_status:'ERROR'};renderDriveSync();});setInterval(()=>task(refresh),5000);

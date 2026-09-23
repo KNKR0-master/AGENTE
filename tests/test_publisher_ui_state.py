@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_MODULE = ROOT / "dashboard" / "publisher_state.js"
+PUBLISHER_MODULE = ROOT / "dashboard" / "publisher.js"
 
 
 @unittest.skipUnless(shutil.which("node"), "node is required for browser-state tests")
@@ -18,8 +19,52 @@ class PublisherUIStateTests(unittest.TestCase):
             check=True,
             capture_output=True,
             text=True,
+            encoding='utf-8',
         )
         return json.loads(result.stdout)
+
+    def test_drive_sync_presentation_handles_zero_changes_and_summary(self):
+        result = self.run_node(
+            f"""
+            const ui = require({json.dumps(str(STATE_MODULE))});
+            const record = {{cursor_status:'READY',last_sync_mode:'INCREMENTAL'}};
+            console.log(JSON.stringify({{
+              zero: ui.driveSyncPresentation(record,{{status:'READY',changes_seen:0}},'SUCCESS'),
+              changed: ui.driveSyncPresentation(record,{{status:'READY',changes_seen:7,files_upserted:5,folders_upserted:2}},'SUCCESS'),
+              waiting: ui.driveSyncPresentation(record,null,'SYNCING'),
+            }}));
+            """
+        )
+        self.assertIn('Nenhuma alteração',result['zero']['summary'])
+        self.assertIn('7 alterações',result['changed']['summary'])
+        self.assertEqual(result['waiting']['label'],'Sincronizando')
+
+    def test_drive_sync_presentation_requires_explicit_rebuild(self):
+        result = self.run_node(
+            f"""
+            const ui = require({json.dumps(str(STATE_MODULE))});
+            console.log(JSON.stringify({{
+              missing: ui.driveSyncPresentation({{cursor_status:'UNINITIALIZED'}}),
+              stale: ui.driveSyncPresentation({{cursor_status:'FULL_SCAN_REQUIRED'}}),
+              error: ui.driveSyncPresentation({{cursor_status:'ERROR'}}),
+              redacted: ui.driveSyncPresentation({{cursor_status:'READY',current_cursor:'private-token'}},{{status:'READY',changes_seen:0}}),
+            }}));
+            """
+        )
+        self.assertTrue(result['missing']['needsRebuild'])
+        self.assertTrue(result['stale']['needsRebuild'])
+        self.assertIn('não foram modificados',result['error']['message'])
+        self.assertNotIn('private-token',json.dumps(result['redacted']))
+
+    def test_library_sync_wiring_has_no_parallel_discovery_or_automatic_rebuild(self):
+        source=PUBLISHER_MODULE.read_text(encoding='utf-8')
+        self.assertIn("$('#syncMedia').onclick=()=>runDriveSync();",source)
+        self.assertIn("await api('/drive-sync/incremental'",source)
+        self.assertNotIn("api('/sync-media'",source)
+        self.assertIn('if(driveSyncBusy)return;',source)
+        self.assertIn('bootstrap&&!confirm(',source)
+        self.assertIn("await loadLibrary();renderLibrary();",source)
+        self.assertNotIn('setInterval(loadDriveSyncStatus',source)
 
     def test_library_selection_is_single_state_and_supports_individual_and_page_actions(self):
         result = self.run_node(

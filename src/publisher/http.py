@@ -17,11 +17,11 @@ from src.publisher.service import PublisherService, get_row, init_publisher
 from src.publisher.worker import PublisherWorker, recover_sessions
 from src.publisher.media import media_provider, TemporaryMediaCache
 from src.publisher.account_safety import AccountSafetyGuard
-from src.publisher.drive_sync import incremental_drive_sync
+from src.publisher.drive_sync import drive_sync_status, incremental_drive_sync
 
 
 PUBLISHER_API_VERSION = "publisher-api-v1"
-PUBLISHER_COMPATIBILITY = "publisher-ui-2a.2"
+PUBLISHER_COMPATIBILITY = "publisher-ui-2a.3.2"
 
 
 class PublisherAPI:
@@ -231,6 +231,9 @@ class PublisherAPI:
 
     def get(self, handler, query, path="/api/publisher"):
         with closing(connect(self.db)) as conn:
+            if path == "/api/publisher/drive-sync/status":
+                handler._json(drive_sync_status(conn), no_store=True)
+                return
             if path == "/api/publisher/library":
                 result = PublisherService(conn, self.root).media_library({
                     key: values[0] for key, values in query.items() if values
@@ -373,13 +376,11 @@ class PublisherAPI:
                         )
                     elif action in {"products", "accounts", "presets"}:
                         result = {"id": getattr(service, f"save_{action[:-1]}")(data)}
-                    elif action == 'sync-media':
-                        try:
-                            result = service.index_media(media_provider())
-                        except Exception as exc:
-                            raise ValueError(f'Falha ao sincronizar Drive ({type(exc).__name__}). Verifique acesso da Cecilia e conexao.') from exc
-                    elif path == '/api/publisher/drive-sync/incremental':
-                        result = incremental_drive_sync(conn, bootstrap=data.get('bootstrap') is True)
+                    elif path in {'/api/publisher/sync-media', '/api/publisher/drive-sync/incremental'}:
+                        bootstrap = data.get('bootstrap') is True
+                        if bootstrap and data.get('human_confirmed') is not True:
+                            raise ValueError('FULL_DRIVE_RESCAN_REQUIRES_CONFIRMATION')
+                        result = incremental_drive_sync(conn, bootstrap=bootstrap)
                     elif action == 'batches':
                         result = service.create_remote_batch(data)
                     elif action == 'library-batches':

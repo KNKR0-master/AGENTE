@@ -289,6 +289,23 @@ Se o encerramento for interrompido pelo Windows, a inicializacao seguinte
 continua usando a reconciliacao existente de mutex, profile e lifecycle; nenhum
 retry de draft e iniciado pelo launcher.
 
+## Sincronizacao da Biblioteca
+
+`Sincronizar agora` usa `POST /api/publisher/drive-sync/incremental` sem
+bootstrap. O endpoint legado `/api/publisher/sync-media` delega ao mesmo motor
+para manter compatibilidade; ele nao usa mais `GoogleDriveMediaProvider.list_files`
+como segunda descoberta. A Biblioteca e atualizada a partir das tabelas locais
+`drive_folders`, `drive_files` e `publisher_media_assets`, preservando filtros e
+selecao da tela.
+
+Sem cursor valido, a UI pede uma `Verificacao completa do Drive` separada. Essa
+acao exige confirmacao explicita e executa o bootstrap com token T0 anterior ao
+scan completo e catch-up pela Changes API. Erro ou cursor invalido nunca dispara
+reconstrucao automatica. Um lock por conta, provider e raiz impede ciclos
+simultaneos no processo Publisher. O status consultavel nao inclui page tokens.
+Essa sincronizacao nao faz escrita remota, nao cria produtos automaticamente e
+nao inicia polling de Changes em background.
+
 ## Referencias historicas
 
 - `docs/publisher-persistence-lifecycle.md`: detalhes do lifecycle e recovery.
