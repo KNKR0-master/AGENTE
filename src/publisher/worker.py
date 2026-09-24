@@ -602,6 +602,13 @@ class PublisherWorker:
             raise ValueError("Selecione entre 1 e 100 drafts")
         with conn:
             conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"SELECT id,queue_position FROM publisher_drafts WHERE id IN ({','.join('?' for _ in ids)}) "
+                "ORDER BY batch_id DESC,queue_position ASC,id ASC", ids,
+            ).fetchall()
+            if len(rows) != len(ids) or any(row['queue_position'] is None for row in rows):
+                raise ValueError('QUEUE_POSITION_REQUIRED')
+            ids = [row['id'] for row in rows]
             batches = set()
             for row_id in ids:
                 row = get_row(conn, "publisher_drafts", row_id)
@@ -626,8 +633,8 @@ class PublisherWorker:
                 batches.add(row['batch_id'])
             execution = conn.execute("INSERT INTO publisher_batch_executions(batch_id,total,started_at,auto_cleanup) VALUES (?,?,?,?)",
                                      (next(iter(batches)) if len(batches)==1 else None,len(ids),now_iso(),int(bool(auto_cleanup)))).lastrowid
-            for row_id in ids:
-                conn.execute('INSERT INTO publisher_execution_items(execution_id,draft_id) VALUES (?,?)',(execution,row_id))
+            for position, row_id in enumerate(ids, 1):
+                conn.execute('INSERT INTO publisher_execution_items(execution_id,draft_id,execution_position) VALUES (?,?,?)',(execution,row_id,position))
         self.start()
         for row_id in ids:
             self.commands.put(("prepare", (row_id, execution)))
@@ -650,7 +657,7 @@ class PublisherWorker:
                 raise ValueError('AUTO_CLEANUP_REQUIRED')
 
             items = conn.execute(
-                "SELECT * FROM publisher_execution_items WHERE execution_id=? ORDER BY draft_id",
+                "SELECT * FROM publisher_execution_items WHERE execution_id=? ORDER BY execution_position",
                 (execution_id,),
             ).fetchall()
             if len(items) != execution['total']:
@@ -728,7 +735,7 @@ class PublisherWorker:
         """Queue untouched items only after the reconciliation item succeeds."""
         queued = []
         items = conn.execute(
-            "SELECT * FROM publisher_execution_items WHERE execution_id=? ORDER BY draft_id",
+            "SELECT * FROM publisher_execution_items WHERE execution_id=? ORDER BY execution_position",
             (execution_id,),
         ).fetchall()
         for item in items:

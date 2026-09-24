@@ -5,6 +5,7 @@ import sqlite3
 import cgi
 import ctypes
 import os
+import re
 import secrets
 import signal
 import shutil
@@ -158,7 +159,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/publisher/runtime-info":
             PUBLISHER.runtime_info(self)
             return
-        if path in {"/api/publisher", "/api/publisher/library", "/api/publisher/folder-catalog", "/api/publisher/drive-sync/status"}:
+        if path in {"/api/publisher", "/api/publisher/library", "/api/publisher/folder-catalog", "/api/publisher/drive-sync/status"} or re.fullmatch(r'/api/publisher/batches/\d+/preflight', path):
             PUBLISHER.get(self, query, path)
             return
         conn = connect(DB_PATH)

@@ -16,6 +16,7 @@ from src.publisher.folder_catalog import (
     set_container_auto_create,
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
+from src.publisher.queue_policy import draft_queue_capabilities
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -136,12 +137,33 @@ def init_publisher(conn):
         'tiktok_draft_persisted_at': 'TEXT', 'temp_path': 'TEXT',
         'upload_status': "TEXT NOT NULL DEFAULT 'NOT_STARTED'",
         'processing_status': "TEXT NOT NULL DEFAULT 'NOT_STARTED'",
+        'queue_position': 'INTEGER',
     }.items():
         if name not in columns:
             conn.execute(f'ALTER TABLE publisher_drafts ADD COLUMN {name} {definition}')
     columns = {r[1] for r in conn.execute('PRAGMA table_info(publisher_batch_executions)')}
     if 'auto_cleanup' not in columns:
         conn.execute("ALTER TABLE publisher_batch_executions ADD COLUMN auto_cleanup INTEGER NOT NULL DEFAULT 0")
+    columns = {r[1] for r in conn.execute('PRAGMA table_info(publisher_execution_items)')}
+    if 'execution_position' not in columns:
+        conn.execute('ALTER TABLE publisher_execution_items ADD COLUMN execution_position INTEGER')
+    # Historical resume used draft_id ASC; retain that deterministic order for unmigrated rows.
+    for batch in conn.execute('SELECT id FROM publisher_batches ORDER BY id').fetchall():
+        rows = conn.execute('SELECT id,queue_position FROM publisher_drafts WHERE batch_id=? ORDER BY id', (batch['id'],)).fetchall()
+        if any(row['queue_position'] is None for row in rows):
+            if any(row['queue_position'] is not None for row in rows):
+                raise ValueError('PARTIAL_QUEUE_POSITION_MIGRATION')
+            for position, row in enumerate(rows, 1):
+                conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, row['id']))
+    for execution in conn.execute('SELECT id FROM publisher_batch_executions ORDER BY id').fetchall():
+        rows = conn.execute('SELECT draft_id,execution_position FROM publisher_execution_items WHERE execution_id=? ORDER BY draft_id', (execution['id'],)).fetchall()
+        if any(row['execution_position'] is None for row in rows):
+            if any(row['execution_position'] is not None for row in rows):
+                raise ValueError('PARTIAL_EXECUTION_POSITION_MIGRATION')
+            for position, row in enumerate(rows, 1):
+                conn.execute('UPDATE publisher_execution_items SET execution_position=? WHERE execution_id=? AND draft_id=?', (position, execution['id'], row['draft_id']))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS publisher_draft_position ON publisher_drafts(batch_id,queue_position) WHERE batch_id IS NOT NULL AND queue_position IS NOT NULL AND status<>'ARCHIVED'")
+    conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS publisher_execution_position ON publisher_execution_items(execution_id,execution_position) WHERE execution_position IS NOT NULL')
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS publisher_media_reservation ON publisher_drafts(media_asset_id) WHERE media_asset_id IS NOT NULL AND status<>'ARCHIVED'")
     conn.execute("CREATE INDEX IF NOT EXISTS publisher_media_decisions_decision ON publisher_media_decisions(decision, updated_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS publisher_media_overrides_product ON publisher_media_overrides(product_id, updated_at)")
@@ -183,7 +205,7 @@ def init_publisher(conn):
 
 
 def get_row(conn, table, row_id):
-    if table not in {"products", "publisher_accounts", "publisher_presets", "publisher_drafts", "publisher_media_assets"}:
+    if table not in {"products", "publisher_accounts", "publisher_presets", "publisher_batches", "publisher_drafts", "publisher_media_assets"}:
         raise ValueError("Tabela invalida")
     row = conn.execute(f"SELECT * FROM {table} WHERE id=?", (int(row_id),)).fetchone()
     if not row:
@@ -432,9 +454,13 @@ class PublisherService:
           m.status media_status,m.remote_file_id,m.cleanup_error
           FROM publisher_drafts d JOIN publisher_products p ON p.product_id=d.product_id
           LEFT JOIN publisher_media_assets m ON m.id=d.media_asset_id
-          JOIN publisher_accounts a ON a.id=d.account_id ORDER BY d.id DESC""")]
+          JOIN publisher_accounts a ON a.id=d.account_id
+          ORDER BY d.batch_id DESC, COALESCE(d.queue_position,d.id) ASC,d.id ASC""")]
         for draft in drafts:
             draft["checklist"] = json.loads(draft.pop("checklist_json"))
+            media = dict(self.conn.execute('SELECT * FROM publisher_media_assets WHERE id=?', (draft['media_asset_id'],)).fetchone()) if draft['media_asset_id'] else None
+            blocked = AccountSafetyGuard(self.conn).snapshot(draft['account_id'])['state'] != 'NORMAL'
+            draft['queue_capabilities'] = draft_queue_capabilities(self.conn, draft, media, account_blocked=blocked)
         protections = []
         for account in self.conn.execute("SELECT id,name FROM publisher_accounts WHERE active=1 ORDER BY id"):
             item = AccountSafetyGuard(self.conn).snapshot(account['id'])
@@ -525,7 +551,7 @@ class PublisherService:
             batch = self.conn.execute("INSERT INTO publisher_batches(name,source,created_at) VALUES (?,'CECILIA_DRIVE',?)",
                                       (data.get('name') or f'Lote {timestamp[:16]}', timestamp)).lastrowid
             drafts = []
-            for asset_id in ids:
+            for position, asset_id in enumerate(ids, 1):
                 asset = get_row(self.conn, 'publisher_media_assets', asset_id)
                 self.assert_media_available(asset)
                 row_id = self.conn.execute("""INSERT INTO publisher_drafts
@@ -533,6 +559,7 @@ class PublisherService:
                   VALUES (?,?,?,?,?,'',?,?,?,?,?)""",
                   (batch, fields['product_id'],fields['account_id'],fields['preset_id'],asset_id,asset['filename'],
                    fields['caption'],fields['scheduled_at'],timestamp,timestamp)).lastrowid
+                self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, row_id))
                 self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?", (timestamp,asset_id))
                 log(self.conn,row_id,'CREATE','DRAFT','Referencia remota; nenhum download realizado')
                 if not fields['caption'].strip():
@@ -672,7 +699,7 @@ class PublisherService:
                 (str(data.get("name") or f"Lote {timestamp[:16]}"), timestamp),
             ).lastrowid
             draft_ids = []
-            for file_id in ids:
+            for position, file_id in enumerate(ids, 1):
                 item = by_id[file_id]
                 asset = self.conn.execute("SELECT * FROM publisher_media_assets WHERE remote_file_id=?", (file_id,)).fetchone()
                 if asset:
@@ -692,10 +719,72 @@ class PublisherService:
                   (batch_id,product_id,account_id,preset_id,media_asset_id,video_path,filename,caption,scheduled_at,created_at,updated_at)
                   VALUES (?,?,?,?,?,'',?,?,?,?,?)""",
                   (batch_id, item["product_id"], int(account_id), preset_id, asset_id, item["filename"], item["caption"], None, timestamp, timestamp)).lastrowid
+                self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, draft_id))
                 self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?", (timestamp, asset_id))
                 log(self.conn, draft_id, "CREATE", "DRAFT", "Biblioteca: referência Drive reservada; nenhum download realizado")
                 draft_ids.append(draft_id)
         return {"batch_id": batch_id, "draft_ids": draft_ids, "items": [{"drive_file_id": i["drive_file_id"], "product_id": i["product_id"], "filename": i["filename"]} for i in (by_id[file_id] for file_id in ids)]}
+
+    def reorder_batch(self, batch_id, ordered_draft_ids):
+        batch_id = int(batch_id)
+        ids = [int(value) for value in ordered_draft_ids]
+        if not ids or len(ids) != len(set(ids)):
+            raise ValueError('INVALID_QUEUE_ORDER')
+        with self.conn:
+            self.conn.execute('BEGIN IMMEDIATE')
+            get_row(self.conn, 'publisher_batches', batch_id)
+            if self.conn.execute('SELECT 1 FROM publisher_execution_items i JOIN publisher_drafts d ON d.id=i.draft_id WHERE d.batch_id=? LIMIT 1', (batch_id,)).fetchone():
+                raise ValueError('BATCH_ALREADY_EXECUTED')
+            rows = self.conn.execute("SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id", (batch_id,)).fetchall()
+            if len(rows) != len(ids) or {row['id'] for row in rows} != set(ids):
+                raise ValueError('QUEUE_MEMBERSHIP_MISMATCH')
+            for row in rows:
+                media = dict(get_row(self.conn, 'publisher_media_assets', row['media_asset_id'])) if row['media_asset_id'] else None
+                if not draft_queue_capabilities(self.conn, dict(row), media)['can_reorder']:
+                    raise ValueError('QUEUE_REORDER_BLOCKED')
+            offset = max((row['queue_position'] or 0 for row in rows), default=0) + len(rows) + 1
+            for position, draft_id in enumerate(ids, 1):
+                self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (offset + position, draft_id))
+            for position, draft_id in enumerate(ids, 1):
+                self.conn.execute('UPDATE publisher_drafts SET queue_position=?,updated_at=? WHERE id=?', (position, now_iso(), draft_id))
+        return {'batch_id': batch_id, 'ordered_draft_ids': ids}
+
+    def queue_preflight(self, batch_id):
+        rows = self.conn.execute("SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id", (int(batch_id),)).fetchall()
+        get_row(self.conn, 'publisher_batches', int(batch_id))
+        items = []
+        for source in rows:
+            draft = dict(source)
+            media = dict(get_row(self.conn, 'publisher_media_assets', draft['media_asset_id'])) if draft['media_asset_id'] else None
+            protection = AccountSafetyGuard(self.conn).snapshot(draft['account_id'])
+            blocked = protection['state'] != 'NORMAL'
+            actions = draft_queue_capabilities(self.conn, draft, media, account_blocked=blocked)
+            blockers = []
+            warnings = []
+            if not actions['can_start']:
+                blockers.append('DRAFT_NOT_STARTABLE')
+            if not str(draft['caption'] or '').strip():
+                blockers.append('CAPTION_MISSING')
+            if media is None or media['status'] not in ('AVAILABLE', 'RESERVED'):
+                blockers.append('MEDIA_NOT_AVAILABLE')
+            if blocked:
+                blockers.append('BLOCKED_BY_ACCOUNT_PROTECTION')
+            try:
+                self.validate_fields(draft)
+            except (ValueError, KeyError) as exc:
+                blockers.append(str(exc))
+            if media and not blockers:
+                try:
+                    self.assert_media_available(media, draft['id'])
+                except ValueError as exc:
+                    blockers.append(str(exc))
+            items.append({'draft_id': draft['id'], 'queue_position': draft['queue_position'],
+                          'ready': not blockers, 'blockers': blockers, 'warnings': warnings,
+                          'safe_actions': [key for key, allowed in actions.items() if key.startswith('can_') and allowed]})
+        return {'batch_id': int(batch_id), 'total_items': len(items),
+                'ready_items': sum(item['ready'] for item in items),
+                'blocked_items': sum(not item['ready'] for item in items),
+                'warning_items': sum(bool(item['warnings']) for item in items), 'items': items}
 
     def save_product(self, data):
         if data.get('id'):
@@ -826,9 +915,10 @@ class PublisherService:
         with self.conn:
             batch = self.conn.execute("INSERT INTO publisher_batches(name,source,created_at) VALUES (?,?,?)", (data.get("name") or f"Lote {timestamp[:16]}", source, timestamp)).lastrowid
             ids = []
-            for filename, path in paths:
+            for position, (filename, path) in enumerate(paths, 1):
                 draft = self.conn.execute("INSERT INTO publisher_drafts(batch_id,product_id,account_id,preset_id,video_path,filename,caption,scheduled_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                                           (batch, fields["product_id"], fields["account_id"], fields["preset_id"], path, filename, fields["caption"], fields["scheduled_at"], timestamp, timestamp)).lastrowid
+                self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, draft))
                 log(self.conn, draft, "CREATE", "DRAFT", f"Entrada: {source}")
                 ids.append(draft)
         return {"batch_id": batch, "draft_ids": ids}
@@ -846,6 +936,12 @@ class PublisherService:
             self.conn.execute("BEGIN IMMEDIATE")
             for row_id in ids:
                 row = get_row(self.conn, "publisher_drafts", row_id)
+                media = get_row(self.conn, 'publisher_media_assets', row['media_asset_id']) if row['media_asset_id'] else None
+                capabilities = draft_queue_capabilities(self.conn, row, media)
+                if action == 'archive' and not capabilities['can_remove']:
+                    raise ValueError('QUEUE_REMOVE_BLOCKED')
+                if action in {'edit', 'use_product_caption', 'duplicate'} and not capabilities['can_edit']:
+                    raise ValueError('QUEUE_EDIT_BLOCKED')
                 if row.get('persistence_status') == 'PERSISTED' and action in {'edit','duplicate','use_product_caption','reset','archive'}:
                     raise ValueError('DRAFT_ALREADY_PERSISTED')
                 if row.get('media_asset_id') and action == 'duplicate':
@@ -866,8 +962,9 @@ class PublisherService:
                         if not str(merged['caption'] or '').strip():
                             self.conn.execute("UPDATE publisher_drafts SET status='CAPTION_MISSING',error_code='CAPTION_MISSING' WHERE id=?",(row_id,))
                     else:
-                        self.conn.execute("INSERT INTO publisher_drafts(batch_id,product_id,account_id,preset_id,video_path,filename,caption,scheduled_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                          (*[merged[k] for k in ("batch_id", "product_id", "account_id", "preset_id", "video_path", "filename", "caption", "scheduled_at")], now_iso(), now_iso()))
+                        position = self.conn.execute('SELECT COALESCE(MAX(queue_position),0)+1 FROM publisher_drafts WHERE batch_id=?', (merged['batch_id'],)).fetchone()[0]
+                        self.conn.execute("INSERT INTO publisher_drafts(batch_id,product_id,account_id,preset_id,video_path,filename,caption,scheduled_at,queue_position,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                          (*[merged[k] for k in ("batch_id", "product_id", "account_id", "preset_id", "video_path", "filename", "caption", "scheduled_at")], position, now_iso(), now_iso()))
                 else:
                     target = {"archive": "ARCHIVED", "reset": "DRAFT", "published": "PUBLISHED", "scheduled": "SCHEDULED"}[action]
                     transition(self.conn, row_id, target, explicit_reset=action=='reset')

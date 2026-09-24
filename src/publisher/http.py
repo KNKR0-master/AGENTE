@@ -233,6 +233,10 @@ class PublisherAPI:
 
     def get(self, handler, query, path="/api/publisher"):
         with closing(connect(self.db)) as conn:
+            preflight_match = re.fullmatch(r'/api/publisher/batches/(\d+)/preflight', path)
+            if preflight_match:
+                handler._json(PublisherService(conn, self.root).queue_preflight(int(preflight_match[1])), no_store=True)
+                return
             if path == "/api/publisher/drive-sync/status":
                 handler._json({**drive_sync_status(conn), "polling": polling_status(conn)}, no_store=True)
                 return
@@ -272,7 +276,6 @@ class PublisherAPI:
                 start, end = 0, size - 1
                 range_value = handler.headers.get("Range", "")
                 if range_value:
-                    import re
                     match = re.fullmatch(r"bytes=(\d+)-(\d*)", range_value)
                     if not match:
                         handler.send_error(416)
@@ -363,7 +366,10 @@ class PublisherAPI:
                 with closing(connect(self.db)) as conn:
                     service = PublisherService(conn, self.root)
                     action = path.rsplit("/", 1)[-1]
-                    if path in {"/products/bulk", "/api/publisher/products/bulk"}:
+                    reorder_match = re.fullmatch(r'/api/publisher/batches/(\d+)/reorder', path)
+                    if reorder_match:
+                        result = service.reorder_batch(int(reorder_match[1]), data.get('ordered_draft_ids') or [])
+                    elif path in {"/products/bulk", "/api/publisher/products/bulk"}:
                         result = service.product_bulk_plan(data.get("ids", [])) if data.get("action") == "preview" else service.bulk_products(
                             data.get("ids", []), data.get("action", "delete"), human_confirmed=data.get("human_confirmed") is True
                         )
