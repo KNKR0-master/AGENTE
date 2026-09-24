@@ -5,6 +5,33 @@ REMOTE_STEPS = ('UPLOAD_STARTED', 'SAVE_DRAFT', 'TIKTOK_DRAFT_CONFIRMED')
 ACTIVE_ITEM_STATES = ('QUEUED', 'PROCESSING', 'CLEANUP', 'WAITING_MANUAL')
 
 
+def draft_queue_presentation(draft, media=None):
+    if draft.get('upload_status') == 'TRANSFER_UNKNOWN':
+        return {'label': 'Envio a verificar', 'kind': 'attention',
+                'message': 'O TikTok pode já ter recebido este vídeo. Não envie novamente enquanto a verificação estiver pendente.'}
+    if media and media.get('status') == 'NEEDS_RECONCILIATION':
+        return {'label': 'Requer verificação', 'kind': 'attention',
+                'message': 'Ainda não foi possível confirmar o resultado no TikTok. Verifique o status antes de qualquer nova ação.'}
+    labels = {
+        'DRAFT': ('Pendente', 'neutral'),
+        'CAPTION_MISSING': ('Legenda necessária', 'attention'),
+        'PREPARING': ('Preparando', 'running'),
+        'READY_FOR_REVIEW': ('Pronto para revisão', 'ready'),
+        'SCHEDULED': ('Agendado no Studio', 'ready'),
+        'PUBLISHED': ('Publicado no Studio', 'ready'),
+        'ARCHIVED': ('Removido da fila', 'neutral'),
+        'NEEDS_LOGIN': ('Conta precisa de login', 'attention'),
+        'UPLOAD_FAILED': ('Preparação interrompida', 'attention'),
+        'STUDIO_CHANGED': ('Studio precisa de revisão', 'attention'),
+        'MANUAL_ACTION_REQUIRED': ('Ação manual necessária', 'attention'),
+        'FAILED': ('Preparação interrompida', 'attention'),
+        'PRODUCT_NOT_FOUND': ('Produto não encontrado', 'attention'),
+        'PRODUCT_NOT_CONFIRMED': ('Produto a confirmar', 'attention'),
+    }
+    label, kind = labels.get(draft.get('status'), ('Estado a verificar', 'attention'))
+    return {'label': label, 'kind': kind, 'message': ''}
+
+
 def draft_queue_capabilities(conn, draft, media=None, *, account_blocked=False):
     draft_id = draft['id']
     execution = conn.execute(

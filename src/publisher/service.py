@@ -16,7 +16,7 @@ from src.publisher.folder_catalog import (
     set_container_auto_create,
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
-from src.publisher.queue_policy import draft_queue_capabilities
+from src.publisher.queue_policy import draft_queue_capabilities, draft_queue_presentation
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -450,17 +450,23 @@ class PublisherService:
         return {"product_id": product_id, "folder_id": folder_id, "action": action}
 
     def snapshot(self):
-        drafts = [dict(r) for r in self.conn.execute("""SELECT d.*,p.name product_name,a.name account_name,
-          m.status media_status,m.remote_file_id,m.cleanup_error
+        drafts = [dict(r) for r in self.conn.execute("""SELECT d.*,p.name product_name,p.short_name product_short_name,a.name account_name,
+          m.status media_status,m.remote_file_id,m.cleanup_error,f.thumbnail_link
           FROM publisher_drafts d JOIN publisher_products p ON p.product_id=d.product_id
           LEFT JOIN publisher_media_assets m ON m.id=d.media_asset_id
+          LEFT JOIN drive_files f ON f.drive_file_id=m.remote_file_id
           JOIN publisher_accounts a ON a.id=d.account_id
           ORDER BY d.batch_id DESC, COALESCE(d.queue_position,d.id) ASC,d.id ASC""")]
+        protections_by_account = {row['id']: AccountSafetyGuard(self.conn).snapshot(row['id'])['state'] != 'NORMAL'
+                                  for row in self.conn.execute('SELECT DISTINCT account_id id FROM publisher_drafts')}
         for draft in drafts:
             draft["checklist"] = json.loads(draft.pop("checklist_json"))
             media = dict(self.conn.execute('SELECT * FROM publisher_media_assets WHERE id=?', (draft['media_asset_id'],)).fetchone()) if draft['media_asset_id'] else None
-            blocked = AccountSafetyGuard(self.conn).snapshot(draft['account_id'])['state'] != 'NORMAL'
+            blocked = protections_by_account[draft['account_id']]
             draft['queue_capabilities'] = draft_queue_capabilities(self.conn, draft, media, account_blocked=blocked)
+            draft['queue_display'] = draft_queue_presentation(draft, media)
+        batch_ids = {draft['batch_id'] for draft in drafts if draft['batch_id'] is not None}
+        queue_preflights = {batch_id: self.queue_preflight(batch_id) for batch_id in batch_ids}
         protections = []
         for account in self.conn.execute("SELECT id,name FROM publisher_accounts WHERE active=1 ORDER BY id"):
             item = AccountSafetyGuard(self.conn).snapshot(account['id'])
@@ -477,6 +483,11 @@ class PublisherService:
             protections.append(item)
         return {"products": self.catalog(), "preferences": self.get_preferences(),
                 "drive_folders": self.list_drive_folders(), "drafts": drafts, "statuses": STATUSES,
+                "queue_status_labels": {status: draft_queue_presentation({'status': status})['label'] for status in STATUSES},
+                "queue_preflights": queue_preflights,
+                "execution_items": [dict(r) for r in self.conn.execute("""SELECT i.*,e.batch_id,e.status execution_status
+                  FROM publisher_execution_items i JOIN publisher_batch_executions e ON e.id=i.execution_id
+                  ORDER BY e.id DESC,i.execution_position ASC""")],
                 "media_assets": [dict(r) for r in self.conn.execute("SELECT * FROM publisher_media_assets ORDER BY filename")],
                 "executions": [dict(r) for r in self.conn.execute("""SELECT e.*,
                   SUM(i.status='QUEUED') queued,SUM(i.status IN ('PROCESSING','CLEANUP')) processing,

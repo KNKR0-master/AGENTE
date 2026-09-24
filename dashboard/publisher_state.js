@@ -224,5 +224,49 @@
     return 'Sincronização automática ativa.';
   }
 
-  return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation, driveSyncPresentation, drivePollingPresentation};
+  function queueGroups(snapshot, filters = {}) {
+    const executions = snapshot.executions || [];
+    const items = snapshot.execution_items || [];
+    const byBatch = new Map();
+    for (const draft of snapshot.drafts || []) {
+      if (!byBatch.has(draft.batch_id)) byBatch.set(draft.batch_id, []);
+      byBatch.get(draft.batch_id).push(draft);
+    }
+    return [...byBatch].map(([batchId, all]) => {
+      const execution = executions.find(e => e.batch_id === batchId);
+      const frozen = !!items.find(i => i.batch_id === batchId);
+      const positions = new Map(items.filter(i => i.execution_id === execution?.id)
+        .map(i => [i.draft_id, i.execution_position]));
+      const ordered = [...all].filter(d => filters.status === 'ARCHIVED' ? d.status === 'ARCHIVED' : d.status !== 'ARCHIVED').sort((a, b) =>
+        ((frozen ? positions.get(a.id) : a.queue_position) ?? Number.MAX_SAFE_INTEGER) -
+        ((frozen ? positions.get(b.id) : b.queue_position) ?? Number.MAX_SAFE_INTEGER) || a.id - b.id);
+      const query = normalizeSearch(filters.search);
+      const drafts = ordered.filter(d =>
+        (!filters.status || d.status === filters.status) &&
+        (!filters.batch || d.batch_id === Number(filters.batch)) &&
+        (!filters.account || d.account_id === Number(filters.account)) &&
+        (!filters.product || d.product_id === Number(filters.product)) &&
+        (!filters.readiness || (filters.readiness === 'READY') === !!snapshot.queue_preflights?.[batchId]?.items?.find(i => i.draft_id === d.id)?.ready) &&
+        (!query || normalizeSearch([d.filename, d.product_short_name, d.product_name, d.caption].join(' ')).includes(query)));
+      return {batchId, all: ordered, drafts, execution, frozen,
+        preflight: snapshot.queue_preflights?.[batchId], fullyVisible: drafts.length === ordered.length,
+        positions};
+    }).filter(group => group.drafts.length).sort((a, b) => Number(b.batchId) - Number(a.batchId));
+  }
+
+  function reorderedIds(group, draftId, targetId) {
+    if (group.frozen || !group.fullyVisible || group.all.some(d => !d.queue_capabilities?.can_reorder)) return null;
+    const ids = group.all.map(d => d.id);
+    const from = ids.indexOf(draftId), to = ids.indexOf(targetId);
+    if (from < 0 || to < 0 || from === to) return null;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    return ids;
+  }
+
+  function bulkAllowed(drafts, capability) {
+    return !!drafts.length && drafts.every(d => d.queue_capabilities?.[capability]);
+  }
+
+  return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation, driveSyncPresentation, drivePollingPresentation,
+    queueGroups, reorderedIds, bulkAllowed};
 });
