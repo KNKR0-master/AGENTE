@@ -355,6 +355,24 @@ class PublisherDriveSyncTests(unittest.TestCase):
         self.assertTrue(result["full_scan_required"])
         self.assertEqual(result["cursor_status"], "FULL_SCAN_REQUIRED")
 
+    def test_transient_change_error_preserves_ready_cursor_for_bounded_retry(self):
+        self.ready()
+        error = RuntimeError("temporary transport")
+        error.__cause__ = TimeoutError("transport timeout")
+        sync, _ = self.sync({"C0": error})
+        result = sync.cycle()
+        self.assertEqual(result["status"], "TRANSIENT_ERROR")
+        row = self.conn.execute("SELECT current_cursor,cursor_status,last_error FROM publisher_drive_sync_state").fetchone()
+        self.assertEqual(tuple(row), ("C0", "READY", "TRANSIENT_DRIVE_ERROR"))
+
+    def test_auth_change_error_does_not_invalidate_cursor(self):
+        self.ready()
+        sync, _ = self.sync({"C0": RuntimeError("invalid_grant")})
+        result = sync.cycle()
+        self.assertEqual(result["status"], "AUTH_REQUIRED")
+        row = self.conn.execute("SELECT current_cursor,cursor_status FROM publisher_drive_sync_state").fetchone()
+        self.assertEqual(tuple(row), ("C0", "READY"))
+
     def test_missing_or_corrupt_local_cursor_requires_explicit_full_scan(self):
         sync, _ = self.sync()
         result = sync.cycle()

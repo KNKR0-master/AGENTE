@@ -315,3 +315,19 @@ nao inicia polling de Changes em background.
 - `docs/cecilia-drive-user-oauth-preparation.md`: migracao OAuth e DPAPI.
 - `docs/cecilia-drive-delete-permission-diagnosis.md`: diagnostico inicial da
   conta de servico, mantido como evidencia da causa original.
+
+# Sincronizacao periodica do Drive
+
+Na Biblioteca, **Sincronizacao automatica** e opt-in e fica desligada por padrao.
+Quando habilitada, o servidor agenda a primeira consulta incremental para depois
+do intervalo escolhido (minimo de 30 segundos; padrao de 60 segundos). Ela usa o
+mesmo cursor e o mesmo lock da acao **Sincronizar agora**. Abrir mais abas nao cria
+novos pollers. O estado fica no SQLite por conta Google, provider e pasta raiz;
+o cursor permanece exclusivamente em `publisher_drive_sync_state`.
+
+O poller nao executa varredura completa, bootstrap, descoberta legada ou mutacao
+remota. Falhas transitorias aplicam backoff de ate 15 minutos. Problemas de
+autenticacao, conta divergente, cursor que exige reconstrucao ou erro local
+pausam a sincronizacao automatica e exigem acao do operador. Desabilitar o
+controle preserva cursor e historico. O shutdown do servidor aguarda o ciclo
+atual por uma janela limitada antes de encerrar.

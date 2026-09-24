@@ -4,6 +4,7 @@
 .drive-sync-panel>div{display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:1;min-width:220px}
 .drive-sync-panel strong{color:#006d59}.drive-sync-panel #driveSyncMessage{width:100%}
 .drive-sync-panel details{width:100%;font-size:12px}.drive-sync-panel #rebuildDriveSync{color:#52606b}
+.drive-sync-panel label{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:13px}.drive-sync-panel #drivePollStatus{font-size:13px}.drive-sync-panel #drivePollTimes{color:#52606b}
 #library th{position:sticky;top:0;z-index:1}
 #library th:first-child{width:42px}
 #library th:nth-child(2){width:28%}

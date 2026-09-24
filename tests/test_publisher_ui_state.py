@@ -56,6 +56,27 @@ class PublisherUIStateTests(unittest.TestCase):
         self.assertIn('não foram modificados',result['error']['message'])
         self.assertNotIn('private-token',json.dumps(result['redacted']))
 
+    def test_drive_polling_presentation_is_quiet_and_actionable(self):
+        result = self.run_node(
+            f"""
+            const ui = require({json.dumps(str(STATE_MODULE))});
+            console.log(JSON.stringify({{
+              off: ui.drivePollingPresentation({{enabled:false}}),
+              ready: ui.drivePollingPresentation({{enabled:true,status:'SCHEDULED'}}),
+              auth: ui.drivePollingPresentation({{enabled:true,status:'PAUSED',paused_reason:'AUTH_REQUIRED'}}),
+              scan: ui.drivePollingPresentation({{enabled:true,status:'PAUSED',paused_reason:'FULL_SCAN_REQUIRED'}}),
+              backoff: ui.drivePollingPresentation({{enabled:true,status:'BACKOFF'}}),
+              manualAuth: ui.driveSyncPresentation({{cursor_status:'READY'}},{{status:'AUTH_REQUIRED'}}),
+            }}));
+            """
+        )
+        self.assertEqual(result['off'], 'Desativada')
+        self.assertIn('ativa', result['ready'])
+        self.assertIn('Reconecte', result['auth'])
+        self.assertIn('verificação completa', result['scan'])
+        self.assertIn('mais tarde', result['backoff'])
+        self.assertIn('Reconecte', result['manualAuth']['message'])
+
     def test_library_sync_wiring_has_no_parallel_discovery_or_automatic_rebuild(self):
         source=PUBLISHER_MODULE.read_text(encoding='utf-8')
         self.assertIn("$('#syncMedia').onclick=()=>runDriveSync();",source)

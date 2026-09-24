@@ -83,6 +83,24 @@ def init_publisher(conn):
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE(account_identity,provider,root_folder_id));
+    CREATE TABLE IF NOT EXISTS publisher_drive_poll_state (
+      id INTEGER PRIMARY KEY,
+      account_identity TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      root_folder_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+      interval_seconds INTEGER NOT NULL DEFAULT 60 CHECK(interval_seconds >= 30),
+      status TEXT NOT NULL DEFAULT 'DISABLED',
+      last_attempt_at TEXT,
+      last_success_at TEXT,
+      next_attempt_at TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      paused_reason TEXT,
+      last_error_category TEXT,
+      last_changes_seen INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(account_identity,provider,root_folder_id));
     CREATE TABLE IF NOT EXISTS publisher_batch_executions (
       id INTEGER PRIMARY KEY, batch_id INTEGER, total INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'QUEUED', started_at TEXT NOT NULL, finished_at TEXT,

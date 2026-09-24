@@ -1154,10 +1154,13 @@ def main() -> None:
     uninstall_console_handler = install_windows_console_shutdown_handler(server)
     print("Dashboard local: http://127.0.0.1:8765")
     try:
+        PUBLISHER.drive_poller.start()
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if not PUBLISHER.drive_poller.stop():
+            print("Publisher Drive poller did not stop within grace period", flush=True)
         try:
             PUBLISHER.worker.shutdown()
         except Exception as exc:

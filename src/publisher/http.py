@@ -18,16 +18,18 @@ from src.publisher.worker import PublisherWorker, recover_sessions
 from src.publisher.media import media_provider, TemporaryMediaCache
 from src.publisher.account_safety import AccountSafetyGuard
 from src.publisher.drive_sync import drive_sync_status, incremental_drive_sync
+from src.publisher.drive_polling import DrivePollCoordinator, configure_polling, polling_status
 
 
 PUBLISHER_API_VERSION = "publisher-api-v1"
-PUBLISHER_COMPATIBILITY = "publisher-ui-2a.3.2"
+PUBLISHER_COMPATIBILITY = "publisher-ui-2a.3.3"
 
 
 class PublisherAPI:
     def __init__(self, root, db):
         self.root, self.db = Path(root), db
         self.worker = PublisherWorker(root, db)
+        self.drive_poller = DrivePollCoordinator(db)
         self.started_at = datetime.now(timezone.utc).isoformat()
 
     def runtime_info(self, handler):
@@ -232,7 +234,7 @@ class PublisherAPI:
     def get(self, handler, query, path="/api/publisher"):
         with closing(connect(self.db)) as conn:
             if path == "/api/publisher/drive-sync/status":
-                handler._json(drive_sync_status(conn), no_store=True)
+                handler._json({**drive_sync_status(conn), "polling": polling_status(conn)}, no_store=True)
                 return
             if path == "/api/publisher/library":
                 result = PublisherService(conn, self.root).media_library({
@@ -381,6 +383,9 @@ class PublisherAPI:
                         if bootstrap and data.get('human_confirmed') is not True:
                             raise ValueError('FULL_DRIVE_RESCAN_REQUIRES_CONFIRMATION')
                         result = incremental_drive_sync(conn, bootstrap=bootstrap)
+                    elif path == '/api/publisher/drive-sync/polling':
+                        result = configure_polling(conn, data.get('action'), data.get('interval_seconds'))
+                        self.drive_poller.wake()
                     elif action == 'batches':
                         result = service.create_remote_batch(data)
                     elif action == 'library-batches':

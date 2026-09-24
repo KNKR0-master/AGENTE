@@ -25,7 +25,7 @@ class StartPublisherShutdownTests(unittest.TestCase):
         current = {
             "app": "publisher-desk",
             "api_version": "publisher-api-v1",
-            "compatibility": "publisher-ui-2a.3.2",
+            "compatibility": "publisher-ui-2a.3.3",
             "process_id": 123,
             "instance_id": "instance",
             "started_at": "2026-09-16T00:00:00+00:00",

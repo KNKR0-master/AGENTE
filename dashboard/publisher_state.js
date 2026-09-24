@@ -182,7 +182,11 @@
       label: 'Verificação necessária', needsRebuild: true, summary: '',
       message: 'A sincronização incremental precisa ser reconstruída. Execute uma verificação completa do Drive.',
     };
-    if (status === 'ERROR' || status === 'SYNC_IN_PROGRESS') return {
+    if (status === 'AUTH_REQUIRED') return {
+      label: 'Reconexão necessária', needsRebuild: false, summary: '',
+      message: 'Reconecte o Google Drive para continuar. A sincronização não será repetida automaticamente.',
+    };
+    if (status === 'ERROR' || status === 'SYNC_IN_PROGRESS' || status === 'TRANSIENT_ERROR') return {
       label: 'Atenção necessária', needsRebuild: false, summary: '',
       message: status === 'SYNC_IN_PROGRESS' ? 'Já existe uma sincronização em andamento.'
         : 'Sincronização não concluída. Seus arquivos do Drive não foram modificados. Verifique o diagnóstico antes de tentar novamente.',
@@ -190,5 +194,20 @@
     return {label: 'Atualizado', message: summary || 'Sincronização pronta.', summary, needsRebuild: false};
   }
 
-  return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation, driveSyncPresentation};
+  function drivePollingPresentation(poll = {}) {
+    if (!poll.enabled) return 'Desativada';
+    const actions = {
+      AUTH_REQUIRED: 'Reconecte o Google Drive para continuar.',
+      ACCOUNT_MISMATCH: 'Verifique a conta Google conectada.',
+      FULL_SCAN_REQUIRED: 'É necessária uma verificação completa do Drive.',
+      DATABASE_ERROR: 'Verifique o armazenamento local antes de continuar.',
+      UNINITIALIZED: 'É necessária uma verificação completa do Drive.',
+    };
+    if (poll.status === 'PAUSED') return `Sincronização automática pausada. ${actions[poll.paused_reason] || 'Verifique os detalhes técnicos.'}`;
+    if (poll.status === 'BACKOFF') return 'Drive indisponível temporariamente. Nova tentativa será feita mais tarde.';
+    if (poll.status === 'RUNNING') return 'Verificando alterações no Drive.';
+    return 'Sincronização automática ativa.';
+  }
+
+  return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation, driveSyncPresentation, drivePollingPresentation};
 });

@@ -168,6 +168,18 @@ class IncrementalDriveSync:
             try:
                 page = self.provider.list_changes(cursor)
             except Exception as exc:
+                if self._auth_provider_error(exc):
+                    return {**totals, "status": "AUTH_REQUIRED", "cursor_status": READY,
+                            "full_scan_required": False}
+                if self._transient_provider_error(exc):
+                    with self.conn:
+                        self.conn.execute(
+                            """UPDATE publisher_drive_sync_state SET last_error='TRANSIENT_DRIVE_ERROR',updated_at=?
+                               WHERE account_identity=? AND provider=? AND root_folder_id=?""",
+                            (now_iso(), self.scope.account_identity, self.scope.provider, self.scope.root_folder_id),
+                        )
+                    return {**totals, "status": "TRANSIENT_ERROR", "cursor_status": READY,
+                            "full_scan_required": False}
                 status = FULL_SCAN_REQUIRED if self._invalid_cursor(exc) else "ERROR"
                 self._set_failure(status, "CURSOR_INVALID" if status == FULL_SCAN_REQUIRED else type(exc).__name__)
                 return {**totals, "status": status, "cursor_status": status,
@@ -365,7 +377,28 @@ class IncrementalDriveSync:
     def _invalid_cursor(exc: Exception) -> bool:
         cause = getattr(exc, "__cause__", None)
         status = getattr(getattr(cause, "resp", None), "status", None)
-        return status == 410 or "410" in str(exc) or "invalid" in str(exc).lower()
+        text = str(exc).lower()
+        return status == 410 or "410 invalid page token" in text or "invalid change token" in text
+
+    @staticmethod
+    def _auth_provider_error(exc: Exception) -> bool:
+        cause = getattr(exc, "__cause__", None) or exc
+        status = getattr(getattr(cause, "resp", None), "status", None)
+        text = str(exc).upper()
+        return status == 401 or any(reason in text for reason in (
+            "INVALID_GRANT", "CREDENTIAL_INVALID", "CREDENTIAL_REFRESH_FAILED", "CONSENT_REQUIRED"
+        ))
+
+    @staticmethod
+    def _transient_provider_error(exc: Exception) -> bool:
+        cause = getattr(exc, "__cause__", None) or exc
+        status = getattr(getattr(cause, "resp", None), "status", None)
+        if status in {429, 500, 502, 503, 504}:
+            return True
+        if status == 403:
+            text = str(cause).lower()
+            return any(reason in text for reason in ("ratelimitexceeded", "userratelimitexceeded", "quotaexceeded"))
+        return isinstance(cause, (TimeoutError, ConnectionError))
 
     @staticmethod
     def _summary(status: str, *, full_scan_required: bool = False) -> dict[str, Any]:

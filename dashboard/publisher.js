@@ -148,7 +148,7 @@ if($('#mediaSearch'))$('#mediaSearch').oninput=renderMedia;if($('#mediaStatus'))
 if($('#selectAllMedia'))$('#selectAllMedia').onchange=e=>{visibleMedia().filter(m=>m.status==='AVAILABLE').forEach(m=>e.target.checked?remoteSelected.add(m.id):remoteSelected.delete(m.id));renderMedia();};
 const driveSyncPanel=document.createElement('div');
 driveSyncPanel.className='drive-sync-panel';
-driveSyncPanel.innerHTML='<div><strong id="driveSyncLabel"></strong><span id="driveSyncTime"></span><span id="driveSyncMode"></span><span id="driveSyncMessage" role="status" aria-live="polite"></span></div><button id="rebuildDriveSync" type="button">Verificação completa do Drive</button><details><summary>Detalhes técnicos</summary><small id="driveSyncDetails"></small></details>';
+driveSyncPanel.innerHTML='<div><strong id="driveSyncLabel"></strong><span id="driveSyncTime"></span><span id="driveSyncMode"></span><span id="driveSyncMessage" role="status" aria-live="polite"></span></div><label><input id="drivePollEnabled" type="checkbox"> Sincronização automática</label><label>Intervalo <select id="drivePollInterval"><option value="30">A cada 30 s</option><option value="60">A cada 1 min</option><option value="300">A cada 5 min</option><option value="900">A cada 15 min</option></select></label><span id="drivePollStatus" role="status"></span><small id="drivePollTimes"></small><button id="rebuildDriveSync" type="button">Verificação completa do Drive</button><details><summary>Detalhes técnicos</summary><small id="driveSyncDetails"></small></details>';
 $('#syncMedia').closest('.heading').insertAdjacentElement('afterend',driveSyncPanel);
 async function loadDriveSyncStatus(){
  const response=await fetch('/api/publisher/drive-sync/status',{cache:'no-store'});
@@ -163,6 +163,16 @@ function renderDriveSync(){
  $('#driveSyncMessage').textContent=view.message;
  const counts=driveSyncResult&&driveSyncResult.status==='READY'?['pages_processed','changes_seen','changes_in_scope','files_upserted','folders_upserted','items_marked_unavailable','projection_updates'].map(key=>`${key}: ${Number(driveSyncResult[key]||0)}`).join(' · '):'';
  $('#driveSyncDetails').textContent=`Estado: ${driveSyncRecord.cursor_status||'desconhecido'}${counts?` · ${counts}`:''}`;
+ const poll=driveSyncRecord.polling||{};
+ $('#drivePollEnabled').checked=!!poll.enabled;
+ const intervalSelect=$('#drivePollInterval'), interval=String(poll.interval_seconds||60);
+ intervalSelect.querySelector('option[data-custom]')?.remove();
+ if(![...intervalSelect.options].some(option=>option.value===interval)){const custom=new Option(`A cada ${interval} s`,interval);custom.dataset.custom='true';intervalSelect.add(custom);}
+ intervalSelect.value=interval;
+ intervalSelect.disabled=!poll.enabled;
+ $('#drivePollStatus').textContent=PublisherUIState.drivePollingPresentation(poll);
+ const formatTime=value=>value?new Date(value).toLocaleString('pt-BR'):'';
+ $('#drivePollTimes').textContent=poll.enabled?`Última: ${formatTime(poll.last_success_at)||'ainda não ocorreu'} · Próxima: ${formatTime(poll.next_attempt_at)||'aguardando ação'}`:'';
  $('#syncMedia').disabled=driveSyncBusy||view.needsRebuild;
  $('#syncMedia').textContent=driveSyncBusy?'Sincronizando…':'Sincronizar agora';
  $('#rebuildDriveSync').disabled=driveSyncBusy;
@@ -183,6 +193,14 @@ async function runDriveSync(bootstrap=false){
 }
 $('#syncMedia').onclick=()=>runDriveSync();
 $('#rebuildDriveSync').onclick=()=>runDriveSync(true);
+async function changeDrivePolling(action){
+ const control=$('#drivePollEnabled');control.disabled=true;
+ try{await api('/drive-sync/polling',{action,interval_seconds:Number($('#drivePollInterval').value)});await loadDriveSyncStatus();renderDriveSync();}
+ catch(error){await loadDriveSyncStatus();renderDriveSync();notice(error.message);}
+ finally{control.disabled=false;}
+}
+$('#drivePollEnabled').onchange=e=>changeDrivePolling(e.target.checked?'enable':'disable');
+$('#drivePollInterval').onchange=()=>changeDrivePolling('set_interval');
 const legacyProductSearch=field($('#batchForm'),'product_search');if(legacyProductSearch)legacyProductSearch.onchange=e=>{const p=chosenProduct(e.target.value);renderCaptionPreview();if(p?.account_id)field($('#batchForm'),'account_id').value=p.account_id;};
 field($('#batchForm'),'preset_id').onchange=e=>{const p=state.presets.find(x=>x.id===Number(e.target.value));if(p?.account_id)field($('#batchForm'),'account_id').value=p.account_id;};
 $('#batchForm').onsubmit=e=>{e.preventDefault();task(async()=>{const p=chosenProduct(field(e.target,'product_search').value);if(!p)throw Error('Selecione um produto da lista');const data=formData(e.target);data.product_id=p.id;data.media_asset_ids=[...remoteSelected];const button=e.target.querySelector('button[type=submit]');button.disabled=true;try{const result=await api('/batches',data);e.target.reset();remoteSelected.clear();await refresh();selected=new Set(result.draft_ids);renderQueue();view('queue');notice(`${result.draft_ids.length} drafts criados sem baixar vídeos`);}finally{button.disabled=false;}});};
@@ -258,3 +276,4 @@ document.addEventListener('change',e=>{if(e.target.dataset.select){const id=Numb
 document.addEventListener('click',e=>{const el=e.target.closest('[data-remove-product-folder]');if(el)task(async()=>{const productId=Number($('#productForm').dataset.productId);if(!productId)throw Error('Produto não selecionado');if(!confirm('Remover somente a associação desta pasta? Nenhum arquivo será movido.'))return;await api('/product-folder',{product_id:productId,folder_id:el.dataset.removeProductFolder,action:'remove'});await refresh();const product=state.products.find(p=>p.id===productId);if(product){fillForm($('#productForm'),product);renderProductEditor(product);}notice('Associação removida e registrada no histórico.');});});
 document.addEventListener('click',e=>task(async()=>{const el=e.target.closest('button');if(!el||el.disabled)return;const d=el.dataset;if(d.productEdit){const p=state.products.find(x=>x.id===Number(d.productEdit));fillForm($('#productForm'),p);$('#productLegacy').innerHTML=`Fonte: ${esc(p.legacy_source||'Cadastro interno')}<br>ID legado: ${esc(p.legacy_product_id||'—')}<br>URL legada: ${esc(p.legacy_shop_url||'—')}`;renderProductEditor(p);}if(d.accountEdit)fillForm($('#accountForm'),state.accounts.find(x=>x.id===Number(d.accountEdit)));if(d.presetEdit)fillForm($('#presetForm'),state.presets.find(x=>x.id===Number(d.presetEdit)));if(d.login)await openAccountLogin(Number(d.login));if(d.edit)edit([Number(d.edit)]);if(d.review)review(Number(d.review));if(d.studio){await api('/review',{id:Number(d.studio)});notice('Abrindo a aba mantida pelo worker');}if(d.complete){const prompt=d.complete==='reset'?'Você encerrou ou descartou a preparação anterior no Studio?':'Você vinculou o produto TikTok Shop e concluiu esta ação manualmente no Studio?';if(!confirm(prompt))return;await api('/bulk',{ids:[reviewing],action:d.complete,human_confirmed:true});$('#reviewDialog').close();await refresh();notice('Estado registrado');}}));
 task(refresh);loadDriveSyncStatus().then(renderDriveSync).catch(()=>{driveSyncRecord={cursor_status:'ERROR'};renderDriveSync();});setInterval(()=>task(refresh),5000);
+setInterval(()=>loadDriveSyncStatus().then(renderDriveSync).catch(()=>{}),15000);
