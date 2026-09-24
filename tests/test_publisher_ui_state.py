@@ -77,6 +77,39 @@ class PublisherUIStateTests(unittest.TestCase):
         self.assertIn('mais tarde', result['backoff'])
         self.assertIn('Reconecte', result['manualAuth']['message'])
 
+    def test_current_polling_state_overrides_historical_success(self):
+        result = self.run_node(
+            f"""
+            const ui = require({json.dumps(str(STATE_MODULE))});
+            const base = {{cursor_status:'READY',last_successful_sync_at:'2026-09-24T11:34:34Z'}};
+            console.log(JSON.stringify({{
+              auth: ui.driveSyncPresentation({{...base,polling:{{enabled:true,status:'PAUSED',paused_reason:'AUTH_REQUIRED'}}}}),
+              mismatch: ui.driveSyncPresentation({{...base,polling:{{enabled:true,status:'PAUSED',paused_reason:'ACCOUNT_MISMATCH'}}}}),
+              busy: ui.driveSyncPresentation({{...base,sync_in_progress:true}}),
+              pollBusy: ui.driveSyncPresentation({{...base,polling:{{enabled:true,status:'RUNNING'}}}}),
+              recovered: ui.driveSyncPresentation(base),
+              scan: ui.driveSyncPresentation({{cursor_status:'FULL_SCAN_REQUIRED'}}),
+              backoff: ui.driveSyncPresentation({{...base,polling:{{enabled:true,status:'BACKOFF'}}}}),
+              staleResult: ui.driveSyncPresentation({{cursor_status:'FULL_SCAN_REQUIRED'}},{{status:'READY',changes_seen:0}}),
+            }}));
+            """
+        )
+        for state in ('auth', 'mismatch'):
+            self.assertEqual(result[state]['label'], 'Sincronização pausada')
+            self.assertTrue(result[state]['manualSyncBlocked'])
+            self.assertNotIn('pronta', result[state]['message'])
+        self.assertIn('reconectado', result['auth']['message'])
+        self.assertIn('revisada', result['mismatch']['message'])
+        self.assertTrue(result['busy']['manualSyncBlocked'])
+        self.assertTrue(result['pollBusy']['manualSyncBlocked'])
+        self.assertEqual(result['recovered']['label'], 'Atualizado')
+        self.assertFalse(result['recovered'].get('manualSyncBlocked', False))
+        self.assertTrue(result['scan']['needsRebuild'])
+        self.assertTrue(result['staleResult']['needsRebuild'])
+        self.assertEqual(result['backoff']['label'], 'Aguardando nova tentativa')
+        source = PUBLISHER_MODULE.read_text(encoding='utf-8')
+        self.assertIn("view.needsRebuild||!!view.manualSyncBlocked", source)
+
     def test_library_sync_wiring_has_no_parallel_discovery_or_automatic_rebuild(self):
         source=PUBLISHER_MODULE.read_text(encoding='utf-8')
         self.assertIn("$('#syncMedia').onclick=()=>runDriveSync();",source)

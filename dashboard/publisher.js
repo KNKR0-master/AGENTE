@@ -173,9 +173,9 @@ function renderDriveSync(){
  $('#drivePollStatus').textContent=PublisherUIState.drivePollingPresentation(poll);
  const formatTime=value=>value?new Date(value).toLocaleString('pt-BR'):'';
  $('#drivePollTimes').textContent=poll.enabled?`Última: ${formatTime(poll.last_success_at)||'ainda não ocorreu'} · Próxima: ${formatTime(poll.next_attempt_at)||'aguardando ação'}`:'';
- $('#syncMedia').disabled=driveSyncBusy||view.needsRebuild;
+ $('#syncMedia').disabled=driveSyncBusy||view.needsRebuild||!!view.manualSyncBlocked;
  $('#syncMedia').textContent=driveSyncBusy?'Sincronizando…':'Sincronizar agora';
- $('#rebuildDriveSync').disabled=driveSyncBusy;
+ $('#rebuildDriveSync').disabled=driveSyncBusy||!!view.manualSyncBlocked;
 }
 async function runDriveSync(bootstrap=false){
  if(driveSyncBusy)return;

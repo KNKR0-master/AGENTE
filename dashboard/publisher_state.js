@@ -170,7 +170,9 @@
   }
 
   function driveSyncPresentation(record = {}, result = null, phase = 'IDLE') {
-    const status = result?.status || record.cursor_status || 'UNINITIALIZED';
+    const status = record.cursor_status && record.cursor_status !== 'READY'
+      ? record.cursor_status : result?.status || record.cursor_status || 'UNINITIALIZED';
+    const poll = record.polling || {};
     const counts = ['changes_seen', 'files_upserted', 'folders_upserted', 'items_marked_unavailable']
       .map(key => Number(result?.[key] || 0));
     const summary = result?.status === 'READY'
@@ -178,12 +180,25 @@
         : `${counts[0]} alterações · ${counts[1]} arquivos · ${counts[2]} pastas · ${counts[3]} indisponíveis`
       : '';
     if (phase === 'SYNCING') return {label: 'Sincronizando', message: 'Consultando alterações no Drive.', needsRebuild: false, summary: ''};
+    if (record.sync_in_progress || poll.status === 'RUNNING' || status === 'SYNC_IN_PROGRESS') return {
+      label: 'Sincronizando', message: 'Já existe uma sincronização em andamento.',
+      needsRebuild: false, manualSyncBlocked: true, summary: '',
+    };
     if (status === 'FULL_SCAN_REQUIRED' || status === 'UNINITIALIZED') return {
       label: 'Verificação necessária', needsRebuild: true, summary: '',
       message: 'A sincronização incremental precisa ser reconstruída. Execute uma verificação completa do Drive.',
     };
+    if (poll.enabled && poll.status === 'BACKOFF') return {
+      label: 'Aguardando nova tentativa', needsRebuild: false, summary: '',
+      message: 'Drive indisponível temporariamente. Uma nova tentativa está agendada.',
+    };
+    if (poll.enabled && poll.status === 'PAUSED' && ['AUTH_REQUIRED', 'ACCOUNT_MISMATCH'].includes(poll.paused_reason)) return {
+      label: 'Sincronização pausada', needsRebuild: false, manualSyncBlocked: true, summary: '',
+      message: poll.paused_reason === 'AUTH_REQUIRED' ? 'Google Drive precisa ser reconectado.'
+        : 'A conta do Google Drive precisa ser revisada.',
+    };
     if (status === 'AUTH_REQUIRED') return {
-      label: 'Reconexão necessária', needsRebuild: false, summary: '',
+      label: 'Reconexão necessária', needsRebuild: false, manualSyncBlocked: true, summary: '',
       message: 'Reconecte o Google Drive para continuar. A sincronização não será repetida automaticamente.',
     };
     if (status === 'ERROR' || status === 'SYNC_IN_PROGRESS' || status === 'TRANSIENT_ERROR') return {

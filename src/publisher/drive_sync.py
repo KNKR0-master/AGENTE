@@ -425,11 +425,15 @@ def incremental_drive_sync(conn, *, bootstrap: bool = False) -> dict[str, Any]:
 
 def drive_sync_status(conn) -> dict[str, Any]:
     scope = configured_scope(DriveInventoryConfig.from_env())
+    with _scope_locks_guard:
+        lock = _scope_locks.get(scope)
+        sync_in_progress = bool(lock and lock.locked())
     row = conn.execute(
         """SELECT cursor_status,last_successful_sync_at,last_full_scan_at,last_sync_mode,last_error
            FROM publisher_drive_sync_state
            WHERE account_identity=? AND provider=? AND root_folder_id=?""",
         (scope.account_identity, scope.provider, scope.root_folder_id),
     ).fetchone()
-    return dict(row) if row else {"cursor_status": "UNINITIALIZED", "last_successful_sync_at": None,
-                                  "last_full_scan_at": None, "last_sync_mode": None, "last_error": None}
+    result = dict(row) if row else {"cursor_status": "UNINITIALIZED", "last_successful_sync_at": None,
+                                    "last_full_scan_at": None, "last_sync_mode": None, "last_error": None}
+    return {**result, "sync_in_progress": sync_in_progress}

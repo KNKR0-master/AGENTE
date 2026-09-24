@@ -1,14 +1,17 @@
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from src.drive_inventory import DriveInventoryConfig
 from src.publisher.drive_polling import (
     DrivePollCoordinator, configure_polling, polling_status, MIN_INTERVAL, MAX_BACKOFF,
 )
 from src.publisher.drive_sync import configured_scope
+from src.publisher import drive_sync as drive_sync_module
 from src.publisher.service import init_publisher
 from src.store import connect, init_db
 
@@ -122,6 +125,94 @@ class PollingTests(unittest.TestCase):
         self.addCleanup(restarted.stop)
         self.assertEqual(restarted.poll_due_once(), "NOT_DUE")
         self.assertTrue(self.state()["enabled"])
+
+    def test_simultaneous_due_calls_claim_one_cycle(self):
+        self.cursor()
+        self.configure()
+        self.advance(60)
+        entered = threading.Event()
+        release = threading.Event()
+        results = []
+
+        def sync(_conn, *, bootstrap=False):
+            self.calls.append(bootstrap)
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return {"status": "READY", "changes_seen": 0}
+
+        poller = DrivePollCoordinator(self.db, config=self.config, clock=lambda: self.now, sync=sync)
+        threads = [threading.Thread(target=lambda: results.append(poller.poll_due_once())) for _ in range(2)]
+        threads[0].start()
+        self.assertTrue(entered.wait(5))
+        threads[1].start()
+        release.set()
+        for thread in threads:
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(self.calls, [False])
+        self.assertCountEqual(results, ["SUCCESS", "NOT_DUE"])
+
+    def test_stop_waits_for_cycle_and_blocks_later_calls(self):
+        self.cursor()
+        self.configure()
+        self.advance(60)
+        entered = threading.Event()
+        release = threading.Event()
+        stopped = threading.Event()
+
+        def sync(_conn, *, bootstrap=False):
+            self.calls.append(bootstrap)
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return {"status": "READY", "changes_seen": 0}
+
+        poller = DrivePollCoordinator(self.db, config=self.config, clock=lambda: self.now, sync=sync)
+        cycle = threading.Thread(target=poller.poll_due_once)
+        cycle.start()
+        self.assertTrue(entered.wait(5))
+        shutdown = threading.Thread(target=lambda: (poller.stop(), stopped.set()))
+        shutdown.start()
+        self.assertFalse(stopped.is_set())
+        release.set()
+        cycle.join(5)
+        shutdown.join(5)
+        self.assertFalse(cycle.is_alive())
+        self.assertFalse(shutdown.is_alive())
+        self.assertTrue(stopped.is_set())
+        self.advance(60)
+        self.assertEqual(poller.poll_due_once(), "STOPPING")
+        self.assertEqual(self.calls, [False])
+
+    def test_stopped_coordinator_cannot_leak_into_restarted_scope(self):
+        self.cursor()
+        self.configure()
+        first = self.coordinator()
+        self.assertTrue(first.start())
+        self.assertTrue(first.stop())
+        self.advance(60)
+        self.assertEqual(first.poll_due_once(), "STOPPING")
+        second = self.coordinator()
+        self.assertTrue(second.start())
+        self.addCleanup(second.stop)
+        self.assertEqual(second.poll_due_once(), "NOT_DUE")
+        self.advance(60)
+        self.assertEqual(second.poll_due_once(), "SUCCESS")
+        self.assertEqual(self.calls, [False])
+
+    def test_status_exposes_external_sync_lock_without_acquiring_it(self):
+        lock = threading.Lock()
+        with drive_sync_module._scope_locks_guard:
+            drive_sync_module._scope_locks[self.scope] = lock
+        self.addCleanup(lambda: drive_sync_module._scope_locks.pop(self.scope, None))
+        with patch.object(drive_sync_module.DriveInventoryConfig, "from_env", return_value=self.config):
+            with closing(connect(self.db)) as conn:
+                self.assertFalse(drive_sync_module.drive_sync_status(conn)["sync_in_progress"])
+                lock.acquire()
+                try:
+                    self.assertTrue(drive_sync_module.drive_sync_status(conn)["sync_in_progress"])
+                finally:
+                    lock.release()
+                self.assertFalse(drive_sync_module.drive_sync_status(conn)["sync_in_progress"])
 
     def test_transient_backoff_then_success(self):
         self.cursor()

@@ -112,6 +112,7 @@ class DrivePollCoordinator:
         self._wake = threading.Event()
         self._thread = None
         self._guard = threading.Lock()
+        self._cycle_guard = threading.Lock()
         self._key = None
 
     def start(self):
@@ -132,6 +133,7 @@ class DrivePollCoordinator:
                 with closing(connect(self.db)) as conn:
                     state = polling_status(conn, config=self.config)
                     if state["enabled"] and state["status"] != "PAUSED":
+                        # Re-arm one due time from startup; the scheduler then reads only that stored value.
                         configure_polling(conn, "enable", state["interval_seconds"],
                                           now=self.clock(), config=self.config)
                 self._thread = threading.Thread(target=self._run, name="publisher-drive-poll", daemon=True)
@@ -153,6 +155,11 @@ class DrivePollCoordinator:
         if thread and thread is not threading.current_thread():
             thread.join(timeout)
         stopped = not thread or not thread.is_alive()
+        if stopped:
+            if self._cycle_guard.acquire(timeout=timeout):
+                self._cycle_guard.release()
+            else:
+                stopped = False
         if stopped and self._key is not None:
             with self._active_guard:
                 self._active.discard(self._key)
@@ -202,6 +209,12 @@ class DrivePollCoordinator:
             pass
 
     def poll_due_once(self):
+        with self._cycle_guard:
+            if self._stop.is_set():
+                return "STOPPING"
+            return self._poll_due_once_locked()
+
+    def _poll_due_once_locked(self):
         now = self.clock()
         scope = _scope(self.config)
         with closing(connect(self.db)) as conn:
