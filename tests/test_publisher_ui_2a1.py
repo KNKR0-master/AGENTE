@@ -77,7 +77,7 @@ class PublisherUi2ATests(unittest.TestCase):
         self.assertEqual(self.service.get_product(self.product)["flow_prompt"], value)
         self.assertEqual(self.service.catalog()[0]["flow_prompt"], value)
 
-    def test_delete_plan_archives_referenced_products_and_deletes_unreferenced(self):
+    def test_delete_plan_blocks_mixed_selection_without_partial_delete(self):
         protected = self.service.save_product({"name": "Produto com historico"})
         with self.conn:
             self.conn.execute(
@@ -87,11 +87,37 @@ class PublisherUi2ATests(unittest.TestCase):
         plan = self.service.product_bulk_plan([self.product, protected])
         self.assertEqual(plan["will_delete"], 1)
         self.assertEqual(plan["will_archive"], 1)
-        result = self.service.bulk_products([self.product, protected], "delete", human_confirmed=True)
+        with self.assertRaisesRegex(ValueError, "PRODUCT_HARD_DELETE_BLOCKED_BY_HISTORY"):
+            self.service.bulk_products([self.product, protected], "delete", human_confirmed=True)
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM products WHERE id=?", (self.product,)).fetchone())
+        self.assertEqual(self.conn.execute("SELECT active FROM publisher_products WHERE product_id=?", (protected,)).fetchone()[0], 1)
+        result = self.service.bulk_products([self.product], "delete", human_confirmed=True)
         self.assertEqual(result["deleted"], 1)
-        self.assertEqual(result["archived"], 1)
         self.assertIsNone(self.conn.execute("SELECT 1 FROM products WHERE id=?", (self.product,)).fetchone())
-        self.assertEqual(self.conn.execute("SELECT active FROM publisher_products WHERE product_id=?", (protected,)).fetchone()[0], 0)
+
+    def test_archive_visibility_restore_and_history(self):
+        product = self.service.save_product({"name": "Produto com historico"})
+        with self.conn:
+            self.conn.execute("INSERT INTO production_tasks(product_id,version_number,created_at,updated_at) VALUES (?,?,?,?)",
+                              (product, 1, now_iso(), now_iso()))
+        self.service.bulk_products([product], "archive", human_confirmed=True)
+        self.assertNotIn(product, [p["id"] for p in self.service.catalog()])
+        self.assertIn(product, [p["id"] for p in self.service.catalog(include_archived=True)])
+        self.assertEqual(self.service.product_workspace(scope="archived")["products"][0]["id"], product)
+        self.assertNotIn(product, [p["id"] for p in self.service.product_workspace(search="historico")["products"]])
+        with self.assertRaisesRegex(ValueError, "PRODUCT_HARD_DELETE_BLOCKED_BY_HISTORY"):
+            self.service.bulk_products([product], "delete", human_confirmed=True)
+        self.service.bulk_products([product], "restore", human_confirmed=True)
+        self.assertIn(product, [p["id"] for p in self.service.catalog()])
+        self.assertTrue(self.service.product_workspace(scope="no_current")["products"][0]["has_historical_references"])
+
+    def test_repeated_name_review_does_not_merge_or_archive(self):
+        other = self.service.save_product({"name": "PRODUTO SEM HISTORICO"})
+        review = self.service.product_workspace(scope="repeated")
+        self.assertEqual(review["repeated_name_groups"], 1)
+        self.assertEqual({p["id"] for p in review["products"]}, {self.product, other})
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM publisher_products").fetchone()[0], 2)
+        self.assertEqual(self.conn.execute("SELECT sum(active) FROM publisher_products").fetchone()[0], 2)
 
     def test_bulk_action_requires_explicit_confirmation(self):
         with self.assertRaisesRegex(ValueError, "CONFIRM_PRODUCT_ACTION"):

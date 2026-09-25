@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 from src.store import now_iso
-from src.publisher.library import get_library_items, list_library, save_decision, set_product_overrides
+from src.publisher.library import _classify, _raw_rows, get_library_items, list_library, save_decision, set_product_overrides
 from src.publisher.folder_catalog import (
     apply_bulk_role,
     decide_folder_role,
@@ -279,18 +281,54 @@ class PublisherService:
         self.conn = conn
         self.root = Path(root).resolve()
 
-    def catalog(self):
+    def catalog(self, *, include_archived=False):
         result = []
         for row in self.conn.execute("""SELECT x.product_id id,x.name,x.short_name,x.default_caption,
           x.flow_prompt,x.active,x.account_id,x.legacy_source,x.legacy_product_id,x.legacy_shop_url,
           x.name_source,x.source_drive_folder_id,x.created_at,x.updated_at
-          FROM publisher_products x ORDER BY x.name"""):
+          FROM publisher_products x WHERE (?=1 OR x.active=1) ORDER BY x.name""", (int(include_archived),)):
             item = dict(row)
             item["aliases"] = [r[0] for r in self.conn.execute("SELECT alias FROM product_aliases WHERE product_id=?", (item["id"],))]
             item["folders"] = self.list_drive_folders(item["id"])
             item["reference_count"], item["reference_types"] = self.product_reference_summary(item["id"])
             result.append(item)
         return result
+
+    def product_workspace(self, *, scope="current", search=""):
+        if scope not in {"current", "no_current", "archived", "repeated"}:
+            raise ValueError("Filtro de produtos invalido")
+        products = self.catalog(include_archived=True)
+        media_ids = {}
+        for row in _raw_rows(self.conn, file_type="VIDEO"):
+            item = _classify(row)
+            if item["product_id"] and item["status"] not in {"CONSUMED", "IGNORED"}:
+                media_ids.setdefault(item["product_id"], set()).add(item["drive_file_id"])
+        names = {}
+        for product in products:
+            key = re.sub(r"[^a-z0-9]+", " ", unicodedata.normalize("NFKD", product["name"].casefold()).encode("ascii", "ignore").decode()).strip()
+            names[key] = names.get(key, 0) + 1
+            product["_normalized_name"] = key
+        counts = {"current": 0, "no_current": 0, "archived": 0}
+        for product in products:
+            product["folder_count"] = len(product["folders"])
+            product["current_media_count"] = len(media_ids.get(product["id"], ()))
+            product["has_default_caption"] = bool((product["default_caption"] or "").strip())
+            product["can_hard_delete"] = product["reference_count"] == 0
+            product["can_archive"] = bool(product["active"])
+            product["can_restore"] = not bool(product["active"])
+            product["has_historical_references"] = product["reference_count"] > 0
+            product["duplicate_group"] = product.pop("_normalized_name")
+            product["possible_duplicate_name"] = names[product["duplicate_group"]] > 1
+            product["catalog_presentation_state"] = ("archived" if not product["active"] else
+                "current" if product["folder_count"] or product["current_media_count"] else "no_current")
+            counts[product["catalog_presentation_state"]] += 1
+        query = search.strip().casefold()
+        visible = [product for product in products if (product["possible_duplicate_name"] if scope == "repeated" else product["catalog_presentation_state"] == scope) and
+            (not query or query in " ".join((product["name"], product["short_name"] or "",
+                str(product["id"]), product["legacy_product_id"] or "", " ".join(product["aliases"]))).casefold())]
+        visible.sort(key=lambda product: (product["name"].casefold(), product["id"]))
+        return {"products": visible, "counts": counts, "scope": scope, "search": search,
+                "repeated_name_groups": sum(1 for count in names.values() if count > 1)}
 
     def get_product(self, product_id):
         row = self.conn.execute('SELECT *,product_id AS id FROM publisher_products WHERE product_id=?',(int(product_id),)).fetchone()
@@ -398,7 +436,7 @@ class PublisherService:
             items.append({
                 "id": product_id, "name": product["name"],
                 "reference_count": count, "reference_types": types,
-                "can_delete": count == 0, "will_archive": count > 0,
+                "can_delete": count == 0, "can_hard_delete": count == 0, "will_archive": count > 0,
             })
         return {
             "items": items,
@@ -408,15 +446,20 @@ class PublisherService:
         }
 
     def bulk_products(self, product_ids, action, *, human_confirmed=False):
-        if action not in {"archive", "delete"}:
+        if action not in {"archive", "delete", "restore"}:
             raise ValueError("Acao de produto invalida")
-        plan = self.product_bulk_plan(product_ids)
         if human_confirmed is not True:
             raise ValueError("CONFIRM_PRODUCT_ACTION")
         timestamp = now_iso()
         with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            plan = self.product_bulk_plan(product_ids)
+            if action == "delete" and plan["will_archive"]:
+                raise ValueError("PRODUCT_HARD_DELETE_BLOCKED_BY_HISTORY")
             for item in plan["items"]:
-                if action == "archive" or not item["can_delete"]:
+                if action == "restore":
+                    self.conn.execute("UPDATE publisher_products SET active=1,updated_at=? WHERE product_id=?", (timestamp, item["id"]))
+                elif action == "archive":
                     self.conn.execute(
                         "UPDATE publisher_products SET active=0,updated_at=? WHERE product_id=?",
                         (timestamp, item["id"]),
@@ -424,8 +467,9 @@ class PublisherService:
                 else:
                     self.conn.execute("DELETE FROM publisher_products WHERE product_id=?", (item["id"],))
                     self.conn.execute("DELETE FROM products WHERE id=?", (item["id"],))
-        return {**plan, "action": action, "archived": plan["selected"] if action == "archive" else plan["will_archive"],
-                "deleted": 0 if action == "archive" else plan["will_delete"]}
+        return {**plan, "action": action, "archived": plan["selected"] if action == "archive" else 0,
+                "restored": plan["selected"] if action == "restore" else 0,
+                "deleted": plan["selected"] if action == "delete" else 0}
 
     def set_product_folder(self, product_id, folder_id, action="add"):
         product_id = int(product_id)
@@ -481,7 +525,7 @@ class PublisherService:
             item['evidence_summary'] = evidence.get('ui_marker') or evidence.get('provider_code') or evidence.get('operation') or ''
             item['blocked'] = item['state'] != 'NORMAL'
             protections.append(item)
-        return {"products": self.catalog(), "preferences": self.get_preferences(),
+        return {"products": self.catalog(include_archived=True), "preferences": self.get_preferences(),
                 "drive_folders": self.list_drive_folders(), "drafts": drafts, "statuses": STATUSES,
                 "queue_status_labels": {status: draft_queue_presentation({'status': status})['label'] for status in STATUSES},
                 "queue_preflights": queue_preflights,

@@ -57,9 +57,9 @@ class PublisherTests(unittest.TestCase):
         self.conn.execute('UPDATE products SET price=99 WHERE id=?',(self.product,)); self.conn.commit()
         self.service.save_product({'id':self.product,'name':'Novo nome','shop_product_id':'123456789','active':False})
         self.assertEqual(get_row(self.conn,'products',self.product)['price'],99)
-        self.assertFalse(self.service.catalog()[0]['active'])
+        self.assertFalse(self.service.catalog(include_archived=True)[0]['active'])
         self.assertEqual(get_row(self.conn,'products',self.product)['name'],'LatteGo')
-        self.assertEqual(self.service.catalog()[0]['name'],'Novo nome')
+        self.assertEqual(self.service.catalog(include_archived=True)[0]['name'],'Novo nome')
         self.assertIsNone(get_row(self.conn,'products',self.product)['tiktok_product_id'])
 
     def test_account_restriction_and_presets(self):

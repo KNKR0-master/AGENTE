@@ -246,6 +246,11 @@ class PublisherAPI:
                 })
                 handler._json(result, no_store=True)
                 return
+            if path == "/api/publisher/products/workspace":
+                handler._json(PublisherService(conn, self.root).product_workspace(
+                    scope=query.get("scope", ["current"])[0],
+                    search=query.get("search", [""])[0]), no_store=True)
+                return
             if path == "/api/publisher/folder-catalog":
                 result = PublisherService(conn, self.root).folder_catalog_reviews({
                     key: values[0] for key, values in query.items() if values
