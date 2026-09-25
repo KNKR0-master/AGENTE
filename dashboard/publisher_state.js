@@ -144,16 +144,16 @@
       librarySelectionSummary() {
         const details = this.selectedLibraryDetails();
         const withoutProduct = details.filter(item => !item.product_name).length;
-        const attention = details.filter(item => item.status !== 'AVAILABLE').length;
+        const attention = details.filter(item => item.status !== 'AVAILABLE' || item.product_archived).length;
         return {
           selected: librarySelected.size,
           known: details.length,
           details,
           productCount: new Set(details.map(item => item.product_name || 'Sem produto')).size,
-          ready: details.filter(item => item.status === 'AVAILABLE').length,
+          ready: details.filter(item => item.status === 'AVAILABLE' && !item.product_archived).length,
           withoutProduct,
           attention,
-          canCreate: librarySelected.size > 0 && details.length === librarySelected.size && withoutProduct === 0 && attention === 0,
+          canCreate: librarySelected.size > 0 && librarySelected.size <= 100 && details.length === librarySelected.size && withoutProduct === 0 && attention === 0,
         };
       },
       setMessage(scope, text, error) {

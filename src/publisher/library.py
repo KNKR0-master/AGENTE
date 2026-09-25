@@ -55,7 +55,7 @@ def _base_query() -> str:
            f.parent_drive_folder_id, f.product_id direct_folder_product_id,
            COALESCE(f.product_id, ancestor.product_id) inferred_product_id,
            pp.name inferred_product_name, pp.short_name inferred_product_short_name,
-           pp.default_caption inferred_caption,
+           pp.default_caption inferred_caption, pp.active inferred_product_active,
            direct_pp.name direct_folder_product_name,
            ancestor_pp.name ancestor_product_name,
            ov.product_id override_product_id, dec.decision, dec.reason decision_reason,
@@ -89,8 +89,8 @@ def _raw_rows(conn, *, drive_file_ids: Iterable[str] | None = None, search: str 
         params.extend(ids)
     if search:
         like = f"%{search.strip()}%"
-        clauses.append("(LOWER(df.name) LIKE LOWER(?) OR LOWER(f.relative_path) LIKE LOWER(?) OR LOWER(df.drive_file_id) LIKE LOWER(?))")
-        params.extend([like, like, like])
+        clauses.append("(LOWER(df.name) LIKE LOWER(?) OR LOWER(f.relative_path) LIKE LOWER(?) OR LOWER(df.drive_file_id) LIKE LOWER(?) OR LOWER(pp.name) LIKE LOWER(?) OR LOWER(pp.short_name) LIKE LOWER(?))")
+        params.extend([like] * 5)
     if path:
         clauses.append("LOWER(f.relative_path) LIKE LOWER(?)")
         params.append(f"%{path.strip()}%")
@@ -145,6 +145,7 @@ def _classify(row: dict) -> dict:
         "product_id": int(product_id) if product_id is not None else None,
         "product_name": product_name,
         "product_short_name": row.get("inferred_product_short_name") or product_name,
+        "product_archived": product_id is not None and row.get("inferred_product_active") == 0,
         "caption": caption,
         "decision": decision,
         "decision_reason": row.get("decision_reason"),
@@ -236,6 +237,102 @@ def list_library(conn, *, page: int = 1, page_size: int = 50, search: str = "", 
 
 def get_library_items(conn, drive_file_ids: Iterable[str]) -> list[dict]:
     return [_classify(row) for row in _raw_rows(conn, drive_file_ids=drive_file_ids, file_type="ALL")]
+
+
+def _group_key(item: dict) -> str:
+    return f"product:{item['product_id']}" if item["product_id"] is not None else f"folder:{item['folder_id']}"
+
+
+def _matching_group_items(conn, *, search="", path="", product_id=None, file_type="VIDEO",
+                          status="", decision="") -> list[dict]:
+    items = [_classify(row) for row in _raw_rows(conn, search=search, path=path,
+                                                 product_id=product_id, file_type=file_type)]
+    status, decision = str(status or "").upper(), str(decision or "").upper()
+    if status:
+        items = [item for item in items if item["status"] == status]
+    if decision:
+        items = [item for item in items if (item["decision"] or "NONE") == decision]
+    return list({item["drive_file_id"]: item for item in items}.values())
+
+
+def _group_sort_key(group: dict) -> tuple:
+    # Stable ID breaks ties between products with identical display names.
+    category = 0 if group["requires_attention"] else (1 if group["product_id"] is not None else 2)
+    return category, group["display_name"].casefold(), group["group_key"]
+
+
+def list_library_groups(conn, *, page=1, page_size=20, search="", path="", product_id=None,
+                        file_type="VIDEO", status="", decision="") -> dict:
+    page, page_size = max(1, int(page or 1)), min(100, max(1, int(page_size or 20)))
+    matching = _matching_group_items(conn, search=search, path=path, product_id=product_id,
+                                     file_type=file_type, status=status, decision=decision)
+    totals = _matching_group_items(conn, file_type=file_type) if any(
+        (search, path, product_id not in (None, "", "ALL"), status, decision)) else matching
+    total_counts = {}
+    total_folders = {}
+    for item in totals:
+        key = _group_key(item)
+        total_counts[key] = total_counts.get(key, 0) + 1
+        total_folders.setdefault(key, {})[item["folder_id"]] = item["folder_path"] or item["folder_name"] or ""
+    groups = {}
+    for item in matching:
+        key = _group_key(item)
+        group = groups.setdefault(key, {
+            "group_key": key, "group_type": "PRODUCT" if item["product_id"] is not None else "UNASSIGNED_FOLDER",
+            "product_id": item["product_id"], "display_name": item["product_short_name"] or item["product_name"] or item["folder_name"] or "Pasta sem produto",
+            "product_name": item["product_name"], "product_archived": item["product_archived"],
+            "folder_ids": set(), "folder_paths": set(), "total_media_count": total_counts.get(key, 0),
+            "matching_media_count": 0, "available_count": 0, "attention_count": 0, "reserved_count": 0,
+            "has_default_caption": bool(str(item["caption"] or "").strip()),
+            "requires_attention": False, "review_reason": None,
+        })
+        group["folder_ids"].add(item["folder_id"])
+        group["folder_paths"].add(item["folder_path"] or item["folder_name"] or "")
+        group["matching_media_count"] += 1
+        if item["status"] == "AVAILABLE": group["available_count"] += 1
+        elif item["status"] == "RESERVED": group["reserved_count"] += 1
+        elif item["status"] == "ATTENTION": group["attention_count"] += 1
+        if item["product_archived"]:
+            group["requires_attention"], group["review_reason"] = True, "Produto arquivado: revisar antes de criar lote"
+        elif item["product_id"] is None:
+            group["requires_attention"], group["review_reason"] = True, "Produto da pasta ainda não associado"
+        elif item["status"] == "ATTENTION" and not group["review_reason"]:
+            group["requires_attention"], group["review_reason"] = True, item["reason"]
+    ordered = sorted(groups.values(), key=_group_sort_key)
+    for group in ordered:
+        group["display_status"] = (group["review_reason"] or
+            (f"{group['attention_count']} requerem atenção" if group["attention_count"] else
+             "Pronto" if group["available_count"] else
+             "Reservado" if group["reserved_count"] else "Sem vídeos prontos"))
+        group["folder_ids"] = sorted(total_folders[group["group_key"]])
+        group["folder_paths"] = sorted(set(total_folders[group["group_key"]].values()))
+        group["folder_count"] = len(group["folder_ids"])
+        group["representative_folder_path"] = group["folder_paths"][0] if group["folder_paths"] else ""
+    start = (page - 1) * page_size
+    return {"groups": ordered[start:start + page_size], "total_groups": len(ordered),
+            "total_matching_media": len(matching), "page": page, "page_size": page_size,
+            "pages": (len(ordered) + page_size - 1) // page_size}
+
+
+def list_group_items(conn, group_key: str, *, page=1, page_size=50, **filters) -> dict:
+    page, page_size = max(1, int(page or 1)), min(100, max(1, int(page_size or 50)))
+    items = [item for item in _matching_group_items(conn, **filters) if _group_key(item) == group_key]
+    start = (page - 1) * page_size
+    return {"group_key": group_key, "items": items[start:start + page_size], "total": len(items),
+            "page": page, "page_size": page_size, "pages": (len(items) + page_size - 1) // page_size}
+
+
+def select_group_items(conn, group_key: str, *, selected_drive_file_ids=(), **filters) -> dict:
+    selected = set(str(value) for value in selected_drive_file_ids)
+    items = [item for item in _matching_group_items(conn, **filters)
+             if _group_key(item) == group_key and item["eligible"] and not item["product_archived"]]
+    if not items:
+        raise ValueError("Nenhum vídeo pronto neste grupo")
+    if len(selected | {item["drive_file_id"] for item in items}) > 100:
+        raise ValueError(f"Este grupo possui {len(items)} vídeo(s) elegíveis; o lote aceita no máximo 100. Selecione individualmente até 100 vídeos.")
+    return {"group_key": group_key, "items": items,
+            "drive_file_ids": [item["drive_file_id"] for item in items],
+            "media_asset_ids": [item["media_asset_id"] for item in items if item["media_asset_id"] is not None]}
 
 
 def save_decision(conn, drive_file_id: str, decision: str, reason: str = "") -> dict:

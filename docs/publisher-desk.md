@@ -59,7 +59,13 @@ confirmacao.
 
 A aba `Biblioteca` usa `drive_files` como fonte de inventario completo e
 aplica filtros combinaveis no servidor por nome/ID, caminho, produto, tipo,
-status e decisao. A paginacao e limitada a 100 itens por consulta. A exibicao
+status e decisao. A navegacao principal pagina grupos, nao arquivos: grupos
+de produto usam `product_id`; pastas sem produto usam `drive_folder_id`.
+O backend calcula os resumos no SQLite e ordena por necessidade de revisao,
+nome exibido e chave estrutural como desempate estavel. Produtos com varias
+pastas formam um unico grupo. Os grupos iniciam recolhidos; seus itens sao
+consultados localmente apenas ao expandir, em paginas de ate 50 arquivos.
+O endpoint plano anterior permanece disponivel para compatibilidade. A exibicao
 usa estados amigaveis (`DISPONIVEL`, `RESERVADO`, `REQUER ATENCAO` e
 `IGNORADO`), mantendo a classificacao tecnica internamente.
 
@@ -85,7 +91,12 @@ caso o lifecycle do Publisher continua sendo a unica rota de cleanup.
 
 A selecao da Biblioteca tem uma unica fonte de verdade: o `Set`
 `librarySelected`, com os checkboxes identificados por `data-library` e
-alterados por um listener central. A selecao individual, a selecao da pagina,
+alterados por um listener central. A identidade selecionada e o
+`drive_file_id`, pois um arquivo disponivel pode ainda nao ter `MediaAsset`;
+o backend cria/reserva esse asset no preflight existente do lote. Selecionar
+um grupo resolve explicitamente os arquivos elegiveis no backend e rejeita
+o conjunto inteiro se exceder o limite de 100, sem truncamento. Expandir
+nao seleciona automaticamente. A selecao individual, dos itens visiveis,
 a remocao individual e a limpeza total atualizam o mesmo conjunto; isso tambem
 permite resumir uma selecao que atravessa paginas e produtos sem exigir um
 produto unico por lote. Erros de health, consulta da Biblioteca e outras

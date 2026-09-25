@@ -3,7 +3,7 @@ import tempfile
 from types import SimpleNamespace
 from pathlib import Path
 
-from src.publisher.library import list_library
+from src.publisher.library import list_library, list_library_groups, list_group_items, select_group_items
 from src.publisher.http import PublisherAPI
 from src.publisher.service import PublisherService, init_publisher
 from src.store import connect, init_db, now_iso
@@ -212,6 +212,87 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         self.assertEqual(response["page_size"], 2)
         self.assertEqual(response["total"], 5)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publisher_drafts").fetchone()[0], 0)
+
+    def test_group_identity_and_lazy_membership(self):
+        result = list_library_groups(self.conn)
+        self.assertEqual(result["total_groups"], 3)
+        self.assertTrue(all("items" not in group for group in result["groups"]))
+        groups = {group["group_key"]: group for group in result["groups"]}
+        product = groups[f"product:{self.product_a}"]
+        self.assertEqual(product["folder_count"], 2)
+        self.assertEqual(product["matching_media_count"], 3)
+        self.assertEqual(product["total_media_count"], 3)
+        self.assertEqual({item["drive_file_id"] for item in list_group_items(
+            self.conn, product["group_key"])["items"]}, {"high", "medium", "suspicious"})
+        self.assertIn("folder:folder-unknown", groups)
+        self.assertIn(f"product:{self.product_empty}", groups)
+
+    def test_group_filters_search_and_stable_pagination(self):
+        product_key = f"product:{self.product_a}"
+        for search in ("Produto A", "VIDEO 2", "/Flow/Produto A"):
+            group = next(group for group in list_library_groups(self.conn, search=search)["groups"]
+                         if group["group_key"] == product_key)
+            self.assertEqual(group["total_media_count"], 3)
+            self.assertGreaterEqual(group["matching_media_count"], 1)
+        group = list_library_groups(self.conn, search="VIDEO 2")["groups"][0]
+        self.assertEqual(group["matching_media_count"], 1)
+        self.assertEqual(group["folder_count"], 2)
+        self.assertEqual([item["drive_file_id"] for item in list_group_items(
+            self.conn, product_key, search="VIDEO 2")["items"]], ["medium"])
+        self.assertEqual(list_library_groups(self.conn, product_id="UNASSIGNED")["total_groups"], 1)
+        self.assertEqual(list_library_groups(self.conn, path="/Flow/Produto A/Videos")["total_matching_media"], 1)
+        self.assertEqual(list_library_groups(self.conn, file_type="IMAGE")["total_matching_media"], 1)
+        self.assertEqual(list_library_groups(self.conn, status="AVAILABLE")["total_matching_media"], 2)
+        self.service.decide_media({"drive_file_id": "suspicious", "decision": "IGNORED"})
+        self.assertEqual(list_library_groups(self.conn, decision="IGNORED")["total_matching_media"], 1)
+        pages = [list_library_groups(self.conn, page=page, page_size=1) for page in (1, 2, 3)]
+        self.assertEqual({page["groups"][0]["group_key"] for page in pages},
+                         {"folder:folder-unknown", product_key, f"product:{self.product_empty}"})
+        self.assertTrue(all(page["total_groups"] == 3 for page in pages))
+
+    def test_group_selection_explicit_ids_and_limit(self):
+        key = f"product:{self.product_a}"
+        result = select_group_items(self.conn, key)
+        self.assertEqual(set(result["drive_file_ids"]), {"high", "medium"})
+        self.assertEqual(result["media_asset_ids"], [])
+        with self.assertRaisesRegex(ValueError, "100"):
+            select_group_items(self.conn, key, selected_drive_file_ids=[f"already-{n}" for n in range(99)])
+        with self.assertRaisesRegex(ValueError, "Nenhum vídeo pronto"):
+            select_group_items(self.conn, "folder:folder-unknown")
+        response = {}
+        PublisherAPI(".", self.db_file.name).get(
+            SimpleNamespace(_json=lambda value, **_: response.update(value)),
+            {"page": ["1"]}, "/api/publisher/library/groups")
+        self.assertIn("groups", response)
+        self.assertNotIn("items", response)
+
+    def test_group_precedence_archived_and_same_named_products(self):
+        same_name_id = self._product("Produto A", "Legenda diferente")
+        self._file("same-name", "TEST_G1C1A1.mp4", "folder-unknown", "video/mp4", 1400)
+        self.service.assign_media_product({"drive_file_ids": ["same-name"], "product_id": same_name_id})
+        self.service.assign_media_product({"drive_file_ids": ["high"], "product_id": self.product_b})
+        with self.conn:
+            self.conn.execute("UPDATE publisher_products SET active=0 WHERE product_id=?", (self.product_b,))
+        groups = {group["group_key"]: group for group in list_library_groups(self.conn)["groups"]}
+        self.assertIn(f"product:{same_name_id}", groups)
+        self.assertIn(f"product:{self.product_a}", groups)
+        self.assertTrue(groups[f"product:{self.product_b}"]["product_archived"])
+        self.assertTrue(groups[f"product:{self.product_b}"]["requires_attention"])
+        self.assertEqual([item["drive_file_id"] for item in list_group_items(
+            self.conn, f"product:{self.product_b}")["items"]], ["high"])
+        with self.assertRaisesRegex(ValueError, "Nenhum vídeo pronto"):
+            select_group_items(self.conn, f"product:{self.product_b}")
+
+    def test_two_unassigned_folders_remain_distinct(self):
+        stamp = now_iso()
+        with self.conn:
+            self.conn.execute("""INSERT INTO drive_folders
+                (drive_folder_id,name,relative_path,created_at,updated_at)
+                VALUES (?,?,?,?,?)""", ("other-unknown", "Sem mapeamento", "/Flow/Outra pasta", stamp, stamp))
+        self._file("other-unknown-video", "VIDEO_G1C1A1.mp4", "other-unknown", "video/mp4", 900)
+        groups = list_library_groups(self.conn, product_id="UNASSIGNED")["groups"]
+        self.assertEqual({group["group_key"] for group in groups},
+                         {"folder:folder-unknown", "folder:other-unknown"})
 
 
 if __name__ == "__main__":

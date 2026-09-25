@@ -246,6 +246,16 @@ class PublisherAPI:
                 })
                 handler._json(result, no_store=True)
                 return
+            if path == "/api/publisher/library/groups":
+                handler._json(PublisherService(conn, self.root).media_library_groups({
+                    key: values[0] for key, values in query.items() if values
+                }), no_store=True)
+                return
+            if path == "/api/publisher/library/group-items":
+                handler._json(PublisherService(conn, self.root).media_library_group_items({
+                    key: values[0] for key, values in query.items() if values
+                }), no_store=True)
+                return
             if path == "/api/publisher/products/workspace":
                 handler._json(PublisherService(conn, self.root).product_workspace(
                     scope=query.get("scope", ["current"])[0],
@@ -401,6 +411,8 @@ class PublisherAPI:
                         result = service.create_remote_batch(data)
                     elif action == 'library-batches':
                         result = service.create_library_batch(data)
+                    elif action == 'group-select' and path == '/api/publisher/library/group-select':
+                        result = service.select_media_library_group(data)
                     elif action == 'media-decision':
                         result = service.decide_media(data)
                     elif action == 'media-product':

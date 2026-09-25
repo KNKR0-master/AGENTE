@@ -49,8 +49,8 @@ class ProductFixtureHandler(SimpleHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if parsed.path == "/api/publisher/products/workspace":
             body = workspace(query.get("scope", ["current"])[0], query.get("search", [""])[0])
-        elif parsed.path == "/api/publisher/library":
-            body = dict(items=[], page=1, pages=1, total=0)
+        elif parsed.path in {"/api/publisher/library", "/api/publisher/library/groups"}:
+            body = dict(items=[], groups=[], page=1, pages=1, total=0, total_groups=0)
         elif parsed.path == "/api/publisher/drive-sync/status":
             body = dict(cursor_status="READY")
         elif parsed.path == "/api/publisher/folder-catalog":

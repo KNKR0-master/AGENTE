@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.store import now_iso
-from src.publisher.library import _classify, _raw_rows, get_library_items, list_library, save_decision, set_product_overrides
+from src.publisher.library import _classify, _raw_rows, get_library_items, list_library, list_library_groups, list_group_items, select_group_items, save_decision, set_product_overrides
 from src.publisher.folder_catalog import (
     apply_bulk_role,
     decide_folder_role,
@@ -635,6 +635,27 @@ class PublisherService:
             status=params.get("status", ""),
             decision=params.get("decision", ""),
         )
+
+    def media_library_groups(self, params=None):
+        params = params or {}
+        return list_library_groups(self.conn, **self._library_group_filters(params),
+                                   page=params.get("page", 1), page_size=params.get("page_size", 20))
+
+    @staticmethod
+    def _library_group_filters(params):
+        return {"search": params.get("search", ""), "path": params.get("path", ""),
+                "product_id": params.get("product_id"), "file_type": params.get("type", "VIDEO"),
+                "status": params.get("status", ""), "decision": params.get("decision", "")}
+
+    def media_library_group_items(self, params):
+        return list_group_items(self.conn, str(params.get("group_key") or ""),
+                                page=params.get("page", 1), page_size=params.get("page_size", 50),
+                                **self._library_group_filters(params))
+
+    def select_media_library_group(self, data):
+        return select_group_items(self.conn, str(data.get("group_key") or ""),
+                                  selected_drive_file_ids=data.get("selected_drive_file_ids") or [],
+                                  **self._library_group_filters(data))
 
     def folder_catalog_reviews(self, params=None):
         params = params or {}
