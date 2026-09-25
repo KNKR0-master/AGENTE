@@ -19,6 +19,7 @@ from src.publisher.media import media_provider, TemporaryMediaCache
 from src.publisher.account_safety import AccountSafetyGuard
 from src.publisher.drive_sync import drive_sync_status, incremental_drive_sync
 from src.publisher.drive_polling import DrivePollCoordinator, configure_polling, polling_status
+from src.publisher.thumbnails import PublisherThumbnailService, ThumbnailUnavailable
 
 
 PUBLISHER_API_VERSION = "publisher-api-v1"
@@ -31,6 +32,7 @@ class PublisherAPI:
         self.worker = PublisherWorker(root, db)
         self.drive_poller = DrivePollCoordinator(db)
         self.started_at = datetime.now(timezone.utc).isoformat()
+        self.thumbnails = PublisherThumbnailService()
 
     def runtime_info(self, handler):
         handler._json(
@@ -233,6 +235,26 @@ class PublisherAPI:
 
     def get(self, handler, query, path="/api/publisher"):
         with closing(connect(self.db)) as conn:
+            thumbnail_match = re.fullmatch(r"/api/publisher/library/thumbnail/([A-Za-z0-9_-]{1,256})", path)
+            if path.startswith("/api/publisher/library/thumbnail/"):
+                try:
+                    thumbnail = self.thumbnails.get(conn, thumbnail_match[1]) if thumbnail_match else None
+                except ThumbnailUnavailable:
+                    thumbnail = None
+                if thumbnail is None:
+                    handler.send_response(404)
+                    handler.send_header("Cache-Control", "no-store")
+                    handler.send_header("Content-Length", "0")
+                    handler.end_headers()
+                    return
+                handler.send_response(200)
+                handler.send_header("Content-Type", thumbnail.content_type)
+                handler.send_header("Content-Length", str(len(thumbnail.content)))
+                handler.send_header("Cache-Control", "private, max-age=300")
+                handler.send_header("X-Content-Type-Options", "nosniff")
+                handler.end_headers()
+                handler.wfile.write(thumbnail.content)
+                return
             preflight_match = re.fullmatch(r'/api/publisher/batches/(\d+)/preflight', path)
             if preflight_match:
                 handler._json(PublisherService(conn, self.root).queue_preflight(int(preflight_match[1])), no_store=True)

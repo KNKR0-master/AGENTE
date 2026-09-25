@@ -317,6 +317,23 @@ simultaneos no processo Publisher. O status consultavel nao inclui page tokens.
 Essa sincronizacao nao faz escrita remota, nao cria produtos automaticamente e
 nao inicia polling de Changes em background.
 
+## Miniaturas da Biblioteca
+
+A Biblioteca agrupada solicita miniaturas apenas para linhas renderizadas em
+grupos expandidos. O browser usa `GET /api/publisher/library/thumbnail/{drive_file_id}`
+e nunca recebe credenciais ou o `thumbnailLink` temporario do Drive. O endpoint
+confirma primeiro que o ID pertence a um video do inventario canonico dentro
+da raiz ativa do Publisher. Em cache miss, consulta apenas `files.get` para
+metadata do arquivo e baixa somente a imagem apontada pelo link fresco. Links
+armazenados no inventario nao sao usados diretamente como `img.src`.
+
+O fetch exige HTTPS em host Google, valida redirects, formato e assinatura de
+imagem, aplica timeout de 8 segundos e limite de 1 MB. O cache em memoria tem
+TTL de 10 minutos, maximo de 128 entradas e 16 MB; requisicoes simultaneas do
+mesmo ID compartilham um fetch. Falha, ausencia de imagem ou erro de credencial
+mostram o placeholder sem alterar media, produto ou estado de protecao da conta.
+O endpoint nao grava o `thumbnailLink` fresco nem baixa o video.
+
 ## Referencias historicas
 
 - `docs/publisher-persistence-lifecycle.md`: detalhes do lifecycle e recovery.
