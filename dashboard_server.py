@@ -94,8 +94,15 @@ ROOT = Path(__file__).resolve().parent
 DASHBOARD = ROOT / "dashboard"
 DB_PATH = ROOT / "data" / "agent.db"
 UPLOADS = ROOT / "data" / "uploads"
-PUBLISHER = PublisherAPI(ROOT, DB_PATH)
+PUBLISHER = None
 HTTP_SERVER = None
+
+
+def initialize_publisher_api():
+    global PUBLISHER
+    if PUBLISHER is None:
+        PUBLISHER = PublisherAPI(ROOT, DB_PATH)
+    return PUBLISHER
 
 
 def rows(conn: sqlite3.Connection, query: str, params: tuple = ()) -> list[dict]:
@@ -1140,6 +1147,7 @@ def install_windows_console_shutdown_handler(server):
 
 def main() -> None:
     load_env_file(ROOT / ".env")
+    initialize_publisher_api()
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with connect(DB_PATH) as conn:
         init_db(conn)
