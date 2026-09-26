@@ -23,6 +23,18 @@ GROUPS = [
          representative_folder_path="Feminino/Kit sem produto", total_media_count=1,
          matching_media_count=1, available_count=0, attention_count=1, reserved_count=0,
          has_default_caption=False, requires_attention=True, review_reason="Produto da pasta ainda não associado"),
+    dict(group_key="product:4", group_type="PRODUCT", product_id=4, display_name="Produto arquivado",
+         product_name="Produto arquivado", product_archived=True, folder_ids=["archived-folder"], folder_count=1,
+         folder_paths=["Feminino/Arquivado"], representative_folder_path="Feminino/Arquivado", total_media_count=1,
+         matching_media_count=1, available_count=1, matching_available_count=1, attention_count=0, reserved_count=0,
+         has_default_caption=False, requires_attention=True, presentation_state="REQUIRES_ATTENTION",
+         display_status="Produto arquivado", review_reason="Produto arquivado", ignoreable_count=1),
+    dict(group_key="product:5", group_type="PRODUCT", product_id=5, display_name="Produto sem legenda",
+         product_name="Produto sem legenda", product_archived=False, folder_ids=["caption-folder"], folder_count=1,
+         folder_paths=["Feminino/Sem legenda"], representative_folder_path="Feminino/Sem legenda", total_media_count=1,
+         matching_media_count=1, available_count=0, matching_available_count=0, attention_count=1, reserved_count=0,
+         has_default_caption=False, requires_attention=True, presentation_state="REQUIRES_ATTENTION",
+         display_status="Legenda não configurada", review_reason="Legenda não configurada", ignoreable_count=1),
 ]
 
 
@@ -43,6 +55,12 @@ def media(file_id, group):
 class GroupFixtureHandler(SimpleHTTPRequestHandler):
     lazy_requests = 0
     selection_requests = 0
+    groups_requests = 0
+    all_groups = False
+    rename_product_group = False
+    restored_product_ids = set()
+    product_restore_requests = []
+    group_decision_requests = []
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT / "dashboard"), **kwargs)
@@ -62,9 +80,24 @@ class GroupFixtureHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         if parsed.path == "/api/publisher/library/groups":
+            type(self).groups_requests += 1
             search = query.get("search", [""])[0].casefold()
             groups = [group for group in GROUPS if not search or search in group["display_name"].casefold()]
+            groups = [dict(group, product_archived=False, available_count=0, matching_available_count=0,
+                           presentation_state="REQUIRES_ATTENTION", requires_attention=True,
+                           display_status="Legenda não configurada", review_reason="Legenda não configurada")
+                      if group["product_id"] in type(self).restored_product_ids and not group["has_default_caption"]
+                      else dict(group) for group in groups]
+            if type(self).rename_product_group:
+                groups = [dict(group, display_name="Body Splash atualizado") if group["group_key"] == "product:1" else group for group in groups]
             page = int(query.get("page", ["1"])[0])
+            if type(self).all_groups:
+                page_size = int(query.get("page_size", ["20"])[0])
+                start = (page - 1) * page_size
+                return self.send_json(dict(groups=groups[start:start + page_size], total_groups=len(groups),
+                                           total_matching_media=sum(group["matching_media_count"] for group in groups),
+                                           page=page, page_size=page_size,
+                                           pages=(len(groups) + page_size - 1) // page_size))
             return self.send_json(dict(groups=groups[page - 1:page], total_groups=len(groups),
                                        total_matching_media=sum(group["matching_media_count"] for group in groups),
                                        page=page, page_size=1, pages=len(groups)))
@@ -77,22 +110,45 @@ class GroupFixtureHandler(SimpleHTTPRequestHandler):
             product = dict(id=1, name="Body Splash", short_name="Body Splash", active=True,
                            default_caption="Legenda", has_default_caption=True, folder_count=2,
                            current_media_count=2, folders=[])
-            return self.send_json(dict(products=[product], counts=dict(current=1, no_current=0, archived=0),
+            products = [product]
+            if query.get("scope", ["current"])[0] == "current" and 4 in type(self).restored_product_ids:
+                products.append(dict(id=4, name="Produto arquivado", short_name="", active=True, aliases=[],
+                                     default_caption="", has_default_caption=False, folder_count=1,
+                                     current_media_count=1, folders=[], has_historical_references=False,
+                                     reference_count=0, can_archive=True, can_restore=False,
+                                     can_hard_delete=True, possible_duplicate_name=False,
+                                     catalog_presentation_state="current"))
+            return self.send_json(dict(products=products, counts=dict(current=len(products), no_current=0, archived=0),
                                        repeated_name_groups=0))
         if parsed.path == "/api/publisher/drive-sync/status":
             return self.send_json(dict(cursor_status="READY"))
         if parsed.path == "/api/publisher/folder-catalog":
             return self.send_json(dict(groups={}, counts={}, current_product_containers=[]))
         if parsed.path == "/api/publisher":
-            return self.send_json(fixture())
+            body = fixture()
+            body["products"].append(dict(id=3, name="Agapis Serum", short_name="Sérum", active=True,
+                                          aliases=["Agapis Kit"], default_caption="Legenda", has_default_caption=True))
+            return self.send_json(body)
         return super().do_GET()
 
     def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/api/publisher/products/bulk":
+            type(self).product_restore_requests.append(body)
+            if body.get("action") == "restore" and body.get("human_confirmed") is True:
+                type(self).restored_product_ids.update(body.get("ids", []))
+                return self.send_json(dict(action="restore", selected=len(body.get("ids", []))))
+            self.send_error(400)
+            return
+        if self.path == "/api/publisher/library/group-decision":
+            type(self).group_decision_requests.append(body)
+            if body.get("human_confirmed") is True:
+                return self.send_json(dict(group_key=body["group_key"], ignored_count=body.get("expected_count", 0)))
+            return self.send_json(dict(group_key=body["group_key"], eligible_count=1, requires_confirmation=True))
         if self.path != "/api/publisher/library/group-select":
             self.send_error(405)
             return
         type(self).selection_requests += 1
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.send_json(dict(group_key=body["group_key"], items=[media("G1C1A1", "product:1"),
                                                                media("G1C2A1", "product:1")],
                             drive_file_ids=["G1C1A1", "G1C2A1"], media_asset_ids=[]))
@@ -101,6 +157,16 @@ class GroupFixtureHandler(SimpleHTTPRequestHandler):
 @unittest.skipUnless(shutil.which("chrome") or Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe").exists(),
                      "Chrome Stable is required")
 class GroupedLibraryBrowserTests(unittest.TestCase):
+    def setUp(self):
+        GroupFixtureHandler.lazy_requests = 0
+        GroupFixtureHandler.selection_requests = 0
+        GroupFixtureHandler.groups_requests = 0
+        GroupFixtureHandler.all_groups = False
+        GroupFixtureHandler.rename_product_group = False
+        GroupFixtureHandler.restored_product_ids = set()
+        GroupFixtureHandler.product_restore_requests = []
+        GroupFixtureHandler.group_decision_requests = []
+
     def test_collapsed_lazy_selection_pagination_and_product_navigation(self):
         from playwright.sync_api import sync_playwright
 
@@ -139,6 +205,123 @@ class GroupedLibraryBrowserTests(unittest.TestCase):
                     page.wait_for_function("document.querySelector('#productForm')?.dataset.productId === '1'")
                     self.assertEqual(page.locator("#productForm").get_attribute("data-product-id"), "1")
                     self.assertFalse(errors, errors)
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_folder_product_picker_survives_periodic_refresh_and_intentional_closes(self):
+        from playwright.sync_api import sync_playwright
+
+        GroupFixtureHandler.all_groups = True
+        server = ThreadingHTTPServer(("127.0.0.1", 0), GroupFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel="chrome", headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    errors = []
+                    page.on("pageerror", lambda error: errors.append(str(error)))
+                    page.goto(f"http://127.0.0.1:{server.server_port}/publisher.html")
+                    page.locator('nav [data-view="library"]').click()
+                    picker = page.locator('[data-product-picker-key="folder:unassigned"] input[type=search]')
+                    picker.wait_for(timeout=15000)
+                    page.locator('[data-library-group-toggle="folder:unassigned"]').click()
+                    picker.fill("agapis")
+                    option = page.get_by_role("option", name="Sérum")
+                    option.wait_for()
+                    page.evaluate("window.__pickerNode = document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')")
+                    initial_requests = GroupFixtureHandler.groups_requests
+                    page.wait_for_function("window.__pickerNode && document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]') === window.__pickerNode && window.__pickerNode.value === 'agapis' && document.activeElement === window.__pickerNode && !document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] .combobox-results').hidden", timeout=10000)
+                    page.wait_for_timeout(6500)
+                    self.assertGreaterEqual(GroupFixtureHandler.groups_requests, initial_requests + 1)
+                    self.assertTrue(page.evaluate("window.__pickerNode === document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')"))
+                    self.assertEqual(picker.input_value(), "agapis")
+                    self.assertTrue(picker.evaluate("el => document.activeElement === el"))
+                    self.assertTrue(option.is_visible())
+
+                    GroupFixtureHandler.rename_product_group = True
+                    page.evaluate("refresh()")
+                    self.assertIn("Body Splash atualizado", page.locator('[data-library-group-row="product:1"]').inner_text())
+                    self.assertTrue(page.evaluate("window.__pickerNode === document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')"))
+                    self.assertEqual(picker.input_value(), "agapis")
+                    self.assertTrue(picker.evaluate("el => document.activeElement === el"))
+                    self.assertTrue(option.is_visible())
+
+                    picker.press("Escape")
+                    self.assertEqual(picker.get_attribute("aria-expanded"), "false")
+                    picker.fill("agapis")
+                    page.locator("#librarySearch").click()
+                    self.assertEqual(picker.get_attribute("aria-expanded"), "false")
+                    picker.focus()
+                    picker.fill("agapis")
+                    page.locator('[data-library-group-toggle="folder:unassigned"]').click()
+                    self.assertEqual(picker.get_attribute("aria-expanded"), "false")
+                    page.locator('[data-library-group-toggle="folder:unassigned"]').click()
+                    picker = page.locator('[data-product-picker-key="folder:unassigned"] input[type=search]')
+                    picker.focus()
+                    picker.fill("agapis")
+                    page.get_by_role("option", name="Sérum").click()
+                    self.assertEqual(page.locator('[data-folder-product="unassigned"]').input_value(), "3")
+                    self.assertEqual(picker.get_attribute("aria-expanded"), "false")
+                    self.assertTrue(page.locator('[data-folder-assign="unassigned"]').is_visible())
+                    override = page.locator('#libraryAssignProductSearch')
+                    override.fill("agapis")
+                    page.evaluate("window.__overridePickerNode = document.querySelector('#libraryAssignProductSearch')")
+                    page.evaluate("refresh()")
+                    self.assertTrue(page.evaluate("window.__overridePickerNode === document.querySelector('#libraryAssignProductSearch')"))
+                    self.assertEqual(override.input_value(), "agapis")
+                    self.assertTrue(override.evaluate("el => document.activeElement === el"))
+                    self.assertTrue(page.get_by_role("option", name="Sérum").is_visible())
+                    override.press("Escape")
+                    self.assertFalse(errors, errors)
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_archived_product_restore_and_caption_fix_stay_contextual(self):
+        from playwright.sync_api import sync_playwright
+
+        GroupFixtureHandler.all_groups = True
+        server = ThreadingHTTPServer(("127.0.0.1", 0), GroupFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel="chrome", headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(f"http://127.0.0.1:{server.server_port}/publisher.html")
+                    page.locator('nav [data-view="library"]').click()
+                    page.locator('[data-library-group-row="product:4"]').wait_for(timeout=15000)
+                    ignore_button = page.locator('[data-library-group-row="product:5"] [data-ignore-library-group="product:5"]')
+                    self.assertTrue(ignore_button.is_visible())
+                    dialog_messages = []
+                    page.once("dialog", lambda dialog: (dialog_messages.append(dialog.message), dialog.accept()))
+                    ignore_button.click()
+                    page.wait_for_function("document.querySelector('#notice')?.textContent.includes('ignorado')")
+                    self.assertIn("Ignorar 1 vídeo deste grupo?", dialog_messages[0])
+                    self.assertEqual(GroupFixtureHandler.group_decision_requests[0]["human_confirmed"], False)
+                    self.assertEqual(GroupFixtureHandler.group_decision_requests[1]["expected_count"], 1)
+                    archived = page.locator('[data-library-group-row="product:4"]')
+                    self.assertIn("Produto arquivado", archived.inner_text())
+                    restore = archived.locator('[data-library-restore-product="4"]')
+                    self.assertTrue(restore.is_visible())
+                    page.once("dialog", lambda dialog: dialog.accept())
+                    restore.click()
+                    page.wait_for_function("!document.querySelector('[data-library-restore-product=\\\"4\\\"]') && document.querySelector('[data-library-config-product=\\\"4\\\"]')?.textContent.includes('Configurar legenda')")
+                    restored = page.locator('[data-library-group-row="product:4"]')
+                    self.assertIn("Legenda não configurada", restored.inner_text())
+                    self.assertEqual(GroupFixtureHandler.product_restore_requests[-1]["ids"], [4])
+                    self.assertEqual(GroupFixtureHandler.product_restore_requests[-1]["action"], "restore")
+                    page.locator('[data-library-config-product="4"]').click()
+                    page.wait_for_function("document.querySelector('#productForm')?.dataset.productId === '4'")
+                    self.assertEqual(page.locator('#productForm').get_attribute('data-product-id'), '4')
                 finally:
                     context.close()
         finally:

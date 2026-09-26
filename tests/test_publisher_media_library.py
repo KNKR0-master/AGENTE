@@ -214,7 +214,7 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publisher_drafts").fetchone()[0], 0)
 
     def test_group_identity_and_lazy_membership(self):
-        result = list_library_groups(self.conn)
+        result = list_library_groups(self.conn, group_view="ALL")
         self.assertEqual(result["total_groups"], 3)
         self.assertTrue(all("items" not in group for group in result["groups"]))
         groups = {group["group_key"]: group for group in result["groups"]}
@@ -230,22 +230,22 @@ class PublisherMediaLibraryTests(unittest.TestCase):
     def test_group_filters_search_and_stable_pagination(self):
         product_key = f"product:{self.product_a}"
         for search in ("Produto A", "VIDEO 2", "/Flow/Produto A"):
-            group = next(group for group in list_library_groups(self.conn, search=search)["groups"]
+            group = next(group for group in list_library_groups(self.conn, search=search, group_view="ALL")["groups"]
                          if group["group_key"] == product_key)
             self.assertEqual(group["total_media_count"], 3)
             self.assertGreaterEqual(group["matching_media_count"], 1)
-        group = list_library_groups(self.conn, search="VIDEO 2")["groups"][0]
+        group = list_library_groups(self.conn, search="VIDEO 2", group_view="ALL")["groups"][0]
         self.assertEqual(group["matching_media_count"], 1)
         self.assertEqual(group["folder_count"], 2)
         self.assertEqual([item["drive_file_id"] for item in list_group_items(
             self.conn, product_key, search="VIDEO 2")["items"]], ["medium"])
-        self.assertEqual(list_library_groups(self.conn, product_id="UNASSIGNED")["total_groups"], 1)
-        self.assertEqual(list_library_groups(self.conn, path="/Flow/Produto A/Videos")["total_matching_media"], 1)
-        self.assertEqual(list_library_groups(self.conn, file_type="IMAGE")["total_matching_media"], 1)
-        self.assertEqual(list_library_groups(self.conn, status="AVAILABLE")["total_matching_media"], 2)
+        self.assertEqual(list_library_groups(self.conn, product_id="UNASSIGNED", group_view="ALL")["total_groups"], 1)
+        self.assertEqual(list_library_groups(self.conn, path="/Flow/Produto A/Videos", group_view="ALL")["total_matching_media"], 1)
+        self.assertEqual(list_library_groups(self.conn, file_type="IMAGE", group_view="ALL")["total_matching_media"], 1)
+        self.assertEqual(list_library_groups(self.conn, status="AVAILABLE", group_view="ALL")["total_matching_media"], 2)
         self.service.decide_media({"drive_file_id": "suspicious", "decision": "IGNORED"})
-        self.assertEqual(list_library_groups(self.conn, decision="IGNORED")["total_matching_media"], 1)
-        pages = [list_library_groups(self.conn, page=page, page_size=1) for page in (1, 2, 3)]
+        self.assertEqual(list_library_groups(self.conn, decision="IGNORED", group_view="ALL")["total_matching_media"], 1)
+        pages = [list_library_groups(self.conn, page=page, page_size=1, group_view="ALL") for page in (1, 2, 3)]
         self.assertEqual({page["groups"][0]["group_key"] for page in pages},
                          {"folder:folder-unknown", product_key, f"product:{self.product_empty}"})
         self.assertTrue(all(page["total_groups"] == 3 for page in pages))
@@ -273,7 +273,7 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         self.service.assign_media_product({"drive_file_ids": ["high"], "product_id": self.product_b})
         with self.conn:
             self.conn.execute("UPDATE publisher_products SET active=0 WHERE product_id=?", (self.product_b,))
-        groups = {group["group_key"]: group for group in list_library_groups(self.conn)["groups"]}
+        groups = {group["group_key"]: group for group in list_library_groups(self.conn, group_view="ALL")["groups"]}
         self.assertIn(f"product:{same_name_id}", groups)
         self.assertIn(f"product:{self.product_a}", groups)
         self.assertTrue(groups[f"product:{self.product_b}"]["product_archived"])
@@ -290,9 +290,92 @@ class PublisherMediaLibraryTests(unittest.TestCase):
                 (drive_folder_id,name,relative_path,created_at,updated_at)
                 VALUES (?,?,?,?,?)""", ("other-unknown", "Sem mapeamento", "/Flow/Outra pasta", stamp, stamp))
         self._file("other-unknown-video", "VIDEO_G1C1A1.mp4", "other-unknown", "video/mp4", 900)
-        groups = list_library_groups(self.conn, product_id="UNASSIGNED")["groups"]
+        groups = list_library_groups(self.conn, product_id="UNASSIGNED", group_view="ALL")["groups"]
         self.assertEqual({group["group_key"] for group in groups},
                          {"folder:folder-unknown", "folder:other-unknown"})
+
+    def test_default_group_view_hides_only_fully_ignored_groups(self):
+        self.service.decide_media({"drive_file_id": "low", "decision": "IGNORED"})
+        self.service.decide_media({"drive_file_id": "suspicious", "decision": "IGNORED"})
+        default = {row["group_key"]: row for row in list_library_groups(self.conn)["groups"]}
+        all_groups = {row["group_key"]: row for row in list_library_groups(self.conn, group_view="ALL")["groups"]}
+        ignored = {row["group_key"]: row for row in list_library_groups(self.conn, group_view="IGNORED")["groups"]}
+        self.assertNotIn("folder:folder-unknown", default)
+        self.assertIn("folder:folder-unknown", ignored)
+        self.assertEqual(all_groups["folder:folder-unknown"]["presentation_state"], "IGNORED")
+        self.assertIn(f"product:{self.product_a}", default)
+        self.assertNotIn(f"product:{self.product_a}", ignored)
+        self.assertEqual(all_groups[f"product:{self.product_a}"]["presentation_state"], "ACTIVE")
+        self.assertEqual(list_library_groups(self.conn, group_view="REQUIRES_ATTENTION")["total_groups"], 1)
+
+    def test_mapping_statuses_follow_inventory_semantics_without_invalid_bucket(self):
+        with self.conn:
+            self.conn.execute("UPDATE drive_folders SET mapping_status='CATEGORY_ONLY' WHERE drive_folder_id='folder-a-child'")
+            self.conn.execute("UPDATE drive_folders SET mapping_status='ADMINISTRATIVE' WHERE drive_folder_id='folder-unknown'")
+        self._file("admin-video", "NOT_CONTENT_G1C1A1.mp4", "folder-unknown", "video/mp4", 1500)
+        rows = {row["drive_file_id"]: row for row in list_library(self.conn, file_type="VIDEO", page_size=20)["items"]}
+        self.assertEqual(rows["medium"]["folder_mapping_status"], "CATEGORY_ONLY")
+        self.assertEqual(rows["medium"]["status"], "AVAILABLE")
+        self.assertEqual(rows["admin-video"]["folder_mapping_status"], "ADMINISTRATIVE")
+        self.assertEqual(rows["admin-video"]["status"], "IGNORED")
+        self.assertEqual(rows["admin-video"]["reason"], "Pasta administrativa; fora do fluxo operacional")
+        ignored = {row["group_key"]: row for row in list_library_groups(self.conn, group_view="IGNORED")["groups"]}
+        self.assertEqual(ignored["folder:folder-unknown"]["presentation_state"], "IGNORED")
+        self.assertIn("ADMINISTRATIVE", ignored["folder:folder-unknown"]["folder_mapping_statuses"])
+
+    def test_group_ignore_preview_confirmation_and_lifecycle_exclusions(self):
+        stamp = now_iso()
+        with self.conn:
+            self.conn.execute("""INSERT INTO publisher_media_assets
+                (remote_file_id,filename,mime_type,size_bytes,status,created_at,updated_at)
+                VALUES ('high','PRODUTO_G1C1A1_0101.mp4','video/mp4',1000,'RESERVED',?,?)""", (stamp, stamp))
+        key = f"product:{self.product_a}"
+        preview = self.service.decide_library_group({"group_key": key, "human_confirmed": False})
+        self.assertEqual(preview["eligible_count"], 2)
+        with self.assertRaisesRegex(ValueError, "LIBRARY_GROUP_CONFIRMATION_REQUIRED"):
+            self.service.decide_library_group({"group_key": key, "human_confirmed": True})
+        with self.assertRaisesRegex(ValueError, "LIBRARY_GROUP_CHANGED_CONFIRM_AGAIN"):
+            self.service.decide_library_group({"group_key": key, "human_confirmed": True, "expected_count": 1})
+        result = self.service.decide_library_group({"group_key": key, "human_confirmed": True, "expected_count": 2})
+        self.assertEqual(result["ignored_count"], 2)
+        decisions = {row[0]: row[1] for row in self.conn.execute(
+            "SELECT drive_file_id,decision FROM publisher_media_decisions")}
+        self.assertNotIn("high", decisions)
+        self.assertEqual(decisions, {"medium": "IGNORED", "suspicious": "IGNORED"})
+        group = next(row for row in list_library_groups(self.conn, group_view="ALL")["groups"]
+                     if row["group_key"] == key)
+        self.assertNotEqual(group["presentation_state"], "IGNORED")
+        self.assertEqual(group["reserved_count"], 1)
+
+    def test_restore_archived_product_preserves_identity_and_reveals_caption_blocker(self):
+        self.service.assign_media_product({"drive_file_ids": ["empty-caption"], "product_id": self.product_empty})
+        with self.conn:
+            self.conn.execute("""INSERT INTO product_aliases(product_id,alias,normalized_alias,created_at,updated_at)
+                VALUES (?, 'Produto sem texto','produto sem texto',?,?)""", (self.product_empty, now_iso(), now_iso()))
+            self.conn.execute("UPDATE publisher_products SET active=0 WHERE product_id=?", (self.product_empty,))
+        archived = next(row for row in list_library_groups(self.conn, group_view="ALL")["groups"]
+                        if row["group_key"] == f"product:{self.product_empty}")
+        self.assertEqual(archived["presentation_state"], "REQUIRES_ATTENTION")
+        self.assertEqual(archived["review_reason"], "Produto arquivado")
+        alias_before = self.conn.execute("SELECT alias FROM product_aliases WHERE product_id=?", (self.product_empty,)).fetchone()[0]
+        self.service.bulk_products([self.product_empty], "restore", human_confirmed=True)
+        restored = next(row for row in list_library_groups(self.conn, group_view="ALL")["groups"]
+                        if row["group_key"] == f"product:{self.product_empty}")
+        self.assertEqual(restored["product_id"], self.product_empty)
+        self.assertEqual(restored["review_reason"], "Legenda não configurada")
+        self.assertEqual(self.conn.execute("SELECT product_id FROM publisher_media_overrides WHERE drive_file_id='empty-caption'").fetchone()[0], self.product_empty)
+        self.assertEqual(self.conn.execute("SELECT alias FROM product_aliases WHERE product_id=?", (self.product_empty,)).fetchone()[0], alias_before)
+
+    def test_default_operational_view_filter_contract_and_admin_not_attention(self):
+        response = {}
+        PublisherAPI(".", self.db_file.name).get(
+            SimpleNamespace(_json=lambda value, **_: response.update(value)),
+            {"page": ["1"], "group_view": ["ALL"]}, "/api/publisher/library/groups")
+        self.assertEqual(response["group_view"], "ALL")
+        default = list_library_groups(self.conn)
+        self.assertEqual(default["group_view"], "ACTIVE")
+        self.assertEqual(list_library_groups(self.conn, group_view="REQUIRES_ATTENTION")["total_groups"], 3)
+        self.assertEqual(list_library_groups(self.conn, group_view="IGNORED")["total_groups"], 0)
 
 
 if __name__ == "__main__":

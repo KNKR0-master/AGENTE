@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.store import now_iso
-from src.publisher.library import _classify, _raw_rows, get_library_items, list_library, list_library_groups, list_group_items, select_group_items, save_decision, set_product_overrides
+from src.publisher.library import _classify, _raw_rows, get_library_items, ignore_library_group, list_library, list_library_groups, list_group_items, select_group_items, save_decision, set_product_overrides
 from src.publisher.folder_catalog import (
     apply_bulk_role,
     decide_folder_role,
@@ -639,7 +639,8 @@ class PublisherService:
     def media_library_groups(self, params=None):
         params = params or {}
         return list_library_groups(self.conn, **self._library_group_filters(params),
-                                   page=params.get("page", 1), page_size=params.get("page_size", 20))
+                                   page=params.get("page", 1), page_size=params.get("page_size", 20),
+                                   group_view=params.get("group_view", "ACTIVE"))
 
     @staticmethod
     def _library_group_filters(params):
@@ -691,6 +692,12 @@ class PublisherService:
 
     def decide_media(self, data):
         return save_decision(self.conn, data.get("drive_file_id"), data.get("decision"), data.get("reason", ""))
+
+    def decide_library_group(self, data):
+        return ignore_library_group(
+            self.conn, data.get("group_key"), human_confirmed=data.get("human_confirmed") is True,
+            expected_count=data.get("expected_count"),
+        )
 
     def assign_media_product(self, data):
         ids = data.get("drive_file_ids") or []

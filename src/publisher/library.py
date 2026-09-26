@@ -53,6 +53,7 @@ def _base_query() -> str:
     return _ancestor_product_sql() + """
     SELECT df.*, f.name folder_name, f.relative_path folder_path,
            f.parent_drive_folder_id, f.product_id direct_folder_product_id,
+           f.mapping_status folder_mapping_status, f.folder_type folder_type,
            COALESCE(f.product_id, ancestor.product_id) inferred_product_id,
            pp.name inferred_product_name, pp.short_name inferred_product_short_name,
            pp.default_caption inferred_caption, pp.active inferred_product_active,
@@ -133,6 +134,8 @@ def _classify(row: dict) -> dict:
         "folder_id": row.get("drive_folder_id"),
         "folder_name": row.get("folder_name"),
         "folder_path": row.get("folder_path") or "",
+        "folder_mapping_status": str(row.get("folder_mapping_status") or "NEEDS_REVIEW").upper(),
+        "folder_type": str(row.get("folder_type") or "UNCLASSIFIED").upper(),
         "mime_type": row.get("mime_type") or "",
         "file_kind": row.get("file_kind") or "OTHER",
         "file_type": "VIDEO" if video else ("IMAGE" if str(row.get("mime_type") or "").lower().startswith("image/") else "OTHER"),
@@ -169,17 +172,24 @@ def _classify(row: dict) -> dict:
         "status_label": FRIENDLY_STATUS["ATTENTION"],
         "reason": "",
     }
+    if media_status in {"RESERVED", "PROCESSING", "NEEDS_RECONCILIATION", "CONSUMED_PENDING_DELETE"} or (row.get("draft_id") and row.get("draft_status") != "ARCHIVED"):
+        result.update(status="RESERVED", status_label=FRIENDLY_STATUS["RESERVED"], reason=f"Em uso pelo Draft #{row['draft_id']}" if row.get("draft_id") else "Mídia reservada")
+        return result
+    if media_status == "CONSUMED":
+        result.update(status="CONSUMED", status_label=FRIENDLY_STATUS["CONSUMED"], reason="Mídia já consumida")
+        return result
     if decision == "IGNORED":
         result.update(status="IGNORED", status_label=FRIENDLY_STATUS["IGNORED"], reason=row.get("decision_reason") or "Ignorado manualmente")
         return result
     if not video:
         result.update(status="OUT_OF_SCOPE", status_label=FRIENDLY_STATUS["OUT_OF_SCOPE"], reason="Arquivo não é vídeo; use o filtro de tipo para revisar")
         return result
-    if media_status in {"RESERVED", "PROCESSING", "NEEDS_RECONCILIATION", "CONSUMED_PENDING_DELETE"} or (row.get("draft_id") and row.get("draft_status") != "ARCHIVED"):
-        result.update(status="RESERVED", status_label=FRIENDLY_STATUS["RESERVED"], reason=f"Em uso pelo Draft #{row['draft_id']}" if row.get("draft_id") else "Mídia reservada")
+    mapping_status = str(row.get("folder_mapping_status") or "").upper()
+    if mapping_status == "IGNORED":
+        result.update(status="IGNORED", status_label=FRIENDLY_STATUS["IGNORED"], reason="Pasta marcada como ignorada")
         return result
-    if media_status == "CONSUMED":
-        result.update(status="CONSUMED", status_label=FRIENDLY_STATUS["CONSUMED"], reason="Mídia já consumida")
+    if mapping_status == "ADMINISTRATIVE":
+        result.update(status="IGNORED", status_label=FRIENDLY_STATUS["IGNORED"], reason="Pasta administrativa; fora do fluxo operacional")
         return result
     if technical in {"INVALID", "DUPLICATE", "ALREADY_PUBLISHED", "ALREADY_QUEUED"}:
         result.update(reason=row.get("classification_reason") or "Inventário marcou o arquivo como não elegível")
@@ -261,16 +271,27 @@ def _group_sort_key(group: dict) -> tuple:
     return category, group["display_name"].casefold(), group["group_key"]
 
 
+def _safe_to_ignore(item: dict) -> bool:
+    return (
+        item["status"] != "IGNORED"
+        and item["media_status"] in {None, "", "AVAILABLE", "FAILED", "RELEASED"}
+        and not (item["draft_id"] and item["draft_status"] != "ARCHIVED")
+    )
+
+
 def list_library_groups(conn, *, page=1, page_size=20, search="", path="", product_id=None,
-                        file_type="VIDEO", status="", decision="") -> dict:
+                        file_type="VIDEO", status="", decision="", group_view="ACTIVE") -> dict:
     page, page_size = max(1, int(page or 1)), min(100, max(1, int(page_size or 20)))
     matching = _matching_group_items(conn, search=search, path=path, product_id=product_id,
                                      file_type=file_type, status=status, decision=decision)
-    totals = _matching_group_items(conn, file_type=file_type) if any(
-        (search, path, product_id not in (None, "", "ALL"), status, decision)) else matching
+    all_items = _matching_group_items(conn, file_type=file_type)
+    video_items = _matching_group_items(conn, file_type="VIDEO")
+    members_by_group: dict[str, list[dict]] = {}
+    for item in video_items:
+        members_by_group.setdefault(_group_key(item), []).append(item)
     total_counts = {}
     total_folders = {}
-    for item in totals:
+    for item in all_items:
         key = _group_key(item)
         total_counts[key] = total_counts.get(key, 0) + 1
         total_folders.setdefault(key, {})[item["folder_id"]] = item["folder_path"] or item["folder_name"] or ""
@@ -282,36 +303,106 @@ def list_library_groups(conn, *, page=1, page_size=20, search="", path="", produ
             "product_id": item["product_id"], "display_name": item["product_short_name"] or item["product_name"] or item["folder_name"] or "Pasta sem produto",
             "product_name": item["product_name"], "product_archived": item["product_archived"],
             "folder_ids": set(), "folder_paths": set(), "total_media_count": total_counts.get(key, 0),
-            "matching_media_count": 0, "available_count": 0, "attention_count": 0, "reserved_count": 0,
+            "matching_media_count": 0, "matching_available_count": 0,
+            "available_count": 0, "attention_count": 0, "reserved_count": 0,
             "has_default_caption": bool(str(item["caption"] or "").strip()),
             "requires_attention": False, "review_reason": None,
         })
         group["folder_ids"].add(item["folder_id"])
         group["folder_paths"].add(item["folder_path"] or item["folder_name"] or "")
         group["matching_media_count"] += 1
-        if item["status"] == "AVAILABLE": group["available_count"] += 1
-        elif item["status"] == "RESERVED": group["reserved_count"] += 1
-        elif item["status"] == "ATTENTION": group["attention_count"] += 1
-        if item["product_archived"]:
-            group["requires_attention"], group["review_reason"] = True, "Produto arquivado: revisar antes de criar lote"
-        elif item["product_id"] is None:
-            group["requires_attention"], group["review_reason"] = True, "Produto da pasta ainda não associado"
-        elif item["status"] == "ATTENTION" and not group["review_reason"]:
-            group["requires_attention"], group["review_reason"] = True, item["reason"]
+        group["matching_available_count"] += int(item["status"] == "AVAILABLE")
     ordered = sorted(groups.values(), key=_group_sort_key)
     for group in ordered:
+        members = members_by_group.get(group["group_key"], [])
+        group["available_count"] = sum(item["status"] == "AVAILABLE" for item in members)
+        group["attention_count"] = sum(item["status"] == "ATTENTION" for item in members)
+        group["reserved_count"] = sum(item["status"] == "RESERVED" for item in members)
+        group["folder_mapping_statuses"] = sorted({item["folder_mapping_status"] for item in members})
+        unsafe = any(
+            item["media_status"] not in {None, "", "AVAILABLE", "FAILED", "RELEASED"}
+            or (item["draft_id"] and item["draft_status"] != "ARCHIVED")
+            for item in members
+        )
+        group["presentation_state"] = (
+            "IGNORED" if members and not unsafe and all(item["status"] == "IGNORED" for item in members)
+            else "REQUIRES_ATTENTION" if group["product_archived"] or any(item["status"] == "ATTENTION" for item in members)
+            else "ACTIVE"
+        )
+        group["requires_attention"] = group["presentation_state"] == "REQUIRES_ATTENTION"
+        if group["product_archived"]:
+            group["review_reason"] = "Produto arquivado"
+        elif group["product_id"] is None:
+            group["review_reason"] = "Produto não associado"
+        elif any(item["status"] == "ATTENTION" and item["reason"] == "Legenda do produto não configurada" for item in members):
+            group["review_reason"] = "Legenda não configurada"
+        else:
+            group["review_reason"] = next((item["reason"] for item in members if item["status"] == "ATTENTION"), None)
+        group["ignoreable_count"] = sum(_safe_to_ignore(item) for item in members)
+        group["ignored_reason"] = (
+            "Pasta administrativa; fora do fluxo operacional"
+            if members and all(item["folder_mapping_status"] == "ADMINISTRATIVE" for item in members)
+            else "Todos os vídeos deste grupo foram ignorados"
+        ) if group["presentation_state"] == "IGNORED" else None
         group["display_status"] = (group["review_reason"] or
             (f"{group['attention_count']} requerem atenção" if group["attention_count"] else
              "Pronto" if group["available_count"] else
+             "IGNORADO" if group["presentation_state"] == "IGNORED" else
              "Reservado" if group["reserved_count"] else "Sem vídeos prontos"))
         group["folder_ids"] = sorted(total_folders[group["group_key"]])
         group["folder_paths"] = sorted(set(total_folders[group["group_key"]].values()))
         group["folder_count"] = len(group["folder_ids"])
         group["representative_folder_path"] = group["folder_paths"][0] if group["folder_paths"] else ""
+    group_view = str(group_view or "ACTIVE").upper()
+    if group_view not in {"ACTIVE", "REQUIRES_ATTENTION", "IGNORED", "ALL"}:
+        group_view = "ACTIVE"
+    if group_view != "ALL":
+        ordered = [group for group in ordered if group["presentation_state"] == group_view]
     start = (page - 1) * page_size
-    return {"groups": ordered[start:start + page_size], "total_groups": len(ordered),
-            "total_matching_media": len(matching), "page": page, "page_size": page_size,
-            "pages": (len(ordered) + page_size - 1) // page_size}
+    visible_groups = ordered[start:start + page_size]
+    return {"groups": visible_groups, "total_groups": len(ordered),
+            "total_matching_media": sum(group["matching_media_count"] for group in ordered),
+            "page": page, "page_size": page_size,
+            "pages": (len(ordered) + page_size - 1) // page_size, "group_view": group_view}
+
+
+def ignore_library_group(conn, group_key: str, *, human_confirmed=False, expected_count=None) -> dict:
+    group_key = str(group_key or "")
+    if not (group_key.startswith("product:") or group_key.startswith("folder:")):
+        raise ValueError("LIBRARY_GROUP_NOT_FOUND")
+
+    def candidates():
+        items = _matching_group_items(conn, file_type="VIDEO")
+        return [item for item in items if _group_key(item) == group_key and _safe_to_ignore(item)]
+
+    if human_confirmed is not True:
+        eligible = candidates()
+        if not eligible:
+            raise ValueError("NO_SAFE_MEDIA_TO_IGNORE")
+        return {"group_key": group_key, "eligible_count": len(eligible), "requires_confirmation": True}
+
+    if expected_count is None:
+        raise ValueError("LIBRARY_GROUP_CONFIRMATION_REQUIRED")
+    try:
+        expected_count = int(expected_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LIBRARY_GROUP_CONFIRMATION_REQUIRED") from exc
+
+    timestamp = now_iso()
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        eligible = candidates()
+        if not eligible:
+            raise ValueError("NO_SAFE_MEDIA_TO_IGNORE")
+        if expected_count != len(eligible):
+            raise ValueError("LIBRARY_GROUP_CHANGED_CONFIRM_AGAIN")
+        for item in eligible:
+            conn.execute("""INSERT INTO publisher_media_decisions
+                (drive_file_id,decision,decided_at,reason,updated_at) VALUES (?, 'IGNORED', ?, ?, ?)
+                ON CONFLICT(drive_file_id) DO UPDATE SET decision='IGNORED',decided_at=excluded.decided_at,
+                reason=excluded.reason,updated_at=excluded.updated_at""",
+                (item["drive_file_id"], timestamp, "Ignorado em grupo na Biblioteca", timestamp))
+    return {"group_key": group_key, "ignored_count": len(eligible), "decision": "IGNORED"}
 
 
 def list_group_items(conn, group_key: str, *, page=1, page_size=50, **filters) -> dict:

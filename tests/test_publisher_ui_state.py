@@ -226,6 +226,30 @@ class PublisherUIStateTests(unittest.TestCase):
         self.assertEqual(result["initialCount"], 10)
         self.assertEqual(result["archived"], [1])
 
+    def test_product_search_supports_alias_and_stable_id_tie_break(self):
+        result = self.run_node(
+            f"""
+            const state = require({json.dumps(str(STATE_MODULE))});
+            const products = [
+              {{id:8,name:'Ágapís Sérum',short_name:'Sérum',aliases:['Agapis Kit'],active:1}},
+              {{id:99,name:'Agapis Archived',short_name:'Archived',aliases:['agapis'],active:0}},
+              ...Array.from({{length:12}},(_,index)=>({{id:index+1,name:'Agapis Item '+index,short_name:'Agapis',aliases:[],active:1}})),
+            ];
+            console.log(JSON.stringify({{
+              name:state.searchProducts(products,'ágapís sérum','',10).map(p=>p.id),
+              shortName:state.searchProducts(products,'serum','',10).map(p=>p.id),
+              alias:state.searchProducts(products,'agapis kit','',10).map(p=>p.id),
+              limited:state.searchProducts(products,'agapis','',50).map(p=>p.id),
+            }}));
+            """
+        )
+        self.assertEqual(result["name"], [8])
+        self.assertEqual(result["shortName"], [8])
+        self.assertEqual(result["alias"], [8])
+        self.assertEqual(len(result["limited"]), 10)
+        self.assertNotIn(99, result["limited"])
+        self.assertEqual(result["limited"], sorted(result["limited"]))
+
     def test_rate_limited_with_cooldown_renders_release_time(self):
         result = self.run_node(
             f"""

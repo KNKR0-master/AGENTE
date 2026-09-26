@@ -334,6 +334,38 @@ mesmo ID compartilham um fetch. Falha, ausencia de imagem ou erro de credencial
 mostram o placeholder sem alterar media, produto ou estado de protecao da conta.
 O endpoint nao grava o `thumbnailLink` fresco nem baixa o video.
 
+## Interacao e prontidao da Biblioteca
+
+Os grupos usam identidade estavel por `product_id` ou `folder_id`; a atualizacao
+da Biblioteca reconcilia as linhas por chave, sem substituir o seletor ativo
+quando outro estado da pagina atualiza. O autocomplete guarda query, foco e
+abertura em memoria por contexto da interface. Se o grupo desaparecer ou mudar
+de identidade, o seletor e encerrado com seguranca. Busca por nome, `short_name`
+e aliases persistidos continua limitada a resultados relevantes; Products
+arquivados nao aparecem no seletor normal.
+
+As visoes **Operacionais**, **Requer atencao**, **Ignorados** e **Todos** sao
+derivadas dos registros existentes, sem estado persistido de grupo. Um grupo so
+fica em **Ignorados** quando todas as midias operacionais estao ignoradas, ou
+quando o mapeamento da pasta ja representa explicitamente conteudo fora do
+fluxo. Grupos mistos permanecem visiveis na visao operacional. Mapeamentos
+administrativos sao identificados como fora do fluxo, nao como conteudo
+invalido; categorias e pastas pendentes de revisao nao sao ocultadas por esse
+motivo.
+
+Ignorar midias de um grupo primeiro apresenta a quantidade elegivel e exige
+confirmacao explicita. A operacao revalida a quantidade numa transacao e nao
+inclui itens reservados, em processamento, consumidos ou em reconciliacao. O
+modelo atual nao registra uma decisao neutra de restauracao para `IGNORED`, por
+isso nao ha acao generica de restaurar grupo nesta fase.
+
+Quando um grupo resolve para um Product arquivado, a acao contextual restaura o
+mesmo `product_id` pelo endpoint existente; associacoes de pasta, aliases e
+historico permanecem. A prontidao e recalculada depois da restauracao. Se faltar
+`default_caption`, a Library oferece abrir a configuracao do mesmo Product. A
+checagem de `create_library_batch()` continua sendo a autoridade final e nenhuma
+correcao contextual cria lote automaticamente. Nenhuma migration e necessaria.
+
 ## Referencias historicas
 
 - `docs/publisher-persistence-lifecycle.md`: detalhes do lifecycle e recovery.

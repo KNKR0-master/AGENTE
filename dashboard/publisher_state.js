@@ -25,7 +25,7 @@
       score += contextTokens.filter(matches).length * 3;
       return {product, score, label: product.short_name || product.name};
     }).filter(Boolean);
-    scored.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, 'pt-BR'));
+    scored.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, 'pt-BR') || Number(a.product.id) - Number(b.product.id));
     return scored.slice(0, Math.max(1, Math.min(10, limit))).map(item => item.product);
   }
 

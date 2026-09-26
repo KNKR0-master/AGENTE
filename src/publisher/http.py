@@ -435,6 +435,8 @@ class PublisherAPI:
                         result = service.create_library_batch(data)
                     elif action == 'group-select' and path == '/api/publisher/library/group-select':
                         result = service.select_media_library_group(data)
+                    elif action == 'group-decision' and path == '/api/publisher/library/group-decision':
+                        result = service.decide_library_group(data)
                     elif action == 'media-decision':
                         result = service.decide_media(data)
                     elif action == 'media-product':
