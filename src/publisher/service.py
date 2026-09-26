@@ -744,42 +744,213 @@ class PublisherService:
             self.conn.execute("UPDATE drive_files SET missing_since=?,updated_at=? WHERE drive_file_id=?", (timestamp, timestamp, drive_file_id))
         return {"drive_file_id": drive_file_id, "remote_exists_after": False, "deleted_at": timestamp}
 
+    def _library_batch_preflight(self, data):
+        raw_ids = data.get("drive_file_ids")
+        ids = list(dict.fromkeys(str(value).strip() for value in raw_ids
+                                 if str(value).strip())) if isinstance(raw_ids, (list, tuple)) else []
+        configuration_blockers = []
+        problems = []
+
+        def config_blocker(code, message):
+            configuration_blockers.append({"code": code, "message": message})
+            problems.append({"code": code, "reason": message})
+
+        if not ids:
+            config_blocker("SELECTION_REQUIRED", "Selecione pelo menos um vídeo da Biblioteca")
+        elif len(ids) > 100:
+            config_blocker("BATCH_LIMIT_EXCEEDED", "Um lote aceita no máximo 100 vídeos")
+
+        name = str(data.get("name") or "").strip()
+        if not name:
+            config_blocker("BATCH_NAME_REQUIRED", "Informe um nome para o lote")
+        if data.get("scheduled_at"):
+            config_blocker("SCHEDULING_NOT_SUPPORTED", "A Biblioteca não agenda lotes")
+
+        account_id = data.get("account_id") or self.default_account_id()
+        account = None
+        if not account_id:
+            config_blocker("ACCOUNT_REQUIRED", "Selecione uma conta Publisher ativa")
+        else:
+            try:
+                account = get_row(self.conn, "publisher_accounts", account_id)
+            except (ValueError, TypeError):
+                config_blocker("ACCOUNT_NOT_FOUND", "A conta selecionada não existe")
+            else:
+                account_id = int(account["id"])
+                if not account["active"]:
+                    config_blocker("ACCOUNT_INACTIVE", "A conta selecionada está inativa")
+                else:
+                    try:
+                        protection = AccountSafetyGuard(self.conn).snapshot(account_id)
+                    except (AccountProtectionBlocked, ValueError):
+                        config_blocker("ACCOUNT_PROTECTION_UNAVAILABLE", "Não foi possível confirmar a proteção da conta")
+                    else:
+                        if protection["state"] != "NORMAL":
+                            config_blocker("ACCOUNT_PROTECTED", "A conta está protegida; revise o estado antes de criar um lote")
+
+        preset_id = data.get("preset_id") or None
+        preset = None
+        if preset_id:
+            try:
+                preset = get_row(self.conn, "publisher_presets", preset_id)
+            except (ValueError, TypeError):
+                config_blocker("PRESET_NOT_FOUND", "O preset selecionado não existe")
+            else:
+                preset_id = int(preset["id"])
+                if account and preset.get("account_id") and int(preset["account_id"]) != int(account["id"]):
+                    config_blocker("PRESET_ACCOUNT_MISMATCH", "O preset pertence a outra conta")
+
+        within_limit = 0 < len(ids) <= 100
+        source_items = get_library_items(self.conn, ids) if within_limit else []
+        by_id = {item["drive_file_id"]: item for item in source_items}
+        items = []
+        for file_id in ids if within_limit else []:
+            item = by_id.get(file_id)
+            blockers = []
+            warnings = []
+
+            def item_blocker(code, message, action=None):
+                if any(existing["code"] == code for existing in blockers):
+                    return
+                blocker = {"code": code, "message": message}
+                if action:
+                    blocker["safe_fix_action"] = action
+                blockers.append(blocker)
+
+            if item is None:
+                item_blocker("MEDIA_NOT_IN_INVENTORY", "Arquivo não encontrado no inventário")
+                product_id = None
+            else:
+                product_id = item.get("product_id")
+                if item.get("product_archived"):
+                    item_blocker("PRODUCT_ARCHIVED", "Produto arquivado", {
+                        "action": "RESTORE_PRODUCT", "product_id": product_id,
+                        "label": "Restaurar produto",
+                    })
+                if not product_id:
+                    item_blocker("PRODUCT_UNASSIGNED", "Produto não associado", {
+                        "action": "ASSOCIATE_PRODUCT", "folder_id": item.get("folder_id"),
+                        "label": "Associar produto",
+                    })
+                if product_id and not str(item.get("caption") or "").strip():
+                    item_blocker("CAPTION_MISSING", "Legenda não configurada", {
+                        "action": "CONFIGURE_CAPTION", "product_id": product_id,
+                        "label": "Configurar legenda",
+                    })
+                if item.get("media_status") in {"RESERVED", "PROCESSING", "NEEDS_RECONCILIATION",
+                                                "CONSUMED_PENDING_DELETE", "CONSUMED", "MISSING", "IN_USE_ELSEWHERE"}:
+                    item_blocker("MEDIA_NOT_AVAILABLE", item.get("reason") or "Mídia indisponível")
+                if not item.get("eligible"):
+                    known = {"PRODUCT_ARCHIVED", "PRODUCT_UNASSIGNED", "CAPTION_MISSING", "MEDIA_NOT_AVAILABLE"}
+                    if not any(blocker["code"] in known for blocker in blockers):
+                        reason = item.get("reason") or item.get("status_label") or "Mídia requer revisão"
+                        item_blocker("MEDIA_REQUIRES_REVIEW", reason)
+                elif not item.get("product_archived") and account and account.get("active") and not any(
+                        blocker["code"].startswith("PRESET_") for blocker in configuration_blockers):
+                    try:
+                        self.validate_fields({"product_id": product_id, "account_id": account_id,
+                                              "preset_id": preset_id, "caption": item.get("caption") or ""})
+                    except (ValueError, KeyError) as exc:
+                        message = str(exc)
+                        code = "PRODUCT_ACCOUNT_MISMATCH" if "restrito a outra conta" in message else (
+                            "CAPTION_TOO_LONG" if "2200" in message else "BATCH_FIELDS_INVALID")
+                        item_blocker(code, message)
+                    if not blockers and item.get("media_asset_id"):
+                        asset = self.conn.execute("SELECT * FROM publisher_media_assets WHERE id=?",
+                                                  (item["media_asset_id"],)).fetchone()
+                        if asset:
+                            try:
+                                self.assert_media_available(dict(asset))
+                            except ValueError as exc:
+                                item_blocker("MEDIA_NOT_AVAILABLE", str(exc))
+
+            product_name = (item.get("product_short_name") or item.get("product_name")) if item else None
+            items.append({
+                "drive_file_id": file_id,
+                "filename": item.get("filename") if item else None,
+                "folder_id": item.get("folder_id") if item else None,
+                "product_id": product_id,
+                "product_display_name": product_name or (f"Produto {product_id}" if product_id else "Sem produto"),
+                "product_archived": bool(item and item.get("product_archived")),
+                "readiness": "READY" if not blockers else "BLOCKED",
+                "blockers": blockers,
+                "warnings": warnings,
+            })
+            for blocker in blockers:
+                problems.append({"drive_file_id": file_id, "filename": item.get("filename") if item else None,
+                                 "product_id": product_id, "code": blocker["code"],
+                                 "reason": item.get("reason") if item and blocker["code"] in {
+                                     "PRODUCT_UNASSIGNED", "CAPTION_MISSING", "MEDIA_REQUIRES_REVIEW"
+                                 } else blocker["message"],
+                                 "message": blocker["message"]})
+
+        products_by_key = {}
+        for item in items:
+            key = str(item["product_id"]) if item["product_id"] is not None else "unassigned"
+            product = products_by_key.setdefault(key, {
+                "product_id": item["product_id"], "display_name": item["product_display_name"], "count": 0,
+            })
+            product["count"] += 1
+
+        can_create = bool(ids) and len(ids) <= 100 and not configuration_blockers and len(items) == len(ids) and all(
+            item["readiness"] == "READY" for item in items
+        )
+        ready_count = sum(item["readiness"] == "READY" for item in items)
+        preview = {
+            "total": len(ids), "ready": ready_count, "blocked": max(0, len(ids) - ready_count),
+            "warning_count": sum(len(item["warnings"]) for item in items),
+            "can_create": can_create, "account_id": int(account_id) if account_id and str(account_id).isdigit() else None,
+            "account_name": account.get("name") if account else None,
+            "preset_id": int(preset_id) if preset_id and str(preset_id).isdigit() else None,
+            "configuration_blockers": configuration_blockers,
+            "products": list(products_by_key.values()),
+            "product_count": sum(product["product_id"] is not None for product in products_by_key.values()),
+            "items": items,
+            "problems": problems,
+        }
+        return {"preview": preview, "items_by_id": by_id}
+
+    def preflight_library_batch(self, data):
+        """Read-only readiness preview for an explicit set of Drive file IDs."""
+        return self._library_batch_preflight(data)["preview"]
+
     def create_library_batch(self, data):
-        ids = list(dict.fromkeys(str(value) for value in (data.get("drive_file_ids") or []) if str(value).strip()))
+        raw_ids = data.get("drive_file_ids")
+        ids = list(dict.fromkeys(str(value).strip() for value in raw_ids
+                                 if str(value).strip())) if isinstance(raw_ids, (list, tuple)) else []
         if not ids or len(ids) > 100:
             raise ValueError("Selecione entre 1 e 100 vídeos")
         if data.get("scheduled_at"):
             raise ValueError("A Biblioteca não agenda lotes; horário desejado não é definido")
+        name = str(data.get("name") or "").strip()
         account_id = data.get("account_id") or self.default_account_id()
         if not account_id:
             raise ValueError("Selecione uma conta Publisher ativa")
+        try:
+            account = get_row(self.conn, "publisher_accounts", account_id)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("A conta selecionada não existe") from exc
+        if not account["active"]:
+            raise ValueError("A conta selecionada está inativa")
+        account_id = int(account["id"])
         try:
             AccountSafetyGuard(self.conn).assert_allowed(account_id)
         except AccountProtectionBlocked as exc:
             raise ValueError(f'BLOCKED_BY_ACCOUNT_PROTECTION: {exc.reason_code}') from exc
         preset_id = data.get("preset_id") or None
-        items = get_library_items(self.conn, ids)
-        by_id = {item["drive_file_id"]: item for item in items}
-        missing = [file_id for file_id in ids if file_id not in by_id]
-        problems = [{"drive_file_id": file_id, "reason": "Arquivo não encontrado no inventário"} for file_id in missing]
-        for file_id in ids:
-            item = by_id.get(file_id)
-            if item and not item.get("eligible"):
-                problems.append({"drive_file_id": file_id, "filename": item["filename"], "reason": item["reason"] or item["status_label"]})
-            if item and item.get("eligible"):
-                try:
-                    self.validate_fields({"product_id": item["product_id"], "account_id": account_id,
-                                          "preset_id": preset_id, "caption": item["caption"]})
-                except ValueError as exc:
-                    problems.append({"drive_file_id": file_id, "filename": item["filename"], "reason": str(exc)})
-        if problems:
-            raise ValueError("BATCH_PREFLIGHT_FAILED: " + json.dumps(problems, ensure_ascii=False))
-        timestamp = now_iso()
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
+            timestamp = now_iso()
+            batch_name = name or f"Lote {timestamp[:16]}"
+            validation = self._library_batch_preflight({**data, "drive_file_ids": ids, "name": batch_name,
+                                                        "account_id": account_id, "preset_id": preset_id})
+            preview = validation["preview"]
+            if not preview["can_create"]:
+                raise ValueError("BATCH_PREFLIGHT_FAILED: " + json.dumps(preview["problems"], ensure_ascii=False))
+            by_id = validation["items_by_id"]
             batch_id = self.conn.execute(
                 "INSERT INTO publisher_batches(name,source,created_at) VALUES (?, 'MEDIA_LIBRARY', ?)",
-                (str(data.get("name") or f"Lote {timestamp[:16]}"), timestamp),
+                (batch_name, timestamp),
             ).lastrowid
             draft_ids = []
             for position, file_id in enumerate(ids, 1):
@@ -797,11 +968,10 @@ class PublisherService:
                       (file_id, item["folder_id"], item["filename"], item["mime_type"] or "video/mp4", item.get("size"),
                        item.get("md5_checksum"), item.get("folder_path"), item.get("web_view_link"), item.get("created_time"),
                        item.get("modified_time"), timestamp, timestamp, timestamp)).lastrowid
-                    asset = dict(self.conn.execute("SELECT * FROM publisher_media_assets WHERE id=?", (asset_id,)).fetchone())
                 draft_id = self.conn.execute("""INSERT INTO publisher_drafts
                   (batch_id,product_id,account_id,preset_id,media_asset_id,video_path,filename,caption,scheduled_at,created_at,updated_at)
                   VALUES (?,?,?,?,?,'',?,?,?,?,?)""",
-                  (batch_id, item["product_id"], int(account_id), preset_id, asset_id, item["filename"], item["caption"], None, timestamp, timestamp)).lastrowid
+                  (batch_id, item["product_id"], account_id, preset_id, asset_id, item["filename"], item["caption"], None, timestamp, timestamp)).lastrowid
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, draft_id))
                 self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?", (timestamp, asset_id))
                 log(self.conn, draft_id, "CREATE", "DRAFT", "Biblioteca: referência Drive reservada; nenhum download realizado")

@@ -431,6 +431,8 @@ class PublisherAPI:
                         self.drive_poller.wake()
                     elif action == 'batches':
                         result = service.create_remote_batch(data)
+                    elif path == '/api/publisher/library-batches/preflight':
+                        result = service.preflight_library_batch(data)
                     elif action == 'library-batches':
                         result = service.create_library_batch(data)
                     elif action == 'group-select' and path == '/api/publisher/library/group-select':

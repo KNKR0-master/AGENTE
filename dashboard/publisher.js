@@ -9,6 +9,8 @@ let activeProductPickerKey = null, libraryRenderDeferred = false;
 let productScope = 'current', productWorkspace = {products:[],counts:{},repeated_name_groups:0}, productWorkspaceRequest = 0;
 let folderCatalogSelected = new Set(), activeFolderCatalogGroup = 'probable_matches';
 let driveSyncRecord = {}, driveSyncResult = null, driveSyncPhase = 'IDLE', driveSyncBusy = false;
+const libraryBatchPanelState = {preview:null,request:0,submitting:false,resumeAfterFix:false,filterSnapshot:null};
+let libraryBatchPreviewTimer = null;
 const loginRequests = new Set();
 const authLabels = {NOT_AUTHENTICATED:'não verificada',LOGIN_IN_PROGRESS:'login em andamento',AUTHENTICATED:'autenticada',NEEDS_LOGIN:'requer login'};
 function renderAccounts(){
@@ -196,7 +198,7 @@ $('#queueBatches').addEventListener('dragstart',e=>{const row=e.target.closest('
 $('#queueBatches').addEventListener('dragover',e=>{if(draggedQueueDraft&&e.target.closest('[data-queue-draft]'))e.preventDefault();});
 $('#queueBatches').addEventListener('drop',e=>{e.preventDefault();const target=Number(e.target.closest('[data-queue-draft]')?.dataset.queueDraft),source=draggedQueueDraft;draggedQueueDraft=null;if(!source||!target)return;task(async()=>{const group=queueGroups().find(g=>g.all.some(d=>d.id===source));await reorderQueue(group,PublisherUIState.reorderedIds(group,source,target));});});
 $('#queueBatches').addEventListener('dragend',()=>{draggedQueueDraft=null;});
-for(const [name,route] of [['product','products'],['account','accounts'],['preset','presets']])$('#'+name+'Form').onsubmit=e=>{e.preventDefault();task(async()=>{await api('/'+route,formData(e.target));e.target.reset();await refresh();notice('Cadastro salvo');});};
+for(const [name,route] of [['product','products'],['account','accounts'],['preset','presets']])$('#'+name+'Form').onsubmit=e=>{e.preventDefault();task(async()=>{await api('/'+route,formData(e.target));e.target.reset();await refresh();notice('Cadastro salvo');if(route==='products'&&libraryBatchPanelState.resumeAfterFix)await returnToLibraryBatchPanel();});};
 $('#newProduct').onclick=()=>{$('#productForm').reset();field($('#productForm'),'id').value='';$('#productLegacy').textContent='';renderProductEditor(null);field($('#productForm'),'name').focus();};
 async function productBulk(action){if(!productSelected.size)throw Error('Selecione produtos');const plan=await api('/products/bulk',{action:'preview',ids:[...productSelected]});if(action==='delete'&&plan.will_archive)throw Error(`${plan.will_archive} produto(s) possuem histórico e não podem ser excluídos permanentemente. Você pode arquivá-los.`);const message=action==='delete'?`Excluir permanentemente ${plan.will_delete} produto(s) sem histórico? Esta ação não pode ser desfeita.`:action==='restore'?`Restaurar ${plan.selected} produto(s)?`:`Arquivar ${plan.selected} produto(s), mantendo todo o histórico?`;if(!confirm(message))return;const result=await api('/products/bulk',{action,ids:[...productSelected],human_confirmed:true});productSelected.clear();await refresh();notice(`${result.deleted||0} excluído(s); ${result.archived||0} arquivado(s); ${result.restored||0} restaurado(s)`);}
 $('#archiveProducts').onclick=()=>task(()=>productBulk('archive'));$('#deleteProducts').onclick=()=>task(()=>productBulk('delete'));$('#restoreProducts').onclick=()=>task(()=>productBulk('restore'));$('#selectAllProducts').onchange=e=>{visibleProducts().forEach(p=>e.target.checked?productSelected.add(p.id):productSelected.delete(p.id));renderProductWorkspace();};
@@ -345,9 +347,153 @@ function renderBatchSummary(){
  const extra=Math.max(0,summary.selected-summary.known);
  $('#batchSelectionSummary').innerHTML=summary.selected?`<strong>${summary.selected} mídia(s) selecionada(s)</strong><span>${summary.productCount} produto(s) representado(s)</span><span>Prontas: ${summary.ready} · Sem produto: ${summary.withoutProduct} · Requer atenção: ${summary.attention}</span><span>${mappings.map(item=>esc(item)).join(' · ')}${extra?` · +${extra} em outras páginas`:''}</span><span>Conta padrão: ${esc(state.preferences?.default_publisher_account_name||'CECILIA FIGUEIREDO')}</span>`:'<span>Nenhuma mídia selecionada. Volte à Biblioteca para escolher os vídeos.</span>';
  const button=$('#createBatchFromLibrary');
- const protectedAccount=(state.account_protection||[]).some(item=>item.blocked);if(button){button.disabled=protectedAccount||!summary.canCreate;button.textContent=protectedAccount?'Conta protegida: lote pausado':summary.selected&&!summary.canCreate?`${summary.attention||summary.withoutProduct||summary.selected} item(ns) precisam ser corrigidos`:'Criar lote com selecionados';}
+ if(button){button.disabled=!summary.selected;button.textContent='Criar lote com selecionados';}
  const overrideButton=$('#assignLibraryProduct');if(overrideButton)overrideButton.disabled=summary.selected!==1;
 }
+function libraryBatchPayload(){return {drive_file_ids:[...librarySelected],name:field($('#libraryBatchForm'),'name').value,
+ account_id:field($('#libraryBatchForm'),'account_id').value,preset_id:field($('#libraryBatchForm'),'preset_id').value};}
+function renderLibraryBatchPreview(preview){
+ const products=$('#libraryBatchProductSummary'),readiness=$('#libraryBatchReadiness');
+ $('#libraryBatchSelectionText').textContent=`${preview.total} vídeo(s) selecionado(s) · ${Number(preview.product_count||0)} produto(s)`;
+ products.innerHTML=(preview.products||[]).map(product=>`<span><strong>${esc(product.display_name)}</strong> — ${esc(product.count)} vídeo(s)</span>`).join('');
+ const configuration=(preview.configuration_blockers||[]).map(blocker=>`<p>${esc(blocker.message)}</p>`).join('');
+ const rows=(preview.items||[]).map(item=>`<article class="batch-preview-item"><div><strong>${esc(item.filename||item.drive_file_id)}</strong><small>${esc(item.product_display_name||'Sem produto')}</small></div><div><span class="${item.readiness==='READY'?'batch-ready':'status warning'}">${item.readiness==='READY'?'Pronto':'Requer correção'}</span>${(item.blockers||[]).map(blocker=>`<div class="batch-item-blocker">${esc(blocker.message)}${blocker.safe_fix_action?`<div class="batch-fix-actions"><button type="button" data-batch-fix="${esc(blocker.safe_fix_action.action)}" data-product-id="${esc(blocker.safe_fix_action.product_id??'')}" data-folder-id="${esc(blocker.safe_fix_action.folder_id??'')}">${esc(blocker.safe_fix_action.label)}</button></div>`:''}</div>`).join('')}</div><div>${(item.warnings||[]).map(warning=>`<p>${esc(warning.message||warning)}</p>`).join('')}</div></article>`).join('');
+ const warnings=Number(preview.warning_count||0);
+ readiness.innerHTML=`<div class="batch-readiness-overview"><span>${esc(preview.ready)} prontos</span><span>${esc(preview.blocked)} requerem correção</span><span>${warnings} aviso(s)</span></div>${configuration?`<div class="batch-config-blockers"><strong>Configuração do lote</strong>${configuration}</div>`:''}${rows?`<div class="batch-preview-items">${rows}</div>`:'<p>Nenhum item válido para prévia. Selecione vídeos explícitos na Biblioteca.</p>'}`;
+ $('#libraryBatchSubmit').disabled=!preview.can_create||libraryBatchPanelState.submitting;
+}
+async function requestLibraryBatchPreview(){
+ const dialog=$('#libraryBatchDialog');if(!dialog.open)return;
+ const request=++libraryBatchPanelState.request,readiness=$('#libraryBatchReadiness');
+ $('#libraryBatchSubmit').disabled=true;
+ readiness.innerHTML='<p class="batch-panel-loading" role="status">Revalidando os itens selecionados…</p>';
+ try{
+  const preview=await api('/library-batches/preflight',libraryBatchPayload());
+  if(request!==libraryBatchPanelState.request||!dialog.open)return;
+  libraryBatchPanelState.preview=preview;renderLibraryBatchPreview(preview);
+ }catch(error){
+  if(request!==libraryBatchPanelState.request||!dialog.open)return;
+  libraryBatchPanelState.preview=null;
+  readiness.innerHTML=`<p class="status error">Não foi possível validar a seleção: ${esc(error.message)}</p>`;
+  $('#libraryBatchSubmit').disabled=true;
+ }
+}
+function scheduleLibraryBatchPreview(){
+ libraryBatchPanelState.request++;
+ clearTimeout(libraryBatchPreviewTimer);
+ libraryBatchPreviewTimer=setTimeout(()=>task(requestLibraryBatchPreview,'library'),250);
+}
+function openLibraryBatchPanel(){
+ if(!librarySelected.size){notice('Selecione mídias na Biblioteca antes de configurar o lote.',true,'library');return;}
+ $('#libraryBatchSuccess').hidden=true;
+ const account=field($('#libraryBatchForm'),'account_id');
+ if(!account.value&&state.preferences?.default_publisher_account_id)account.value=String(state.preferences.default_publisher_account_id);
+ libraryBatchPanelState.resumeAfterFix=false;
+ $('#libraryBatchDialog').showModal();
+ requestLibraryBatchPreview();
+}
+function closeLibraryBatchPanel(){
+ libraryBatchPanelState.resumeAfterFix=false;
+ libraryBatchPanelState.request++;
+ if($('#libraryBatchDialog').open)$('#libraryBatchDialog').close();
+}
+function currentLibraryFilters(){return Object.fromEntries(['librarySearch','libraryPath','libraryProduct','libraryType','libraryGroupView','libraryStatus','libraryDecision'].map(id=>[id,$('#'+id).value]));}
+async function returnToLibraryBatchPanel(){
+ if(libraryBatchPanelState.filterSnapshot){
+  for(const [id,value] of Object.entries(libraryBatchPanelState.filterSnapshot.values))$('#'+id).value=value;
+  libraryPage=libraryBatchPanelState.filterSnapshot.page;
+  libraryBatchPanelState.filterSnapshot=null;
+  await loadLibrary();renderLibrary();renderBatchSummary();
+ }
+ libraryBatchPanelState.resumeAfterFix=false;
+ view('library');
+ if(!$('#libraryBatchDialog').open)$('#libraryBatchDialog').showModal();
+ await requestLibraryBatchPreview();
+}
+async function associateFolderFromBatch(folderId){
+ if(!folderId)throw Error('Esta mídia não informa uma pasta associável');
+ if(!libraryBatchPanelState.filterSnapshot)libraryBatchPanelState.filterSnapshot={values:currentLibraryFilters(),page:libraryPage};
+ libraryBatchPanelState.resumeAfterFix=true;
+ $('#libraryBatchDialog').close();
+ try{
+  $('#librarySearch').value='';$('#libraryPath').value='';$('#libraryProduct').value='';$('#libraryType').value='VIDEO';
+  $('#libraryStatus').value='';$('#libraryDecision').value='';$('#libraryGroupView').value='REQUIRES_ATTENTION';
+  const params=new URLSearchParams({group_view:'REQUIRES_ATTENTION',type:'VIDEO',page:'1',page_size:'20'});
+  const first=await fetch('/api/publisher/library/groups?'+params),firstBody=await first.json();
+  if(!first.ok)throw Error(firstBody.error||'Não foi possível localizar a pasta na Biblioteca');
+  let targetPage=null;
+  for(let page=1;page<=(firstBody.pages||1);page++){
+   let body=firstBody;
+   if(page>1){const response=await fetch('/api/publisher/library/groups?'+new URLSearchParams({...Object.fromEntries(params),page:String(page)}));body=await response.json();if(!response.ok)throw Error(body.error||'Não foi possível localizar a pasta na Biblioteca');}
+   if((body.groups||[]).some(group=>group.group_type==='UNASSIGNED_FOLDER'&&(group.folder_ids||[]).some(id=>String(id)===String(folderId)))){targetPage=page;break;}
+  }
+  if(targetPage===null)throw Error('A pasta não está visível em Requer atenção; revise os filtros da Biblioteca');
+  libraryPage=targetPage;await loadLibrary();renderLibrary();renderBatchSummary();view('library');
+  const picker=productPickerComponents.get(`folder:${folderId}`);
+  if(!picker?.input?.isConnected)throw Error('O seletor da pasta não está disponível nesta página');
+  picker.input.scrollIntoView({block:'center'});picker.input.focus();
+  notice('Escolha um produto e confirme “Associar produto à pasta”. A seleção do lote será preservada.');
+ }catch(error){await returnToLibraryBatchPanel();throw error;}
+}
+async function openProductCaptionFromBatch(productId){
+ if(!productId)throw Error('Produto não identificado');
+ libraryBatchPanelState.resumeAfterFix=true;$('#libraryBatchDialog').close();
+ try{
+  productScope='current';$('#productSearch').value='';await loadProductWorkspace();
+  let product=visibleProducts().find(item=>Number(item.id)===Number(productId));
+  if(!product){productScope='no_current';await loadProductWorkspace();product=visibleProducts().find(item=>Number(item.id)===Number(productId));}
+  if(!product)throw Error('Produto não encontrado; a seleção do lote foi preservada');
+  fillForm($('#productForm'),product);renderProductEditor(product);view('products');
+  field($('#productForm'),'default_caption').focus();$('#productForm').scrollIntoView({block:'start'});
+  notice('Configure a legenda padrão do produto e salve. A Biblioteca revalidará esta seleção; o texto será copiado ao Draft na criação.');
+ }catch(error){await returnToLibraryBatchPanel();throw error;}
+}
+$('#libraryBatchDialog').addEventListener('close',()=>{libraryBatchPanelState.request++;});
+$('#libraryBatchClose').onclick=closeLibraryBatchPanel;$('#libraryBatchCancel').onclick=closeLibraryBatchPanel;
+$('#libraryBatchForm').addEventListener('input',event=>{if(event.target.name==='name')scheduleLibraryBatchPreview();});
+$('#libraryBatchForm').addEventListener('change',event=>{
+ if(event.target.name==='preset_id'){
+  const preset=state.presets.find(item=>item.id===Number(event.target.value));
+  if(preset?.account_id)field($('#libraryBatchForm'),'account_id').value=String(preset.account_id);
+ }
+ scheduleLibraryBatchPreview();
+});
+$('#libraryBatchForm').onsubmit=event=>{event.preventDefault();task(async()=>{
+ const form=event.currentTarget;if(!form.reportValidity())return;
+ if($('#libraryBatchSubmit').disabled||!libraryBatchPanelState.preview?.can_create)return;
+ libraryBatchPanelState.submitting=true;$('#libraryBatchSubmit').disabled=true;
+ let result;
+ try{
+  result=await api('/library-batches',libraryBatchPayload());
+ }catch(error){
+  libraryBatchPanelState.submitting=false;
+  const rejected=error.message.includes('BATCH_PREFLIGHT_FAILED');
+  const message=rejected?'A prontidão mudou; nenhuma criação parcial foi feita. Revise o resultado atualizado.':'Não foi possível confirmar o resultado da solicitação. Confira a Fila antes de tentar novamente.';
+  $('#libraryBatchReadiness').insertAdjacentHTML('afterbegin',`<p class="status error">${esc(message)}</p>`);
+  await requestLibraryBatchPreview();
+  notice(rejected?'A prontidão mudou. Nenhum lote parcial foi criado; revise os bloqueios.':message,true,'library');
+  return;
+ }
+ librarySelected.clear();libraryBatchPanelState.preview=null;libraryBatchPanelState.submitting=false;
+ $('#libraryBatchDialog').close();form.reset();view('library');
+ renderLibrary();renderBatchSummary();
+ $('#libraryBatchSuccessCount').textContent=`${result.draft_ids.length} Draft(s) adicionados à Fila. Nenhum worker foi iniciado.`;
+ $('#libraryBatchSuccess').hidden=false;
+ try{await refresh();view('library');}
+ catch(error){notice('Lote criado, mas a tela não pôde ser atualizada. Consulte a Fila antes de iniciar qualquer ação.',true,'library');}
+ });};
+$('#libraryBatchGoQueue').onclick=()=>view('queue');
+$('#createBatchFromLibrary').onclick=openLibraryBatchPanel;
+document.addEventListener('click',event=>{const button=event.target.closest('[data-batch-fix]');if(!button)return;task(async()=>{
+ const action=button.dataset.batchFix,productId=Number(button.dataset.productId),folderId=button.dataset.folderId;
+ if(action==='RESTORE_PRODUCT'){
+  const product=state.products.find(item=>Number(item.id)===productId),name=product?.short_name||product?.name||`produto ${productId}`;
+  if(!confirm(`Restaurar o produto “${name}”? Associações e histórico serão preservados.`))return;
+  await api('/products/bulk',{action:'restore',ids:[productId],human_confirmed:true});
+  await refresh();await requestLibraryBatchPreview();notice('Produto restaurado. A seleção foi revalidada; nenhum lote foi criado.');
+ }else if(action==='ASSOCIATE_PRODUCT')await associateFolderFromBatch(folderId);
+ else if(action==='CONFIGURE_CAPTION')await openProductCaptionFromBatch(productId);
+ });});
 async function reloadLibrary(){libraryPage=1;await loadLibrary();renderLibrary();renderBatchSummary();}
 ['#librarySearch','#libraryPath','#libraryProduct','#libraryType','#libraryGroupView','#libraryStatus','#libraryDecision'].forEach(selector=>{const el=$(selector);if(el){el.oninput=()=>task(reloadLibrary,'library');el.onchange=()=>task(reloadLibrary,'library');}});
 function selectVisibleLibrary(checked){const items=visibleLibraryItems();if(checked&&new Set([...librarySelected,...items.map(item=>String(item.drive_file_id))]).size>100){notice('A seleção excederia 100 vídeos. Selecione menos itens.',true,'library');renderLibrary();return;}uiState.setLibraryPageSelection(items,checked);renderLibrary();renderBatchSummary();}
@@ -358,7 +504,6 @@ async function decideSelected(decision){if(!librarySelected.size)throw Error('Se
 $('#markLibraryValid').onclick=()=>task(()=>decideSelected('VALID'));
 $('#markLibraryIgnored').onclick=()=>task(()=>decideSelected('IGNORED'));
 $('#assignLibraryProduct').onclick=()=>task(async()=>{if(librarySelected.size!==1)throw Error('Selecione exatamente um vídeo para criar o override');const product_id=$('#libraryAssignProduct').value;if(!product_id)throw Error('Selecione um produto');await api('/media-product',{drive_file_ids:[...librarySelected],product_id:Number(product_id)});$('#libraryAssignProduct').value='';$('#libraryAssignProductSearch').value='';await refresh();notice('Override aplicado somente a este vídeo');});
-$('#createBatchFromLibrary').onclick=()=>{const summary=uiState.librarySelectionSummary();if(!summary.canCreate){notice('A seleção precisa conter apenas mídias prontas, com produto e metadados confirmados',true,'library');return;}renderBatchSummary();view('batch');};
 $('#libraryPrevious').onclick=()=>task(async()=>{if(libraryPage<=1)return;libraryPage-=1;await loadLibrary();renderLibrary();renderBatchSummary();});
 $('#libraryNext').onclick=()=>task(async()=>{if(libraryPage>=(state.library?.pages||1))return;libraryPage+=1;await loadLibrary();renderLibrary();renderBatchSummary();});
 document.addEventListener('click',e=>{const button=e.target.closest('[data-library-group-toggle]');if(!button)return;task(async()=>{const key=button.dataset.libraryGroupToggle;if(expandedLibraryGroups.has(key)){if(key.startsWith('folder:'))closeProductPicker(key,{rerender:false});expandedLibraryGroups.delete(key);}else{expandedLibraryGroups.add(key);if(!libraryGroupPages.has(key))await loadLibraryGroup(key);}renderLibrary();renderBatchSummary();});});
@@ -371,7 +516,7 @@ $('#batchForm').onsubmit=e=>{e.preventDefault();task(async()=>{if(!librarySelect
 function review(id,verificationOnly=false){reviewing=id;const d=state.drafts.find(x=>x.id===id);const evidence=state.logs.find(l=>l.draft_id===id&&l.screenshot_path);const ambiguous=PublisherUIState.ambiguousDraftPresentation(d)||(verificationOnly?{title:'Status a verificar',message:'Este vídeo pode já ter produzido efeito no TikTok. Confirme o estado antes de qualquer nova tentativa.',action:'Abrir Studio para verificar'}:null);$('#reviewBody').innerHTML=`<strong>${esc(d.filename)}</strong><div>Produto interno: ${esc(d.product_name)}<br>${esc(d.account_name)} · ${esc(d.queue_display?.label||d.status)}<br>Mídia: ${esc(d.media_status||'Legado local')}</div>${ambiguous?`<section class="safety-message"><strong>${esc(ambiguous.title)}</strong><p>${esc(ambiguous.message)}</p><button data-studio="${id}" ${state.worker_config?.tiktok_actions_paused?'disabled':''}>${esc(ambiguous.action)}</button></section>`:''}${d.remote_file_id&&d.media_status!=='CONSUMED'?`<a href="https://drive.google.com/file/d/${encodeURIComponent(d.remote_file_id)}/view" target="_blank" rel="noopener">Ver no Drive ↗</a>`:''}<pre>${esc(d.caption)}</pre><p>Horário desejado: ${d.scheduled_at?esc(new Date(d.scheduled_at).toLocaleString()):'Não definido'}</p><p>${Object.entries({upload:'Vídeo enviado',caption:'Legenda preenchida',settings:'Configurações preparadas',durable:'Draft persistido'}).map(([k,label])=>`${d.checklist[k]?'✓':'○'} ${label}`).join(' · ')}</p><p class="shopping-warning">Produto TikTok Shop ainda precisa ser vinculado manualmente.</p>${d.error_code?`<details><summary>Detalhes técnicos</summary><p>${esc(d.error_code)}</p></details>`:''}${ambiguous?'':`<div class="actions"><button data-studio="${id}" ${state.worker_config?.tiktok_actions_paused?'disabled':''}>Abrir / continuar no Studio</button><button data-complete="published">Registrar publicado</button><button data-complete="scheduled">Registrar agendado</button>${!d.confirmed_at?'<button data-complete="reset">Reabrir draft</button>':''}${d.media_status==='CONSUMED_PENDING_DELETE'?`<button data-cleanup="${id}">Repetir limpeza remota</button>`:''}</div>`}${evidence?`<a href="/api/publisher?evidence=${evidence.id}" target="_blank">Última evidência</a><img alt="Última tela do Studio" src="/api/publisher?evidence=${evidence.id}">`:''}`;$('#reviewDialog').showModal();}
 document.addEventListener('change',e=>{if(e.target.dataset.media){const id=Number(e.target.dataset.media);e.target.checked?remoteSelected.add(id):remoteSelected.delete(id);renderMedia();}if(e.target.dataset.library){const item=visibleLibraryItems().find(row=>String(row.drive_file_id)===String(e.target.dataset.library));if(e.target.checked&&librarySelected.size>=100&&!librarySelected.has(String(e.target.dataset.library))){e.target.checked=false;notice('O lote aceita no máximo 100 vídeos.',true,'library');return;}uiState.setLibrarySelection(e.target.dataset.library,e.target.checked,item);renderLibrary();renderBatchSummary();}});
 document.addEventListener('click',e=>{const el=e.target.closest('[data-delete-library]');if(el)task(async()=>{if(!confirm(`Excluir permanentemente "${el.dataset.deleteFilename}" do Drive? Esta ação não cria draft e não pode ser desfeita.`))return;el.disabled=true;try{await api('/media-delete',{drive_file_id:el.dataset.deleteLibrary,filename:el.dataset.deleteFilename,size:Number(el.dataset.deleteSize),human_confirmed:true});await refresh();notice('Arquivo excluído do Drive e removido da Biblioteca.');}finally{el.disabled=false;}});});
-document.addEventListener('click',e=>{const el=e.target.closest('[data-folder-assign]');if(el)task(async()=>{const selectedProduct=document.querySelector(`[data-folder-product="${CSS.escape(el.dataset.folderAssign)}"]`);if(!selectedProduct?.value)throw Error('Selecione um produto para a pasta');await api('/media-product',{scope:'folder',folder_id:el.dataset.folderAssign,product_id:Number(selectedProduct.value)});await refresh();notice('Produto associado à pasta. Arquivos herdáveis atuais e futuros usarão essa associação.');});});
+document.addEventListener('click',e=>{const el=e.target.closest('[data-folder-assign]');if(el)task(async()=>{const selectedProduct=document.querySelector(`[data-folder-product="${CSS.escape(el.dataset.folderAssign)}"]`);if(!selectedProduct?.value)throw Error('Selecione um produto para a pasta');await api('/media-product',{scope:'folder',folder_id:el.dataset.folderAssign,product_id:Number(selectedProduct.value)});await refresh();notice('Produto associado à pasta. Arquivos herdáveis atuais e futuros usarão essa associação.');if(libraryBatchPanelState.resumeAfterFix)await returnToLibraryBatchPanel();});});
 $('#refreshFolderCatalog').onclick=()=>task(loadFolderCatalog);
 document.addEventListener('click',e=>{const el=e.target.closest('[data-catalog-group]');if(el){activeFolderCatalogGroup=el.dataset.catalogGroup;folderCatalogSelected.clear();renderFolderCatalog();}});
 document.addEventListener('change',e=>{if(e.target.dataset.folderReviewSelect){const id=String(e.target.dataset.folderReviewSelect);e.target.checked?folderCatalogSelected.add(id):folderCatalogSelected.delete(id);renderFolderCatalog();}});
