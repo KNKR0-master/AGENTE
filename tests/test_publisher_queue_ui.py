@@ -63,6 +63,79 @@ class QueueUITests(unittest.TestCase):
         self.assertFalse(result['bulkRemove'])
         self.assertTrue(result['verify'])
 
+    def test_active_queue_separates_pending_review_paused_and_completed_history(self):
+        result = self.evaluate("""
+          const caps={can_edit:true,can_reorder:true,can_remove:true,can_start:true};
+          const drafts=[
+            {id:17,batch_id:1,queue_position:2,status:'DRAFT',filename:'second.mp4',queue_capabilities:caps},
+            {id:2,batch_id:1,queue_position:1,status:'DRAFT',filename:'first.mp4',queue_capabilities:caps},
+            {id:40,batch_id:4,queue_position:1,status:'READY_FOR_REVIEW',filename:'review.mp4',persistence_status:'PERSISTED',queue_capabilities:{can_edit:false}},
+            {id:9,batch_id:3,queue_position:1,status:'MANUAL_ACTION_REQUIRED',filename:'unknown.mp4',upload_status:'TRANSFER_UNKNOWN',queue_capabilities:{can_verify:true}},
+            {id:11,batch_id:3,queue_position:2,status:'DRAFT',filename:'pending-in-execution.mp4',queue_capabilities:{can_start:false}},
+            {id:50,batch_id:5,queue_position:1,status:'PUBLISHED',filename:'published.mp4',queue_capabilities:{}}
+          ];
+          const snapshot={drafts,executions:[
+            {id:301,batch_id:4,status:'COMPLETED'},
+            {id:300,batch_id:3,status:'PAUSED'}
+          ],execution_items:[
+            {execution_id:301,batch_id:4,draft_batch_id:4,draft_id:40,execution_position:1},
+            {execution_id:300,batch_id:3,draft_batch_id:3,draft_id:9,execution_position:2},
+            {execution_id:300,batch_id:3,draft_batch_id:3,draft_id:11,execution_position:1}
+          ],queue_preflights:{1:{items:[{draft_id:2,ready:true},{draft_id:17,ready:true}]}}};
+          const groups=ui.queueGroups(snapshot);
+          console.log(JSON.stringify(groups.map(g=>({key:g.key,source:g.source,batchId:g.batchId,status:g.execution?.status,
+            ids:g.drafts.map(d=>d.id),positions:g.drafts.map(d=>g.positions.get(d.id))}))));
+        """)
+        by_source = {item['source']: item for item in result}
+        self.assertEqual(by_source['pending']['ids'], [2, 17])
+        self.assertEqual(by_source['pending']['positions'], [1, 2])
+        self.assertEqual(by_source['execution']['ids'], [11, 9])
+        self.assertEqual(by_source['execution']['positions'], [1, 2])
+        self.assertEqual(by_source['execution']['status'], 'PAUSED')
+        self.assertEqual(by_source['review']['ids'], [40])
+        self.assertNotIn(50, [draft_id for group in result for draft_id in group['ids']])
+
+    def test_completed_execution_is_not_treated_as_active(self):
+        result = self.evaluate("""
+          const snapshot={drafts:[{id:1,batch_id:2,queue_position:1,status:'PUBLISHED',filename:'done.mp4'}],
+            executions:[{id:7,batch_id:2,status:'COMPLETED'}],
+            execution_items:[{execution_id:7,batch_id:2,draft_id:1,execution_position:1}]};
+          console.log(JSON.stringify(ui.queueGroups(snapshot)));
+        """)
+        self.assertEqual(result, [])
+
+    def test_cancelled_batch_drafts_are_absent_from_active_projection(self):
+        result = self.evaluate("""
+          const snapshot={drafts:[
+            {id:4,batch_id:8,queue_position:1,status:'ARCHIVED',filename:'cancelled.mp4'}
+          ],executions:[],execution_items:[]};
+          console.log(JSON.stringify(ui.queueGroups(snapshot)));
+        """)
+        self.assertEqual(result, [])
+
+    def test_running_paused_and_ambiguous_drafts_remain_active_in_execution_order(self):
+        result = self.evaluate("""
+          const drafts=[
+            {id:19,batch_id:7,queue_position:1,status:'PREPARING',upload_status:'UPLOAD_STARTED'},
+            {id:4,batch_id:7,queue_position:2,status:'MANUAL_ACTION_REQUIRED',upload_status:'TRANSFER_UNKNOWN'},
+            {id:30,batch_id:8,queue_position:1,status:'MANUAL_ACTION_REQUIRED',media_status:'NEEDS_RECONCILIATION'}
+          ];
+          const snapshot={drafts,executions:[
+            {id:71,batch_id:8,status:'PAUSED'},
+            {id:70,batch_id:7,status:'RUNNING'}
+          ],execution_items:[
+            {execution_id:70,batch_id:7,draft_id:19,execution_position:2},
+            {execution_id:70,batch_id:7,draft_id:4,execution_position:1},
+            {execution_id:71,batch_id:8,draft_id:30,execution_position:1}
+          ]};
+          console.log(JSON.stringify(ui.queueGroups(snapshot).map(group=>({
+            status:group.execution?.status,ids:group.drafts.map(draft=>draft.id),positions:group.drafts.map(draft=>group.positions.get(draft.id))
+          }))));
+        """)
+        by_status = {group['status']: group for group in result}
+        self.assertEqual(by_status['RUNNING'], {'status': 'RUNNING', 'ids': [4, 19], 'positions': [1, 2]})
+        self.assertEqual(by_status['PAUSED'], {'status': 'PAUSED', 'ids': [30], 'positions': [1]})
+
     def test_ambiguous_remote_result_is_not_presented_as_ready(self):
         transfer = draft_queue_presentation({'status': 'UPLOAD_FAILED', 'upload_status': 'TRANSFER_UNKNOWN'})
         reconcile = draft_queue_presentation({'status': 'MANUAL_ACTION_REQUIRED'},

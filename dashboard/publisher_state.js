@@ -227,31 +227,57 @@
   function queueGroups(snapshot, filters = {}) {
     const executions = snapshot.executions || [];
     const items = snapshot.execution_items || [];
+    const draftsById = new Map((snapshot.drafts || []).map(draft => [draft.id, draft]));
+    const activeDraftIds = new Set();
+    const groups = [];
+    const query = normalizeSearch(filters.search);
+    const matches = (draft, batchId) =>
+      (!filters.status || draft.status === filters.status) &&
+      (!filters.batch || draft.batch_id === Number(filters.batch)) &&
+      (!filters.account || draft.account_id === Number(filters.account)) &&
+      (!filters.product || draft.product_id === Number(filters.product)) &&
+      (!filters.readiness || (filters.readiness === 'READY') === !!snapshot.queue_preflights?.[batchId]?.items?.find(item => item.draft_id === draft.id)?.ready) &&
+      (!query || normalizeSearch([draft.filename, draft.product_short_name, draft.product_name, draft.caption].join(' ')).includes(query));
+
+    for (const execution of executions.filter(item => !['COMPLETED', 'SUCCESS'].includes(item.status))) {
+      const executionItems = items.filter(item => item.execution_id === execution.id)
+        .sort((a, b) => (a.execution_position ?? Number.MAX_SAFE_INTEGER) - (b.execution_position ?? Number.MAX_SAFE_INTEGER) || a.draft_id - b.draft_id);
+      const all = executionItems.map(item => draftsById.get(item.draft_id)).filter(draft => draft && draft.status !== 'ARCHIVED');
+      if (!all.length) continue;
+      const positions = new Map(executionItems.map(item => [item.draft_id, item.execution_position]));
+      const batchIds = [...new Set(all.map(draft => draft.batch_id).filter(id => id != null))];
+      const batchId = batchIds.length === 1 ? batchIds[0] : null;
+      const filtered = all.filter(draft => matches(draft, draft.batch_id));
+      for (const draft of all) activeDraftIds.add(draft.id);
+      groups.push({key: `execution:${execution.id}`, source: 'execution', batchId, batchIds,
+        all, drafts: filtered, execution, frozen: true, positions,
+        preflight: batchId == null ? null : snapshot.queue_preflights?.[batchId],
+        fullyVisible: filtered.length === all.length});
+    }
+
     const byBatch = new Map();
     for (const draft of snapshot.drafts || []) {
-      if (!byBatch.has(draft.batch_id)) byBatch.set(draft.batch_id, []);
-      byBatch.get(draft.batch_id).push(draft);
+      if (activeDraftIds.has(draft.id) || ['ARCHIVED', 'PUBLISHED', 'SCHEDULED'].includes(draft.status)) continue;
+      const key = draft.batch_id == null ? 'unbatched' : String(draft.batch_id);
+      if (!byBatch.has(key)) byBatch.set(key, {batchId: draft.batch_id, all: []});
+      byBatch.get(key).all.push(draft);
     }
-    return [...byBatch].map(([batchId, all]) => {
-      const execution = executions.find(e => e.batch_id === batchId);
-      const frozen = !!items.find(i => i.batch_id === batchId);
-      const positions = new Map(items.filter(i => i.execution_id === execution?.id)
-        .map(i => [i.draft_id, i.execution_position]));
-      const ordered = [...all].filter(d => filters.status === 'ARCHIVED' ? d.status === 'ARCHIVED' : d.status !== 'ARCHIVED').sort((a, b) =>
-        ((frozen ? positions.get(a.id) : a.queue_position) ?? Number.MAX_SAFE_INTEGER) -
-        ((frozen ? positions.get(b.id) : b.queue_position) ?? Number.MAX_SAFE_INTEGER) || a.id - b.id);
-      const query = normalizeSearch(filters.search);
-      const drafts = ordered.filter(d =>
-        (!filters.status || d.status === filters.status) &&
-        (!filters.batch || d.batch_id === Number(filters.batch)) &&
-        (!filters.account || d.account_id === Number(filters.account)) &&
-        (!filters.product || d.product_id === Number(filters.product)) &&
-        (!filters.readiness || (filters.readiness === 'READY') === !!snapshot.queue_preflights?.[batchId]?.items?.find(i => i.draft_id === d.id)?.ready) &&
-        (!query || normalizeSearch([d.filename, d.product_short_name, d.product_name, d.caption].join(' ')).includes(query)));
-      return {batchId, all: ordered, drafts, execution, frozen,
-        preflight: snapshot.queue_preflights?.[batchId], fullyVisible: drafts.length === ordered.length,
-        positions};
-    }).filter(group => group.drafts.length).sort((a, b) => Number(b.batchId) - Number(a.batchId));
+    for (const {batchId, all} of byBatch.values()) {
+      all.sort((a, b) => (a.queue_position ?? Number.MAX_SAFE_INTEGER) - (b.queue_position ?? Number.MAX_SAFE_INTEGER) || a.id - b.id);
+      const positions = new Map(all.map(draft => [draft.id, draft.queue_position]));
+      const source = all.every(draft => ['DRAFT', 'CAPTION_MISSING'].includes(draft.status)) ? 'pending' : 'review';
+      const filtered = all.filter(draft => matches(draft, batchId));
+      groups.push({key: `drafts:${batchId ?? 'unbatched'}`, source, batchId,
+        batchIds: batchId == null ? [] : [batchId], all, drafts: filtered,
+        execution: null, frozen: false, positions,
+        preflight: batchId == null ? null : snapshot.queue_preflights?.[batchId],
+        fullyVisible: filtered.length === all.length});
+    }
+    return groups.filter(group => group.drafts.length).sort((a, b) => {
+      if (a.source === 'execution' && b.source !== 'execution') return -1;
+      if (b.source === 'execution' && a.source !== 'execution') return 1;
+      return Number(b.batchId || 0) - Number(a.batchId || 0) || String(a.key).localeCompare(String(b.key));
+    });
   }
 
   function reorderedIds(group, draftId, targetId) {

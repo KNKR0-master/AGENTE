@@ -3,6 +3,9 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 let state = {drafts:[],products:[],accounts:[],presets:[],batches:[],logs:[],review_sessions:[],account_protection:[],library:{groups:[],page:1,pages:0,total_groups:0},folderCatalog:[]};
 const uiState = window.PublisherUIState.create();
 let selected = new Set(), productSelected = new Set(), editing = [], librarySelected = uiState.librarySelected, reviewing = null, libraryPage = 1;
+let historyState = {executions:[],totalCount:0,nextBeforeId:null,hasMore:false,initialized:false,loadedMore:false,loading:false};
+let historyExpanded = false, renamingBatchId = null, renamingBatchValue = '', configuringBatchId = null, queueRenderDeferred = false;
+const expandedHistoryExecutions = new Set(), expandedQueueDraftDetails = new Set();
 const expandedLibraryGroups = new Set(), libraryGroupPages = new Map();
 const productPickerStates = new Map(), productPickerComponents = new Map();
 let activeProductPickerKey = null, libraryRenderDeferred = false;
@@ -128,6 +131,7 @@ function render(){
  mountProductCombobox($('#libraryProductCombobox'),{input:$('#libraryAssignProductSearch'),results:$('#libraryProductResults'),hidden:$('#libraryAssignProduct')});
  const status=$('#filter-status').value;$('#filter-status').innerHTML='<option value="">Todos ativos</option>'+state.statuses.map(s=>`<option value="${esc(s)}">${esc(state.queue_status_labels?.[s]||'Estado a verificar')}</option>`).join('');$('#filter-status').value=status;
  renderQueue();
+ renderExecutionHistory();
  renderAccounts();
  $('#presetList').innerHTML=state.presets.map(p=>`<div class="record"><div>${esc(p.name)}<small>${esc(p.visibility)} · Comentários ${p.comments?'ON':'OFF'}</small></div><button data-preset-edit="${p.id}">Editar</button></div>`).join('');
  $('#logList').innerHTML=state.logs.map(l=>`<div class="log"><small>${esc(new Date(l.created_at).toLocaleString())} · Draft ${l.draft_id??'—'} · ${esc(l.step)} / ${esc(l.status)}</small><p>${esc(l.message)}</p>${l.screenshot_path?`<a target="_blank" href="/api/publisher?evidence=${l.id}">Ver evidência</a>`:''}</div>`).join('')||'<p>Nenhuma execução.</p>';
@@ -139,30 +143,93 @@ const queueBlockerLabels={DRAFT_NOT_STARTABLE:'Este item ainda não pode ser pre
 function queueBlocker(code){return queueBlockerLabels[code]||'Revise os dados deste item';}
 function selectedDrafts(){return state.drafts.filter(d=>selected.has(d.id));}
 function queueActionState(capability){const rows=selectedDrafts();return {ok:PublisherUIState.bulkAllowed(rows,capability),blocked:rows.filter(d=>!d.queue_capabilities?.[capability]).length};}
-function renderQueue(){selected=new Set([...selected].filter(id=>state.drafts.some(d=>d.id===id&&d.status!=='ARCHIVED')));const groups=queueGroups(),rows=groups.flatMap(g=>g.drafts),chosen=selectedDrafts();
- $('#count').textContent=`(${rows.length})`;$('#selectedCount').textContent=`${selected.size} selecionados`;$('#selectAll').checked=rows.length>0&&rows.every(d=>selected.has(d.id));
+function renderQueue(){
+ const container=$('#queueBatches'),activeElement=document.activeElement;
+ if(activeElement?.matches('[data-batch-rename-input]')&&container.contains(activeElement)){queueRenderDeferred=true;return;}
+ for(const detail of container.querySelectorAll('[data-queue-details]'))detail.open?expandedQueueDraftDetails.add(detail.dataset.queueDetails):expandedQueueDraftDetails.delete(detail.dataset.queueDetails);
+ const allGroups=PublisherUIState.queueGroups(state),activeIds=new Set(allGroups.flatMap(group=>group.all.map(d=>d.id)));
+ selected=new Set([...selected].filter(id=>activeIds.has(id)));
+ const groups=queueGroups(),rows=groups.flatMap(group=>group.drafts),chosen=selectedDrafts();
+ $('#count').textContent=`(${rows.length} vídeos · ${groups.length} grupos)`;$('#selectedCount').textContent=`${selected.size} selecionados`;$('#selectAll').checked=rows.length>0&&rows.every(d=>selected.has(d.id));
  const blockedAccount=(state.account_protection||[]).some(item=>item.blocked),runtimeBlocked=state.worker_config?.persistence_workflow_version!==1||!!state.worker_config?.tiktok_actions_paused;
  $('#bulkEdit').disabled=!queueActionState('can_edit').ok;$('#useProductCaption').disabled=!queueActionState('can_edit').ok;$('#archive').disabled=!queueActionState('can_remove').ok;
- $('#prepare').disabled=blockedAccount||runtimeBlocked||!queueActionState('can_start').ok||chosen.some(d=>!state.queue_preflights?.[d.batch_id]?.items?.find(i=>i.draft_id===d.id)?.ready);
+ $('#prepare').disabled=blockedAccount||runtimeBlocked||!queueActionState('can_start').ok||chosen.some(d=>!state.queue_preflights?.[d.batch_id]?.items?.find(item=>item.draft_id===d.id)?.ready);
  $('#duplicate').disabled=chosen.length!==1;
- const impeded=['can_edit','can_remove','can_start'].map(cap=>queueActionState(cap).blocked);$('#queueSelectionReason').textContent=chosen.length&&Math.max(...impeded)>0?`${Math.max(...impeded)} item(ns) impedem algumas ações`:'';
- if(!groups.length){const anyActive=state.drafts.some(d=>d.status!=='ARCHIVED');$('#queueBatches').innerHTML=`<p class="empty">${anyActive?'Nenhum item corresponde aos filtros.':'Nenhum lote pendente.'}</p>`;return;}
- $('#queueBatches').innerHTML=groups.map(group=>{
-  const batch=state.batches.find(b=>b.id===group.batchId),pre=group.preflight||{total_items:group.all.length,ready_items:0,blocked_items:group.all.length,warning_items:0,items:[]},execution=group.execution;
-  const running=execution&&['QUEUED','RUNNING','PROCESSING'].includes(execution.status),paused=execution&&['PAUSED','PAUSED_MANUAL_ACTION_REQUIRED'].includes(execution.status),done=execution&&['SUCCESS','COMPLETED'].includes(execution.status);
-  const batchLabel=running?'Em execução':paused?'Pausado':done?'Concluído':execution?'Requer verificação':pre.blocked_items?'Requer correção':'Pronto para preparar';
-  const startBlocked=!!execution||pre.blocked_items>0||blockedAccount||runtimeBlocked||!group.all.every(d=>d.queue_capabilities?.can_start);
-  const progress=execution?`<div class="queue-progress"><progress value="${Number(execution.succeeded||0)+Number(execution.failed||0)+Number(execution.waiting_manual||0)}" max="${Number(execution.total||1)}"></progress><span>${Number(execution.succeeded||0)} concluídos · ${Number(execution.processing||0)} em andamento · ${Number(execution.queued||0)} aguardando · ${Number(execution.waiting_manual||0)} em revisão</span></div>`:'';
-  const pauseCode=paused?state.execution_items?.find(i=>i.execution_id===execution.id&&i.error_code)?.error_code:null;
-  return `<section class="queue-batch" aria-label="${esc(batch?.name||`Lote ${group.batchId}`)}"><div class="queue-batch-heading"><div><h3>${esc(batch?.name||`Lote ${group.batchId}`)}</h3><p>${pre.total_items} vídeo(s) · ${pre.ready_items} pronto(s) · ${pre.blocked_items} precisam de correção${pre.warning_items?` · ${pre.warning_items} com aviso`:''}</p></div><span class="queue-state">${batchLabel}</span><button type="button" data-start-batch="${group.batchId}" class="primary" ${startBlocked?'disabled':''} title="${startBlocked&&pre.blocked_items?`${pre.blocked_items} itens precisam ser corrigidos antes de continuar`:''}">Preparar lote</button></div>${pauseCode?`<p class="queue-batch-warning">${esc(queueBlocker(pauseCode))}</p>`:''}${pre.blocked_items&&!execution?`<p class="queue-batch-warning">${pre.blocked_items} item(ns) precisam ser corrigidos antes de continuar.</p>`:''}${progress}<div class="queue-items">${group.drafts.map((d,index)=>{
-   const caps=d.queue_capabilities||{},item=pre.items.find(i=>i.draft_id===d.id),position=group.frozen?group.positions.get(d.id):d.queue_position,display=d.queue_display||{label:'Estado a verificar',kind:'attention',message:''};
-   const reordering=!group.frozen&&group.fullyVisible&&group.all.every(x=>x.queue_capabilities?.can_reorder);
+ const impeded=['can_edit','can_remove','can_start'].map(capability=>queueActionState(capability).blocked);$('#queueSelectionReason').textContent=chosen.length&&Math.max(...impeded)>0?`${Math.max(...impeded)} item(ns) impedem algumas ações`:'';
+ if(!groups.length){const anyActive=allGroups.length>0;container.innerHTML=anyActive?'<p class="empty">Nenhum item corresponde aos filtros.</p>':'<div class="queue-empty"><p>Nenhum lote ativo.</p><button type="button" data-queue-go-library class="primary">Ir para Biblioteca</button></div>';return;}
+ container.innerHTML=groups.map(group=>{
+  const batch=state.batches.find(item=>item.id===group.batchId),execution=group.execution,caps=batch?.queue_capabilities||{};
+  const groupIds=new Set(group.all.map(draft=>draft.id)),rawPre=group.source==='pending'?state.queue_preflights?.[group.batchId]:null;
+  const preItems=(rawPre?.items||[]).filter(item=>groupIds.has(item.draft_id));
+  const pre={total_items:group.all.length,items:preItems,ready_items:preItems.filter(item=>item.ready).length,
+    blocked_items:preItems.filter(item=>!item.ready).length,warning_items:preItems.filter(item=>item.warnings?.length).length};
+  const running=execution&&['QUEUED','RUNNING','PROCESSING'].includes(execution.status),paused=execution&&['PAUSED','PAUSED_MANUAL_ACTION_REQUIRED'].includes(execution.status);
+  const batchLabel=group.source==='execution'?(running?'Em execução':paused?'Pausado':'Requer ação'):
+    group.source==='pending'?(pre.blocked_items?'Requer correção':'Pronto para preparar'):
+      group.all.some(d=>['MANUAL_ACTION_REQUIRED','NEEDS_LOGIN','STUDIO_CHANGED','FAILED','UPLOAD_FAILED'].includes(d.status)||d.upload_status==='TRANSFER_UNKNOWN'||d.media_status==='NEEDS_RECONCILIATION')?'Requer ação':
+      group.all.some(d=>d.persistence_status==='PERSISTED'||d.status==='READY_FOR_REVIEW')?'Pronto para revisão':'Aguardando revisão';
+  const startBlocked=group.source!=='pending'||pre.blocked_items>0||blockedAccount||runtimeBlocked||!group.all.every(d=>d.status==='DRAFT'&&d.queue_capabilities?.can_start);
+  const progress=execution?`<div class="queue-progress"><progress value="${Number(execution.succeeded||0)+Number(execution.failed||0)+Number(execution.waiting_manual||0)}" max="${Number(execution.total||1)}"></progress><span>Execução #${execution.id} · ${Number(execution.succeeded||0)} concluídos · ${Number(execution.processing||0)} em andamento · ${Number(execution.queued||0)} aguardando · ${Number(execution.waiting_manual||0)} em revisão</span></div>`:'';
+  const pauseCode=paused?state.execution_items?.find(item=>item.execution_id===execution.id&&item.error_code)?.error_code:null;
+  const batchTitle=group.source==='execution'&&group.batchId==null?`Execução #${execution.id} · múltiplos lotes`:batch?.name||`Lote ${group.batchId??'sem lote'}`;
+  const renameTitle=renamingBatchId===group.batchId?`<form class="queue-rename-form" data-batch-rename-form="${group.batchId}"><input data-batch-rename-input data-batch-id="${group.batchId}" aria-label="Nome do lote" maxlength="160" required value="${esc(renamingBatchValue||batch?.name||'')}"><button type="submit" class="primary">Salvar</button><button type="button" data-batch-rename-cancel>Cancelar</button></form>`:`<div class="queue-batch-title"><h3>${esc(batchTitle)}</h3>${group.source==='pending'&&caps.can_rename?`<button type="button" data-batch-rename="${group.batchId}" title="Renomear lote" aria-label="Renomear ${esc(batchTitle)}">Renomear</button>`:''}</div>`;
+  const batchControls=group.source==='pending'?`<div class="queue-batch-controls">${caps.can_edit_configuration?`<button type="button" data-batch-configure="${group.batchId}">Editar conta/preset</button>`:''}${caps.can_cancel?`<button type="button" data-batch-cancel="${group.batchId}">Cancelar lote</button>`:''}</div>`:'';
+  const summary=group.source==='pending'?`${pre.total_items} Draft(s) · ${pre.ready_items} pronto(s) · ${pre.blocked_items} precisam de correção${pre.warning_items?` · ${pre.warning_items} com aviso`:''}`:
+    `${group.all.length} Draft(s) · ${group.source==='execution'?'ordem congelada da execução':'revisão pendente'}`;
+  const startButton=group.source==='pending'?`<button type="button" data-start-batch="${group.batchId}" class="primary" ${startBlocked?'disabled':''} title="${startBlocked&&pre.blocked_items?`${pre.blocked_items} itens precisam ser corrigidos antes de continuar`:''}">Preparar lote</button>`:'';
+  return `<section class="queue-batch" data-queue-batch="${esc(group.key)}" aria-label="${esc(batchTitle)}"><div class="queue-batch-heading"><div>${renameTitle}<p>${summary}</p></div><span class="queue-state">${batchLabel}</span>${startButton}${batchControls}</div>${pauseCode?`<p class="queue-batch-warning">${esc(queueBlocker(pauseCode))}</p>`:''}${group.source==='pending'&&pre.blocked_items?`<p class="queue-batch-warning">${pre.blocked_items} Draft(s) precisam ser corrigidos antes de continuar.</p>`:''}${progress}<div class="queue-items">${group.drafts.map((d,index)=>{
+   const draftCaps=d.queue_capabilities||{},item=pre.items.find(candidate=>candidate.draft_id===d.id),position=group.frozen?group.positions.get(d.id):d.queue_position,display=d.queue_display||{label:'Estado a verificar',kind:'attention',message:''};
+   const reordering=group.source==='pending'&&group.fullyVisible&&caps.can_reorder&&group.all.every(draft=>draft.queue_capabilities?.can_reorder);
    const thumbnail=d.thumbnail_link?`<img class="queue-thumbnail" src="${esc(d.thumbnail_link)}" alt="Prévia de ${esc(d.filename)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="queue-thumbnail queue-placeholder" hidden aria-hidden="true">▶</span>`:'<span class="queue-thumbnail queue-placeholder" aria-hidden="true">▶</span>';
-   const readiness=item?(item.ready?(item.warnings.length?`${item.warnings.length} aviso(s)`:'Pronto'):`${item.blockers.length} bloqueio(s)`):'Verificação pendente';
-   const actions=[caps.can_edit?`<button data-edit="${d.id}">Editar</button>`:'',caps.can_verify?`<button data-review="${d.id}" data-verification="true">Verificar status</button>`:'',d.persistence_status==='PERSISTED'?`<button data-review="${d.id}">Revisar</button>`:'',caps.can_remove?`<button data-remove-draft="${d.id}">Remover da fila</button>`:'',d.persistence_status==='PERSISTED'&&['RESERVED','CONSUMED_PENDING_DELETE'].includes(d.media_status)?`<button data-cleanup="${d.id}" ${runtimeBlocked?'disabled':''}>Finalizar consumo da mídia</button>`:''].filter(Boolean).join('')||'<span>Ação manual necessária</span>';
-   return `<article class="queue-item ${display.kind==='running'?'queue-current':''}" data-queue-draft="${d.id}" ${reordering?'draggable="true"':''}><div class="queue-order"><strong>${esc(position??'?')}</strong>${reordering?`<div class="queue-move"><button type="button" data-move="up" data-draft="${d.id}" ${index===0?'disabled':''} title="Mover para cima" aria-label="Mover ${esc(d.filename)} para cima">↑</button><button type="button" data-move="down" data-draft="${d.id}" ${index===group.drafts.length-1?'disabled':''} title="Mover para baixo" aria-label="Mover ${esc(d.filename)} para baixo">↓</button><span class="queue-drag" title="Arrastar para reordenar" aria-hidden="true">⋮⋮</span></div>`:''}</div><input type="checkbox" data-select="${d.id}" ${selected.has(d.id)?'checked':''} aria-label="Selecionar ${esc(d.filename)}"><div class="queue-media">${thumbnail}<div><strong>${esc(d.filename)}</strong><small>${esc(d.account_name)}</small></div></div><div class="queue-product"><strong>${esc(d.product_short_name||d.product_name)}</strong><small>${esc(d.caption||'Legenda não definida')}</small></div><div class="queue-status"><span class="queue-state ${esc(display.kind)}">${esc(display.label)}</span><span>${esc(readiness)}</span>${display.message?`<small>${esc(display.message)}</small>`:''}</div><div class="queue-item-actions">${actions}</div><details class="queue-details"><summary>Detalhes</summary>${item?.blockers?.length?`<p>${item.blockers.map(code=>esc(queueBlocker(code))).join(' · ')}</p>`:''}${item?.warnings?.length?`<p>${item.warnings.map(code=>esc(queueBlocker(code))).join(' · ')}</p>`:''}<details><summary>Detalhes técnicos</summary><small>Draft ${d.id} · Lote ${group.batchId} · Execução ${execution?.id||'—'} · ${esc(d.status)} · ${esc(d.error_code||'sem erro')} · ${esc(JSON.stringify({blockers:item?.blockers||[],warnings:item?.warnings||[],checkpoints:d.checklist||{}}))}</small></details></details></article>`;
+   const blockers=item?.blockers||[],warnings=item?.warnings||[];
+   const readiness=item?(item.ready?(warnings.length?`${warnings.length} aviso(s)`:'Pronto'):`${blockers.length} bloqueio(s)`):display.label;
+   const verifyLabel=d.media_status==='NEEDS_RECONCILIATION'?'Verificar / Reconciliar':'Verificar status';
+   const actions=[draftCaps.can_edit?`<button data-edit="${d.id}">Editar</button>`:'',draftCaps.can_verify?`<button data-review="${d.id}" data-verification="true">${verifyLabel}</button>`:'',d.persistence_status==='PERSISTED'?`<button data-review="${d.id}">Revisar</button>`:'',draftCaps.can_remove?`<button data-remove-draft="${d.id}">Remover da fila</button>`:'',d.persistence_status==='PERSISTED'&&['RESERVED','CONSUMED_PENDING_DELETE'].includes(d.media_status)?`<button data-cleanup="${d.id}" ${runtimeBlocked?'disabled':''}>Finalizar consumo da mídia</button>`:''].filter(Boolean).join('')||'<span>Ação manual necessária</span>';
+   const detailKey=execution?`${execution.id}:${d.id}`:`draft:${d.id}`;
+   return `<article class="queue-item ${display.kind==='running'?'queue-current':''}" data-queue-draft="${d.id}" data-execution-id="${execution?.id||''}" ${reordering?'draggable="true"':''}><div class="queue-order"><strong>${esc(position??'?')}</strong>${reordering?`<div class="queue-move"><button type="button" data-move="up" data-draft="${d.id}" ${index===0?'disabled':''} title="Mover para cima" aria-label="Mover ${esc(d.filename)} para cima">↑</button><button type="button" data-move="down" data-draft="${d.id}" ${index===group.drafts.length-1?'disabled':''} title="Mover para baixo" aria-label="Mover ${esc(d.filename)} para baixo">↓</button><span class="queue-drag" title="Arrastar para reordenar" aria-hidden="true">⋮⋮</span></div>`:''}</div><input type="checkbox" data-select="${d.id}" ${selected.has(d.id)?'checked':''} aria-label="Selecionar ${esc(d.filename)}"><div class="queue-media">${thumbnail}<div><strong>${esc(d.filename)}</strong><small>${esc(d.account_name)}</small></div></div><div class="queue-product"><strong>${esc(d.product_short_name||d.product_name)}</strong><small>${esc(d.caption||'Legenda não definida')}</small></div><div class="queue-status"><span class="queue-state ${esc(display.kind)}">${esc(display.label)}</span><span>${esc(readiness)}</span>${display.message?`<small>${esc(display.message)}</small>`:''}</div><div class="queue-item-actions">${actions}</div><details class="queue-details" data-queue-details="${esc(detailKey)}" ${expandedQueueDraftDetails.has(detailKey)?'open':''}><summary>Detalhes</summary>${blockers.length?`<p>${blockers.map(code=>esc(queueBlocker(code))).join(' · ')}</p>`:''}${warnings.length?`<p>${warnings.map(code=>esc(queueBlocker(code))).join(' · ')}</p>`:''}<details><summary>Detalhes técnicos</summary><small>Draft ${d.id} · Lote ${d.batch_id??'—'} · Execução ${execution?.id||'—'} · ${esc(d.status)} · ${esc(d.error_code||'sem erro')} · ${esc(JSON.stringify({blockers,warnings,checkpoints:d.checklist||{}}))}</small></details></details></article>`;
   }).join('')}</div></section>`;
  }).join('');
+ queueRenderDeferred=false;
+}
+function renderExecutionHistory(){
+ const incoming=state.history||{executions:[],total_count:0,has_more:false,next_before_id:null};
+ if(!historyState.initialized){historyState={...historyState,executions:incoming.executions||[],totalCount:Number(incoming.total_count||0),nextBeforeId:incoming.next_before_id,hasMore:!!incoming.has_more,initialized:true};}
+ else{
+  const merged=new Map(historyState.executions.map(execution=>[execution.id,execution]));
+  for(const execution of incoming.executions||[])merged.set(execution.id,execution);
+  historyState.executions=[...merged.values()].sort((a,b)=>b.id-a.id);
+  historyState.totalCount=Number(incoming.total_count||0);
+  if(!historyState.loadedMore){historyState.nextBeforeId=incoming.next_before_id;historyState.hasMore=!!incoming.has_more;}
+ }
+ for(const detail of $('#queueHistoryEntries').querySelectorAll('[data-history-execution]'))detail.open?expandedHistoryExecutions.add(Number(detail.dataset.historyExecution)):expandedHistoryExecutions.delete(Number(detail.dataset.historyExecution));
+ const section=$('#queueHistorySection'),outer=$('#queueHistory');
+ section.hidden=historyState.totalCount===0;
+ $('#queueHistoryLabel').textContent=`Histórico (${historyState.totalCount})`;
+ outer.open=historyExpanded;
+ $('#queueHistoryLoadMore').hidden=!historyState.hasMore;
+ $('#queueHistoryLoadMore').disabled=historyState.loading;
+ $('#queueHistoryLoadMore').textContent=historyState.loading?'Carregando…':'Carregar mais histórico';
+ $('#queueHistoryEntries').innerHTML=historyState.executions.map(execution=>{
+  const name=execution.batch_names?.length===1?execution.batch_names[0]:execution.batch_names?.length?`${execution.batch_names.length} lotes`:execution.batch_id==null?'múltiplos lotes':`Lote ${execution.batch_id}`;
+  const when=execution.finished_at||execution.started_at;
+  const items=execution.items||[];
+  return `<details class="queue-history-execution" data-history-execution="${execution.id}" ${expandedHistoryExecutions.has(execution.id)?'open':''}><summary>Execução #${execution.id} · ${esc(name)} · ${esc(when?new Date(when).toLocaleString():'data não informada')} · ${Number(execution.total||items.length)} Draft(s)</summary><p>${Number(execution.succeeded||0)} concluídos · ${Number(execution.failed||0)} falharam · ${Number(execution.waiting_manual||0)} aguardaram ação</p><ul>${items.map(item=>`<li data-history-item-key="${execution.id}:${item.draft_id}"><strong>${esc(item.filename||`Draft ${item.draft_id}`)}</strong> · ${esc(item.item_status||'estado não informado')}<small>${esc(item.batch_name||'Lote sem nome')} · ${esc(item.product_short_name||item.product_name||'Produto não informado')} · Draft ${item.draft_id} · posição ${item.execution_position??'—'}${item.item_error_code?` · ${esc(item.item_error_code)}`:''}</small></li>`).join('')||'<li>Nenhum Draft vinculado a esta execução.</li>'}</ul></details>`;
+ }).join('')||'<p class="empty-mini">Nenhuma execução concluída.</p>';
+ $('#queueHistoryEntries').querySelectorAll('[data-history-execution]').forEach(detail=>detail.addEventListener('toggle',()=>detail.open?expandedHistoryExecutions.add(Number(detail.dataset.historyExecution)):expandedHistoryExecutions.delete(Number(detail.dataset.historyExecution))));
+}
+async function loadMoreExecutionHistory(){
+ if(historyState.loading||!historyState.hasMore||!historyState.nextBeforeId)return;
+ historyState.loading=true;renderExecutionHistory();
+ try{
+  const params=new URLSearchParams({before_id:String(historyState.nextBeforeId),limit:'30'});
+  const response=await fetch('/api/publisher/execution-history?'+params,{cache:'no-store'}),body=await response.json();
+  if(!response.ok)throw Error(body.error||'Não foi possível carregar o histórico');
+  const merged=new Map(historyState.executions.map(execution=>[execution.id,execution]));
+  for(const execution of body.executions||[])merged.set(execution.id,execution);
+  historyState.executions=[...merged.values()].sort((a,b)=>b.id-a.id);
+  historyState.totalCount=Number(body.total_count||historyState.totalCount);historyState.nextBeforeId=body.next_before_id;
+  historyState.hasMore=!!body.has_more;historyState.loadedMore=true;
+ }finally{historyState.loading=false;renderExecutionHistory();}
 }
 function visibleProducts(){return productWorkspace.products||[];}
 function renderProductFolders(product){const folders=product?.folders||[];$('#productFolders').innerHTML=folders.map(folder=>`<div class="folder-association"><span><strong>${esc(folder.name)}</strong><small>${esc(folder.relative_path)}</small></span><button type="button" data-remove-product-folder="${esc(folder.id)}">Remover</button></div>`).join('')||'<p class="empty-mini">Nenhuma pasta associada.</p>';const options=state.drive_folders||[];$('#productFolderSelect').innerHTML='<option value="">Selecionar pasta...</option>'+options.filter(folder=>!folders.some(current=>current.id===folder.id)).map(folder=>`<option value="${esc(folder.id)}">${esc(folder.relative_path||folder.name)}</option>`).join('');}
@@ -178,6 +245,23 @@ $('#refreshAuthDiagnostic').onclick=()=>task(()=>showAuthDiagnostics(diagnosticA
 document.addEventListener('click',e=>{const button=e.target.closest('[data-auth-diagnostic]');if(button)task(()=>showAuthDiagnostics(Number(button.dataset.authDiagnostic)));});
 document.addEventListener('click',e=>{const button=e.target.closest('[data-verify-manual]');if(button&&!button.disabled)task(async()=>{await api('/verify-manual-profile',{id:Number(button.dataset.verifyManual)});await refresh();});});
 ['queueSearch','filter-status','filter-product','filter-readiness','filter-account','filter-batch'].forEach(id=>$('#'+id).oninput=renderQueue);
+$('#queueHistory').addEventListener('toggle',event=>{historyExpanded=event.currentTarget.open;});
+$('#queueHistoryLoadMore').onclick=()=>task(loadMoreExecutionHistory,'queue');
+$('#queueBatches').addEventListener('toggle',event=>{const detail=event.target.closest('[data-queue-details]');if(detail)detail.open?expandedQueueDraftDetails.add(detail.dataset.queueDetails):expandedQueueDraftDetails.delete(detail.dataset.queueDetails);});
+$('#queueBatches').addEventListener('input',event=>{if(event.target.matches('[data-batch-rename-input]'))renamingBatchValue=event.target.value;});
+$('#queueBatches').addEventListener('focusout',event=>{if(!event.target.matches('[data-batch-rename-input]'))return;setTimeout(()=>{if(queueRenderDeferred&&!$('#queueBatches').contains(document.activeElement))renderQueue();},0);});
+$('#queueBatches').addEventListener('submit',event=>{const form=event.target.closest('[data-batch-rename-form]');if(!form)return;event.preventDefault();task(async()=>{const input=form.querySelector('[data-batch-rename-input]'),id=Number(form.dataset.batchRenameForm),name=input.value.trim();await api(`/batches/${id}/rename`,{name});renamingBatchId=null;renamingBatchValue='';input.blur();await refresh();notice('Lote renomeado');},'queue');});
+$('#batchConfigurationForm').onsubmit=event=>{event.preventDefault();task(async()=>{if(!configuringBatchId)throw Error('Lote não selecionado');const form=event.currentTarget,data={};for(const key of ['account_id','preset_id']){const value=field(form,key).value;if(value)data[key]=Number(value);}await api(`/batches/${configuringBatchId}/configuration`,data);$('#batchConfigurationDialog').close();configuringBatchId=null;await refresh();notice('Conta/preset atualizados nos Drafts pendentes; Product e legendas preservados');},'queue');};
+document.addEventListener('click',event=>{
+ const rename=event.target.closest('[data-batch-rename]');
+ if(rename){const batch=state.batches.find(item=>item.id===Number(rename.dataset.batchRename));if(!batch)return;renamingBatchId=batch.id;renamingBatchValue=batch.name||'';renderQueue();const input=$('#queueBatches [data-batch-rename-input]');input?.focus();input?.select();return;}
+ if(event.target.closest('[data-batch-rename-cancel]')){renamingBatchId=null;renamingBatchValue='';renderQueue();return;}
+ const configure=event.target.closest('[data-batch-configure]');
+ if(configure){configuringBatchId=Number(configure.dataset.batchConfigure);const form=$('#batchConfigurationForm');form.reset();fillSelect(field(form,'account_id'),state.accounts.filter(account=>account.active),'Manter conta atual');fillSelect(field(form,'preset_id'),state.presets,'Manter preset atual');$('#batchConfigurationDialog').showModal();return;}
+ const cancel=event.target.closest('[data-batch-cancel]');
+ if(cancel&&!cancel.disabled)task(async()=>{const id=Number(cancel.dataset.batchCancel),batch=state.batches.find(item=>item.id===id),count=batch?.queue_capabilities?.active_draft_count||0;if(!batch?.queue_capabilities?.can_cancel)throw Error('Este lote não pode ser cancelado com segurança');if(!confirm(`Cancelar este lote? ${count} Draft(s) sairão da fila. Mídias reservadas elegíveis serão liberadas; o histórico será preservado. Nenhum arquivo remoto será excluído.`))return;try{await api(`/batches/${id}/cancel`,{human_confirmed:true});}catch(error){let refreshed=false;try{await refresh();refreshed=true;}catch{}throw Error(refreshed?'O lote mudou de estado e não foi cancelado. A fila foi atualizada; revise as ações disponíveis.':'Não foi possível confirmar o cancelamento. Atualize a fila antes de tentar novamente.');}for(const draft of state.drafts.filter(item=>item.batch_id===id))selected.delete(draft.id);await refresh();notice(`${count} Draft(s) arquivados; histórico mantido e arquivos remotos preservados`);},'queue');
+ if(event.target.closest('[data-queue-go-library]'))view('library');
+});
 $('#productSearch').oninput=()=>task(loadProductWorkspace);
 $('#productScopes').onclick=e=>{const button=e.target.closest('[data-product-scope]');if(button){productScope=button.dataset.productScope;productSelected.clear();task(loadProductWorkspace);}};
 $('#selectAll').onchange=e=>{visibleDrafts().forEach(d=>e.target.checked?selected.add(d.id):selected.delete(d.id));renderQueue();};

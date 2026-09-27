@@ -18,7 +18,7 @@ from src.publisher.folder_catalog import (
     set_container_auto_create,
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
-from src.publisher.queue_policy import draft_queue_capabilities, draft_queue_presentation
+from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -493,6 +493,66 @@ class PublisherService:
         set_folder_mapping(self.conn, folder_id, target, reason=f"Publisher product folder {action}")
         return {"product_id": product_id, "folder_id": folder_id, "action": action}
 
+    def _execution_summaries(self, where_sql, params=(), limit=None):
+        sql = f"""SELECT e.*,
+          COALESCE(SUM(CASE WHEN i.status='QUEUED' THEN 1 ELSE 0 END),0) queued,
+          COALESCE(SUM(CASE WHEN i.status IN ('PROCESSING','CLEANUP') THEN 1 ELSE 0 END),0) processing,
+          COALESCE(SUM(CASE WHEN i.status='SUCCEEDED' THEN 1 ELSE 0 END),0) succeeded,
+          COALESCE(SUM(CASE WHEN i.status='FAILED' THEN 1 ELSE 0 END),0) failed,
+          COALESCE(SUM(CASE WHEN i.status='WAITING_MANUAL' THEN 1 ELSE 0 END),0) waiting_manual,
+          COALESCE(SUM(CASE WHEN m.status='CONSUMED' THEN 1 ELSE 0 END),0) remote_deleted,
+          COALESCE(SUM(CASE WHEN m.status='CONSUMED_PENDING_DELETE' THEN 1 ELSE 0 END),0) remote_delete_pending,
+          COALESCE(SUM(CASE WHEN m.status NOT IN ('CONSUMED','CONSUMED_PENDING_DELETE') THEN 1 ELSE 0 END),0) remote_preserved
+          FROM publisher_batch_executions e
+          LEFT JOIN publisher_execution_items i ON i.execution_id=e.id
+          LEFT JOIN publisher_drafts d ON d.id=i.draft_id
+          LEFT JOIN publisher_media_assets m ON m.id=d.media_asset_id
+          WHERE {where_sql} GROUP BY e.id ORDER BY e.id DESC"""
+        if limit is not None:
+            sql += ' LIMIT ?'
+            params = (*params, int(limit))
+        return [dict(row) for row in self.conn.execute(sql, params)]
+
+    def execution_history(self, *, before_id=None, limit=30):
+        limit = max(1, min(int(limit), 30))
+        statuses = ('COMPLETED', 'SUCCESS')
+        where = "e.status IN (?,?)"
+        params = list(statuses)
+        if before_id is not None:
+            where += ' AND e.id<?'
+            params.append(int(before_id))
+        total = self.conn.execute(
+            "SELECT COUNT(*) FROM publisher_batch_executions WHERE status IN (?,?)", statuses,
+        ).fetchone()[0]
+        executions = self._execution_summaries(where, params, limit + 1)
+        has_more = len(executions) > limit
+        executions = executions[:limit]
+        for execution in executions:
+            execution['batch_names'] = [row['name'] for row in self.conn.execute(
+                "SELECT DISTINCT b.name FROM publisher_execution_items i "
+                "JOIN publisher_drafts d ON d.id=i.draft_id "
+                "JOIN publisher_batches b ON b.id=d.batch_id "
+                "WHERE i.execution_id=? ORDER BY b.id DESC", (execution['id'],),
+            )]
+            execution['items'] = [dict(row) for row in self.conn.execute("""SELECT i.execution_id,i.draft_id,
+              i.execution_position,i.status item_status,i.error_code item_error_code,
+              d.batch_id draft_batch_id,b.name batch_name,d.filename,d.status draft_status,
+              d.persistence_status,d.upload_status,d.product_id,p.name product_name,
+              p.short_name product_short_name,a.name account_name,m.status media_status
+              FROM publisher_execution_items i JOIN publisher_drafts d ON d.id=i.draft_id
+              LEFT JOIN publisher_batches b ON b.id=d.batch_id
+              LEFT JOIN publisher_products p ON p.product_id=d.product_id
+              LEFT JOIN publisher_accounts a ON a.id=d.account_id
+              LEFT JOIN publisher_media_assets m ON m.id=d.media_asset_id
+              WHERE i.execution_id=? ORDER BY i.execution_position,i.draft_id""", (execution['id'],))]
+        return {
+            'executions': executions,
+            'total_count': int(total),
+            'page_size': limit,
+            'has_more': has_more,
+            'next_before_id': executions[-1]['id'] if has_more and executions else None,
+        }
+
     def snapshot(self):
         drafts = [dict(r) for r in self.conn.execute("""SELECT d.*,p.name product_name,p.short_name product_short_name,a.name account_name,
           m.status media_status,m.remote_file_id,m.cleanup_error,f.thumbnail_link
@@ -525,27 +585,27 @@ class PublisherService:
             item['evidence_summary'] = evidence.get('ui_marker') or evidence.get('provider_code') or evidence.get('operation') or ''
             item['blocked'] = item['state'] != 'NORMAL'
             protections.append(item)
+        batch_rows = [dict(row) for row in self.conn.execute('SELECT * FROM publisher_batches ORDER BY id DESC')]
+        for batch in batch_rows:
+            batch['queue_capabilities'] = batch_queue_capabilities(self.conn, batch['id'])
+        active_executions = self._execution_summaries("e.status NOT IN ('COMPLETED','SUCCESS')")
+        history = self.execution_history(limit=30)
         return {"products": self.catalog(include_archived=True), "preferences": self.get_preferences(),
                 "drive_folders": self.list_drive_folders(), "drafts": drafts, "statuses": STATUSES,
                 "queue_status_labels": {status: draft_queue_presentation({'status': status})['label'] for status in STATUSES},
                 "queue_preflights": queue_preflights,
                 "execution_items": [dict(r) for r in self.conn.execute("""SELECT i.*,e.batch_id,e.status execution_status
+                  ,d.batch_id draft_batch_id,d.status draft_status
                   FROM publisher_execution_items i JOIN publisher_batch_executions e ON e.id=i.execution_id
+                  JOIN publisher_drafts d ON d.id=i.draft_id
+                  WHERE e.status NOT IN ('COMPLETED','SUCCESS')
                   ORDER BY e.id DESC,i.execution_position ASC""")],
                 "media_assets": [dict(r) for r in self.conn.execute("SELECT * FROM publisher_media_assets ORDER BY filename")],
-                "executions": [dict(r) for r in self.conn.execute("""SELECT e.*,
-                  SUM(i.status='QUEUED') queued,SUM(i.status IN ('PROCESSING','CLEANUP')) processing,
-                  SUM(i.status='SUCCEEDED') succeeded,SUM(i.status='FAILED') failed,
-                  SUM(i.status='WAITING_MANUAL') waiting_manual,
-                  SUM(m.status='CONSUMED') remote_deleted,
-                  SUM(m.status='CONSUMED_PENDING_DELETE') remote_delete_pending,
-                  SUM(m.status NOT IN ('CONSUMED','CONSUMED_PENDING_DELETE')) remote_preserved
-                  FROM publisher_batch_executions e JOIN publisher_execution_items i ON i.execution_id=e.id
-                  JOIN publisher_drafts d ON d.id=i.draft_id
-                  LEFT JOIN publisher_media_assets m ON m.id=d.media_asset_id
-                  GROUP BY e.id ORDER BY e.id DESC LIMIT 30""")],
+                "executions": active_executions,
+                "history": history,
                 **{name: [dict(r) for r in self.conn.execute(f"SELECT * FROM publisher_{name} ORDER BY id DESC")]
-                   for name in ("accounts", "presets", "batches")},
+                   for name in ("accounts", "presets")},
+                "batches": batch_rows,
                 "account_protection": protections,
                 "logs": [dict(r) for r in self.conn.execute("SELECT * FROM publisher_execution_logs ORDER BY id DESC LIMIT 300")]}
 
@@ -986,21 +1046,99 @@ class PublisherService:
         with self.conn:
             self.conn.execute('BEGIN IMMEDIATE')
             get_row(self.conn, 'publisher_batches', batch_id)
-            if self.conn.execute('SELECT 1 FROM publisher_execution_items i JOIN publisher_drafts d ON d.id=i.draft_id WHERE d.batch_id=? LIMIT 1', (batch_id,)).fetchone():
-                raise ValueError('BATCH_ALREADY_EXECUTED')
+            capabilities = batch_queue_capabilities(self.conn, batch_id)
+            if not capabilities['can_reorder']:
+                code = 'BATCH_ALREADY_EXECUTED' if capabilities['has_execution'] else 'QUEUE_REORDER_BLOCKED'
+                raise ValueError(code)
             rows = self.conn.execute("SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id", (batch_id,)).fetchall()
             if len(rows) != len(ids) or {row['id'] for row in rows} != set(ids):
                 raise ValueError('QUEUE_MEMBERSHIP_MISMATCH')
-            for row in rows:
-                media = dict(get_row(self.conn, 'publisher_media_assets', row['media_asset_id'])) if row['media_asset_id'] else None
-                if not draft_queue_capabilities(self.conn, dict(row), media)['can_reorder']:
-                    raise ValueError('QUEUE_REORDER_BLOCKED')
             offset = max((row['queue_position'] or 0 for row in rows), default=0) + len(rows) + 1
             for position, draft_id in enumerate(ids, 1):
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (offset + position, draft_id))
             for position, draft_id in enumerate(ids, 1):
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=?,updated_at=? WHERE id=?', (position, now_iso(), draft_id))
         return {'batch_id': batch_id, 'ordered_draft_ids': ids}
+
+    def rename_batch(self, batch_id, name):
+        batch_id = int(batch_id)
+        name = str(name or '').strip()
+        if not name or len(name) > 160:
+            raise ValueError('INVALID_BATCH_NAME')
+        with self.conn:
+            self.conn.execute('BEGIN IMMEDIATE')
+            batch = get_row(self.conn, 'publisher_batches', batch_id)
+            if not batch_queue_capabilities(self.conn, batch_id)['can_rename']:
+                raise ValueError('BATCH_RENAME_BLOCKED')
+            self.conn.execute('UPDATE publisher_batches SET name=? WHERE id=?', (name, batch_id))
+            first = self.conn.execute(
+                "SELECT id FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id LIMIT 1",
+                (batch_id,),
+            ).fetchone()
+            if first:
+                log(self.conn, first['id'], 'BATCH_RENAMED', 'OK', f'Lote {batch_id} renomeado')
+        return {'batch_id': batch_id, 'name': name}
+
+    def edit_batch_configuration(self, batch_id, data):
+        batch_id = int(batch_id)
+        if not isinstance(data, dict) or set(data) - {'account_id', 'preset_id'}:
+            raise ValueError('INVALID_BATCH_CONFIGURATION_FIELDS')
+        fields = {}
+        for key in ('account_id', 'preset_id'):
+            value = data.get(key)
+            if value not in (None, ''):
+                fields[key] = int(value)
+        if not fields:
+            raise ValueError('NO_BATCH_CONFIGURATION_CHANGES')
+        with self.conn:
+            self.conn.execute('BEGIN IMMEDIATE')
+            get_row(self.conn, 'publisher_batches', batch_id)
+            capabilities = batch_queue_capabilities(self.conn, batch_id)
+            if not capabilities['can_edit'] or any(key not in capabilities['editable_fields'] for key in fields):
+                raise ValueError('BATCH_CONFIGURATION_EDIT_BLOCKED')
+            rows = self.conn.execute(
+                "SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id",
+                (batch_id,),
+            ).fetchall()
+            for row in rows:
+                merged = {**dict(row), **fields}
+                self.validate_fields(merged)
+            timestamp = now_iso()
+            assignments = ','.join(f'{key}=?' for key in fields)
+            for row in rows:
+                self.conn.execute(
+                    f'UPDATE publisher_drafts SET {assignments},updated_at=? WHERE id=?',
+                    (*fields.values(), timestamp, row['id']),
+                )
+                log(self.conn, row['id'], 'BATCH_CONFIGURATION_EDIT', 'OK',
+                    'Conta/preset atualizados; produto e legenda do draft preservados')
+        return {'batch_id': batch_id, 'draft_ids': [row['id'] for row in rows], 'changed_fields': sorted(fields)}
+
+    def cancel_batch(self, batch_id):
+        batch_id = int(batch_id)
+        with self.conn:
+            self.conn.execute('BEGIN IMMEDIATE')
+            get_row(self.conn, 'publisher_batches', batch_id)
+            capabilities = batch_queue_capabilities(self.conn, batch_id)
+            if not capabilities['can_cancel']:
+                raise ValueError('BATCH_CANCEL_BLOCKED')
+            rows = self.conn.execute(
+                "SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id",
+                (batch_id,),
+            ).fetchall()
+            released = 0
+            for row in rows:
+                transition(self.conn, row['id'], 'ARCHIVED')
+                if row['media_asset_id']:
+                    changed = self.conn.execute(
+                        "UPDATE publisher_media_assets SET status='AVAILABLE',updated_at=? "
+                        "WHERE id=? AND status IN ('RESERVED','FAILED')",
+                        (now_iso(), row['media_asset_id']),
+                    ).rowcount
+                    released += int(changed > 0)
+                log(self.conn, row['id'], 'BATCH_CANCELLED', 'OK', f'Lote {batch_id} cancelado sem efeito remoto')
+        return {'batch_id': batch_id, 'cancelled_drafts': len(rows), 'reservations_released': released,
+                'audit_preserved': True}
 
     def queue_preflight(self, batch_id):
         rows = self.conn.execute("SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id", (int(batch_id),)).fetchall()

@@ -262,6 +262,12 @@ class PublisherAPI:
             if path == "/api/publisher/drive-sync/status":
                 handler._json({**drive_sync_status(conn), "polling": polling_status(conn)}, no_store=True)
                 return
+            if path == "/api/publisher/execution-history":
+                before_id = query.get('before_id', [None])[0]
+                limit = query.get('limit', ['30'])[0]
+                handler._json(PublisherService(conn, self.root).execution_history(
+                    before_id=before_id, limit=limit), no_store=True)
+                return
             if path == "/api/publisher/library":
                 result = PublisherService(conn, self.root).media_library({
                     key: values[0] for key, values in query.items() if values
@@ -403,9 +409,17 @@ class PublisherAPI:
                 with closing(connect(self.db)) as conn:
                     service = PublisherService(conn, self.root)
                     action = path.rsplit("/", 1)[-1]
-                    reorder_match = re.fullmatch(r'/api/publisher/batches/(\d+)/reorder', path)
-                    if reorder_match:
-                        result = service.reorder_batch(int(reorder_match[1]), data.get('ordered_draft_ids') or [])
+                    batch_action_match = re.fullmatch(r'/api/publisher/batches/(\d+)/(reorder|rename|configuration|cancel)', path)
+                    if batch_action_match and batch_action_match[2] == 'reorder':
+                        result = service.reorder_batch(int(batch_action_match[1]), data.get('ordered_draft_ids') or [])
+                    elif batch_action_match and batch_action_match[2] == 'rename':
+                        result = service.rename_batch(int(batch_action_match[1]), data.get('name'))
+                    elif batch_action_match and batch_action_match[2] == 'configuration':
+                        result = service.edit_batch_configuration(int(batch_action_match[1]), data)
+                    elif batch_action_match and batch_action_match[2] == 'cancel':
+                        if data.get('human_confirmed') is not True:
+                            raise ValueError('EXPLICIT_BATCH_CANCEL_CONFIRMATION_REQUIRED')
+                        result = service.cancel_batch(int(batch_action_match[1]))
                     elif path in {"/products/bulk", "/api/publisher/products/bulk"}:
                         result = service.product_bulk_plan(data.get("ids", [])) if data.get("action") == "preview" else service.bulk_products(
                             data.get("ids", []), data.get("action", "delete"), human_confirmed=data.get("human_confirmed") is True

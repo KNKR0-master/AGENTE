@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from urllib.parse import parse_qs, urlsplit
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -33,10 +34,16 @@ def fixture():
     return {'drafts': drafts, 'products': [
         {'id': 1, 'name': 'Body Splash', 'short_name': 'Body Splash', 'active': True, 'aliases': [], 'folders': []},
         {'id': 2, 'name': 'Escova de Dentes', 'short_name': 'Escova', 'active': True, 'aliases': [], 'folders': []}],
-        'accounts': [{'id': 1, 'name': 'CECILIA FIGUEIREDO', 'active': True}],
-        'batches': [{'id': 24, 'name': 'Lote de revisão'}], 'presets': [], 'logs': [],
+        'accounts': [{'id': 1, 'name': 'CECILIA FIGUEIREDO', 'active': True},
+                     {'id': 2, 'name': 'Conta alternativa', 'active': True}],
+        'batches': [{'id': 24, 'name': 'Lote de revisão', 'queue_capabilities': {
+            'can_rename': True, 'can_edit_configuration': True,
+            'editable_fields': ['account_id', 'preset_id'], 'can_reorder': True,
+            'can_cancel': True, 'active_draft_count': 3,
+        }}], 'presets': [{'id': 31, 'name': 'Preset alternativo', 'account_id': 2}], 'logs': [],
         'statuses': ['DRAFT', 'ARCHIVED'], 'media_assets': [], 'drive_folders': [],
         'account_protection': [], 'executions': [], 'execution_items': [],
+        'history': {'executions': [], 'total_count': 0, 'has_more': False, 'next_before_id': None},
         'queue_preflights': {24: {'batch_id': 24, 'total_items': 3, 'ready_items': 2,
                                   'blocked_items': 1, 'warning_items': 0,
                                   'items': [{'draft_id': i, 'ready': i != 2,
@@ -51,7 +58,14 @@ def fixture():
 class QueueFixtureHandler(SimpleHTTPRequestHandler):
     snapshot = fixture()
     reject_reorder = False
+    reject_cancel = False
+    reject_configuration = False
     last_reorder = None
+    last_rename = None
+    last_configuration = None
+    last_cancel = None
+    requests = []
+    history_pages = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT / 'dashboard'), **kwargs)
@@ -60,11 +74,20 @@ class QueueFixtureHandler(SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path.startswith('/api/publisher'):
-            if self.path.startswith('/api/publisher/library'):
+        parsed = urlsplit(self.path)
+        if parsed.path.startswith('/api/publisher'):
+            if parsed.path.startswith('/api/publisher/library'):
                 body = {'items': [], 'page': 1, 'pages': 1, 'total': 0}
-            elif self.path.startswith('/api/publisher/drive-sync/status'):
+            elif parsed.path.startswith('/api/publisher/drive-sync/status'):
                 body = {'cursor_status': 'READY'}
+            elif parsed.path == '/api/publisher/execution-history':
+                query = parse_qs(parsed.query)
+                before_id = query.get('before_id', [None])[0]
+                type(self).requests.append(('GET', parsed.path, query))
+                pages = type(self).history_pages
+                body = pages.get(before_id, pages.get(None)) if pages else None
+                if body is None:
+                    body = self.snapshot.get('history', {'executions': [], 'total_count': 0, 'has_more': False})
             else:
                 body = self.snapshot
             data = json.dumps(body).encode('utf-8')
@@ -77,20 +100,58 @@ class QueueFixtureHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
-        match = re.fullmatch(r'/api/publisher/batches/(\d+)/reorder', self.path)
-        if not match:
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        path = urlsplit(self.path).path
+        type(self).requests.append(('POST', path, body))
+        reorder = re.fullmatch(r'/api/publisher/batches/(\d+)/reorder', path)
+        rename = re.fullmatch(r'/api/publisher/batches/(\d+)/rename', path)
+        config = re.fullmatch(r'/api/publisher/batches/(\d+)/configuration', path)
+        cancel = re.fullmatch(r'/api/publisher/batches/(\d+)/cancel', path)
+        if reorder:
+            ids = body['ordered_draft_ids']
+            type(self).last_reorder = ids
+            members = [d['id'] for d in self.snapshot['drafts'] if d['batch_id'] == int(reorder[1])]
+            valid = not self.reject_reorder and len(ids) == len(members) and set(ids) == set(members)
+            if valid:
+                for position, draft_id in enumerate(ids, 1):
+                    next(d for d in self.snapshot['drafts'] if d['id'] == draft_id)['queue_position'] = position
+            result, status = ({'ordered_draft_ids': ids}, 200) if valid else ({'error': 'BATCH_ALREADY_EXECUTED'}, 400)
+        elif rename:
+            batch = next(item for item in self.snapshot['batches'] if item['id'] == int(rename[1]))
+            batch['name'] = body['name']
+            type(self).last_rename = (int(rename[1]), body)
+            result, status = ({'batch_id': batch['id'], 'name': batch['name']}, 200)
+        elif config:
+            type(self).last_configuration = (int(config[1]), body)
+            if type(self).reject_configuration:
+                result, status = ({'error': 'BATCH_CONFIGURATION_EDIT_BLOCKED'}, 409)
+            else:
+                account = next((item for item in self.snapshot['accounts'] if item['id'] == body.get('account_id')), None)
+                for draft in self.snapshot['drafts']:
+                    if draft['batch_id'] == int(config[1]):
+                        draft.update(body)
+                        if account:
+                            draft['account_name'] = account['name']
+                result, status = ({'batch_id': int(config[1]), 'changed_fields': list(body)}, 200)
+        elif cancel:
+            type(self).last_cancel = (int(cancel[1]), body)
+            if type(self).reject_cancel:
+                batch = next(item for item in self.snapshot['batches'] if item['id'] == int(cancel[1]))
+                batch['queue_capabilities']['can_cancel'] = False
+                result, status = ({'error': 'BATCH_CANCEL_BLOCKED'}, 409)
+            else:
+                for draft in self.snapshot['drafts']:
+                    if draft['batch_id'] == int(cancel[1]):
+                        draft['status'] = 'ARCHIVED'
+                batch = next(item for item in self.snapshot['batches'] if item['id'] == int(cancel[1]))
+                batch['queue_capabilities']['can_cancel'] = False
+                result, status = ({'batch_id': int(cancel[1]), 'cancelled_drafts': 3,
+                                   'reservations_released': 3, 'audit_preserved': True}, 200)
+        else:
             self.send_error(405)
             return
-        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        ids = body['ordered_draft_ids']
-        type(self).last_reorder = ids
-        members = [d['id'] for d in self.snapshot['drafts'] if d['batch_id'] == int(match[1])]
-        valid = not self.reject_reorder and len(ids) == len(members) and set(ids) == set(members)
-        if valid:
-            for position, draft_id in enumerate(ids, 1):
-                next(d for d in self.snapshot['drafts'] if d['id'] == draft_id)['queue_position'] = position
-        data = json.dumps({'ordered_draft_ids': ids} if valid else {'error': 'BATCH_ALREADY_EXECUTED'}).encode()
-        self.send_response(200 if valid else 400)
+        data = json.dumps(result).encode()
+        self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -103,7 +164,14 @@ class QueueBrowserTests(unittest.TestCase):
     def setUp(self):
         QueueFixtureHandler.snapshot = fixture()
         QueueFixtureHandler.reject_reorder = False
+        QueueFixtureHandler.reject_cancel = False
+        QueueFixtureHandler.reject_configuration = False
         QueueFixtureHandler.last_reorder = None
+        QueueFixtureHandler.last_rename = None
+        QueueFixtureHandler.last_configuration = None
+        QueueFixtureHandler.last_cancel = None
+        QueueFixtureHandler.requests = []
+        QueueFixtureHandler.history_pages = None
 
     def test_reorder_backend_confirmation_and_rejection(self):
         from playwright.sync_api import sync_playwright
@@ -213,14 +281,27 @@ class QueueBrowserTests(unittest.TestCase):
                       draft.upload_status='TRANSFER_UNKNOWN';
                       draft.queue_display={label:'Envio a verificar',kind:'attention',message:'O TikTok pode já ter recebido este vídeo. Não envie novamente.'};
                       draft.queue_capabilities={can_edit:false,can_remove:false,can_reorder:false,can_verify:true,remote_effect_possible:true};
+                      state.batches[0].queue_capabilities={can_rename:false,can_edit:false,can_edit_configuration:false,can_reorder:false,can_remove:false,can_remove_item:false,can_cancel:false};
                       renderQueue();
                     }""")
                     self.assertEqual(page.locator('[data-queue-draft="1"] [data-remove-draft]').count(), 0)
                     self.assertEqual(page.locator('[data-queue-draft="1"] [data-edit]').count(), 0)
+                    self.assertEqual(page.locator('[data-queue-draft="1"] [data-cleanup]').count(), 0)
+                    self.assertEqual(page.locator('[data-batch-cancel]').count(), 0)
+                    self.assertIn('Verificar status', page.locator('[data-queue-draft="1"]').inner_text())
                     page.locator('[data-queue-draft="1"] [data-review]').click()
                     self.assertTrue(page.locator('#reviewDialog').is_visible())
                     self.assertEqual(page.locator('#reviewDialog [data-complete]').count(), 0)
                     page.locator('#reviewDialog [data-close]').click()
+                    page.evaluate("""() => {
+                      const draft=state.drafts[0];
+                      draft.status='MANUAL_ACTION_REQUIRED';draft.media_status='NEEDS_RECONCILIATION';
+                      draft.queue_display={label:'Requer verificação',kind:'attention',message:'Confirme o resultado antes de qualquer nova ação.'};
+                      renderQueue();
+                    }""")
+                    self.assertIn('Verificar / Reconciliar', page.locator('[data-queue-draft="1"]').inner_text())
+                    self.assertNotIn('Retry', page.locator('[data-queue-draft="1"]').inner_text())
+                    self.assertEqual(page.locator('[data-queue-draft="1"] [data-remove-draft]').count(), 0)
                     screenshot = os.environ.get('PUBLISHER_QUEUE_SCREENSHOT')
                     if screenshot:
                         page.screenshot(path=screenshot, full_page=True)
@@ -236,6 +317,227 @@ class QueueBrowserTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_history_is_read_only_collapsed_and_refresh_preserves_queue_interaction(self):
+        from playwright.sync_api import sync_playwright
+
+        snapshot = fixture()
+        snapshot['history'] = {
+            'total_count': 2, 'has_more': False, 'next_before_id': None,
+            'executions': [
+                {'id': 501, 'batch_id': 24, 'batch_names': ['Lote anterior'], 'status': 'COMPLETED',
+                 'started_at': '2026-09-01T10:00:00Z', 'finished_at': '2026-09-01T10:01:00Z',
+                 'total': 1, 'succeeded': 1, 'failed': 0, 'waiting_manual': 0,
+                 'items': [{'execution_id': 501, 'draft_id': 1, 'execution_position': 1,
+                            'item_status': 'SUCCEEDED', 'filename': 'video.mp4', 'draft_status': 'READY_FOR_REVIEW',
+                            'batch_name': 'Lote anterior', 'product_name': 'Body Splash'}]},
+                {'id': 500, 'batch_id': 24, 'batch_names': ['Lote anterior'], 'status': 'COMPLETED',
+                 'started_at': '2026-08-31T10:00:00Z', 'finished_at': '2026-08-31T10:01:00Z',
+                 'total': 1, 'succeeded': 1, 'failed': 0, 'waiting_manual': 0,
+                 'items': [{'execution_id': 500, 'draft_id': 1, 'execution_position': 1,
+                            'item_status': 'SUCCEEDED', 'filename': 'video.mp4', 'draft_status': 'READY_FOR_REVIEW',
+                            'batch_name': 'Lote anterior', 'product_name': 'Body Splash'}]},
+            ],
+        }
+        previous = QueueFixtureHandler.snapshot
+        QueueFixtureHandler.snapshot = snapshot
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('#queueBatches [data-queue-draft="1"]').wait_for(timeout=10000)
+                    self.assertFalse(page.locator('#queueHistory').evaluate('(node) => node.open'))
+                    self.assertIn('Histórico (2)', page.locator('#queueHistoryLabel').inner_text())
+                    page.locator('#queueHistory > summary').click()
+                    self.assertEqual(page.locator('#queueHistoryEntries [data-history-item-key="501:1"]').count(), 1)
+                    self.assertEqual(page.locator('#queueHistoryEntries [data-history-item-key="500:1"]').count(), 1)
+                    self.assertEqual(page.locator('#queueHistoryEntries button').count(), 0)
+                    page.locator('#queueHistoryEntries [data-history-execution="501"] > summary').click()
+
+                    page.locator('#queueBatches [data-batch-rename="24"]').click()
+                    editor = page.locator('#queueBatches [data-batch-rename-input]')
+                    editor.fill('Nome digitado durante atualização')
+                    page.wait_for_timeout(6200)
+                    self.assertTrue(editor.is_visible())
+                    self.assertEqual(editor.input_value(), 'Nome digitado durante atualização')
+                    self.assertTrue(editor.evaluate('(node) => document.activeElement === node'))
+                    self.assertTrue(page.locator('#queueHistory').evaluate('(node) => node.open'))
+                    self.assertTrue(page.locator('#queueHistoryEntries [data-history-execution="501"]').evaluate('(node) => node.open'))
+                    self.assertFalse(errors, errors)
+                    page.locator('#queueBatches [data-batch-rename-form] button[type="submit"]').click()
+                    page.wait_for_function("document.querySelector('#notice')?.textContent.includes('Lote renomeado')")
+                    page.wait_for_function("document.querySelector('#queueBatches .queue-batch-title h3')?.textContent.includes('Nome digitado durante')")
+                    self.assertEqual(QueueFixtureHandler.last_rename,
+                                     (24, {'name': 'Nome digitado durante atualização'}))
+                    self.assertTrue(page.locator('#queueHistory').evaluate('(node) => node.open'))
+                    self.assertTrue(page.locator('#queueHistoryEntries [data-history-execution="501"]').evaluate('(node) => node.open'))
+                    self.assertFalse(errors, errors)
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            QueueFixtureHandler.snapshot = previous
+
+    def test_pending_batch_configuration_browser_flow_uses_only_supported_fields(self):
+        from playwright.sync_api import sync_playwright
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('#queueBatches [data-batch-configure="24"]').wait_for(timeout=10000)
+                    page.locator('#queueBatches [data-batch-configure="24"]').click()
+                    dialog = page.locator('#batchConfigurationDialog')
+                    self.assertTrue(dialog.is_visible())
+                    self.assertEqual(page.locator('#batchConfigurationForm [name]').evaluate_all(
+                        "nodes => nodes.map(node => node.name).sort()"), ['account_id', 'preset_id'])
+                    page.locator('#batchConfigurationForm [name="account_id"]').select_option('2')
+                    page.locator('#batchConfigurationForm [name="preset_id"]').select_option('31')
+                    page.locator('#batchConfigurationForm button[type="submit"]').click()
+                    page.wait_for_function("document.querySelector('#notice')?.textContent.includes('Conta/preset atualizados')")
+                    self.assertEqual(QueueFixtureHandler.last_configuration,
+                                     (24, {'account_id': 2, 'preset_id': 31}))
+                    self.assertEqual({draft['account_id'] for draft in QueueFixtureHandler.snapshot['drafts']}, {2})
+                    self.assertEqual({draft['preset_id'] for draft in QueueFixtureHandler.snapshot['drafts']}, {31})
+                    self.assertEqual({draft['caption'] for draft in QueueFixtureHandler.snapshot['drafts']}, {
+                        'Legenda do primeiro vídeo', 'Legenda específica do segundo vídeo', 'Legenda do terceiro vídeo'})
+                    self.assertEqual({draft['product_id'] for draft in QueueFixtureHandler.snapshot['drafts']}, {1, 2})
+                    self.assertIn('Conta alternativa', page.locator('#queueBatches').inner_text())
+                    self.assertFalse(dialog.is_visible())
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_cancel_confirmation_decline_and_confirmed_request(self):
+        from playwright.sync_api import sync_playwright
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('#queueBatches [data-batch-cancel="24"]').wait_for(timeout=10000)
+                    dialogs = []
+                    page.once('dialog', lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
+                    page.locator('#queueBatches [data-batch-cancel="24"]').click()
+                    self.assertEqual(len(dialogs), 1)
+                    self.assertIn('3 Draft(s) sairão da fila', dialogs[0])
+                    self.assertIn('Nenhum arquivo remoto será excluído', dialogs[0])
+                    self.assertIsNone(QueueFixtureHandler.last_cancel)
+                    self.assertEqual(page.locator('#queueBatches .queue-item').count(), 3)
+
+                    page.once('dialog', lambda dialog: dialog.accept())
+                    page.locator('#queueBatches [data-batch-cancel="24"]').click()
+                    page.wait_for_function("document.querySelector('#notice')?.textContent.includes('arquivados')")
+                    self.assertEqual(page.locator('#queueBatches .queue-item').count(), 0)
+                    self.assertEqual(QueueFixtureHandler.last_cancel, (24, {'human_confirmed': True}))
+                    self.assertEqual([draft['status'] for draft in QueueFixtureHandler.snapshot['drafts']],
+                                     ['ARCHIVED', 'ARCHIVED', 'ARCHIVED'])
+                    self.assertIn('arquivados', page.locator('#notice').inner_text())
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_cancel_rejection_refreshes_capabilities_without_hiding_batch(self):
+        from playwright.sync_api import sync_playwright
+
+        QueueFixtureHandler.reject_cancel = True
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('#queueBatches [data-batch-cancel="24"]').wait_for(timeout=10000)
+                    page.once('dialog', lambda dialog: dialog.accept())
+                    page.locator('#queueBatches [data-batch-cancel="24"]').click()
+                    page.wait_for_function("document.querySelector('#notice')?.textContent.includes('A fila foi atualizada')")
+                    self.assertEqual(QueueFixtureHandler.last_cancel, (24, {'human_confirmed': True}))
+                    self.assertEqual(page.locator('#queueBatches [data-queue-batch]').count(), 1)
+                    self.assertEqual(page.locator('#queueBatches .queue-item').count(), 3)
+                    self.assertEqual(page.locator('#queueBatches [data-batch-cancel]').count(), 0)
+                    self.assertTrue(all(draft['status'] == 'DRAFT' for draft in QueueFixtureHandler.snapshot['drafts']))
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_history_pagination_appends_unique_execution_draft_pairs(self):
+        from playwright.sync_api import sync_playwright
+
+        def execution(execution_id):
+            return {'id': execution_id, 'batch_id': 24, 'batch_names': ['Lote anterior'],
+                    'status': 'COMPLETED', 'started_at': '2026-09-01T10:00:00Z',
+                    'finished_at': '2026-09-01T10:01:00Z', 'total': 1, 'succeeded': 1,
+                    'failed': 0, 'waiting_manual': 0,
+                    'items': [{'execution_id': execution_id, 'draft_id': 1, 'execution_position': 1,
+                               'item_status': 'SUCCEEDED', 'filename': 'video.mp4',
+                               'draft_status': 'READY_FOR_REVIEW', 'batch_name': 'Lote anterior',
+                               'product_name': 'Body Splash'}]}
+
+        first = {'total_count': 35, 'has_more': True, 'next_before_id': 1006,
+                 'executions': [execution(value) for value in range(1035, 1005, -1)]}
+        second = {'total_count': 35, 'has_more': False, 'next_before_id': None,
+                  'executions': [execution(value) for value in range(1006, 1000, -1)]}
+        QueueFixtureHandler.snapshot = fixture()
+        QueueFixtureHandler.snapshot['history'] = first
+        QueueFixtureHandler.history_pages = {None: first, '1006': second}
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('#queueHistoryLabel').wait_for(timeout=10000)
+                    self.assertFalse(page.locator('#queueHistory').evaluate('(node) => node.open'))
+                    self.assertEqual(page.locator('#queueHistoryEntries [data-history-execution]').count(), 30)
+                    page.locator('#queueHistory > summary').click()
+                    page.locator('#queueHistoryEntries [data-history-execution="1035"] > summary').click()
+                    page.locator('#queueHistoryLoadMore').click()
+                    page.wait_for_function("document.querySelectorAll('#queueHistoryEntries [data-history-execution]').length === 35")
+                    self.assertEqual(page.locator('#queueHistoryEntries [data-history-item-key]').count(), 35)
+                    keys = page.locator('#queueHistoryEntries [data-history-item-key]').evaluate_all(
+                        "nodes => nodes.map(node => node.dataset.historyItemKey)")
+                    self.assertEqual(len(keys), len(set(keys)))
+                    self.assertEqual(QueueFixtureHandler.requests[-1][2].get('before_id'), ['1006'])
+                    self.assertTrue(page.locator('#queueHistoryEntries [data-history-execution="1035"]').evaluate(
+                        '(node) => node.open'))
+                    self.assertTrue(page.locator('#queueHistory').evaluate('(node) => node.open'))
+                    self.assertFalse(page.locator('#queueHistoryLoadMore').is_visible())
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            QueueFixtureHandler.history_pages = None
 
 
 if __name__ == '__main__':
