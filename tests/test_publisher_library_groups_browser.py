@@ -61,6 +61,12 @@ class GroupFixtureHandler(SimpleHTTPRequestHandler):
     restored_product_ids = set()
     product_restore_requests = []
     group_decision_requests = []
+    filter_group_view = False
+    update_unassigned_group = False
+    delay_active_request_number = None
+    delayed_active_started = None
+    release_delayed_active = None
+    delayed_active_completed = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT / "dashboard"), **kwargs)
@@ -81,8 +87,18 @@ class GroupFixtureHandler(SimpleHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if parsed.path == "/api/publisher/library/groups":
             type(self).groups_requests += 1
+            group_view = query.get("group_view", ["ACTIVE"])[0]
+            if (type(self).delay_active_request_number == type(self).groups_requests
+                    and group_view == "ACTIVE"):
+                type(self).delayed_active_started.set()
+                type(self).release_delayed_active.wait(timeout=20)
             search = query.get("search", [""])[0].casefold()
             groups = [group for group in GROUPS if not search or search in group["display_name"].casefold()]
+            if type(self).filter_group_view:
+                if group_view == "ACTIVE":
+                    groups = [group for group in groups if group["group_key"] == "product:1"]
+                elif group_view == "REQUIRES_ATTENTION":
+                    groups = [group for group in groups if group["group_key"] == "folder:unassigned"]
             groups = [dict(group, product_archived=False, available_count=0, matching_available_count=0,
                            presentation_state="REQUIRES_ATTENTION", requires_attention=True,
                            display_status="Legenda não configurada", review_reason="Legenda não configurada")
@@ -90,17 +106,26 @@ class GroupFixtureHandler(SimpleHTTPRequestHandler):
                       else dict(group) for group in groups]
             if type(self).rename_product_group:
                 groups = [dict(group, display_name="Body Splash atualizado") if group["group_key"] == "product:1" else group for group in groups]
+            if type(self).update_unassigned_group:
+                groups = [dict(group, total_media_count=3, matching_media_count=3,
+                               display_status="Contagem atualizada")
+                          if group["group_key"] == "folder:unassigned" else group for group in groups]
             page = int(query.get("page", ["1"])[0])
             if type(self).all_groups:
                 page_size = int(query.get("page_size", ["20"])[0])
                 start = (page - 1) * page_size
-                return self.send_json(dict(groups=groups[start:start + page_size], total_groups=len(groups),
-                                           total_matching_media=sum(group["matching_media_count"] for group in groups),
-                                           page=page, page_size=page_size,
-                                           pages=(len(groups) + page_size - 1) // page_size))
-            return self.send_json(dict(groups=groups[page - 1:page], total_groups=len(groups),
-                                       total_matching_media=sum(group["matching_media_count"] for group in groups),
-                                       page=page, page_size=1, pages=len(groups)))
+                body = dict(groups=groups[start:start + page_size], total_groups=len(groups),
+                            total_matching_media=sum(group["matching_media_count"] for group in groups),
+                            page=page, page_size=page_size,
+                            pages=(len(groups) + page_size - 1) // page_size)
+            else:
+                body = dict(groups=groups[page - 1:page], total_groups=len(groups),
+                            total_matching_media=sum(group["matching_media_count"] for group in groups),
+                            page=page, page_size=1, pages=len(groups))
+            result = self.send_json(body)
+            if type(self).delayed_active_started and type(self).delayed_active_started.is_set() and group_view == "ACTIVE":
+                type(self).delayed_active_completed.set()
+            return result
         if parsed.path == "/api/publisher/library/group-items":
             type(self).lazy_requests += 1
             key = query.get("group_key", [""])[0]
@@ -166,6 +191,12 @@ class GroupedLibraryBrowserTests(unittest.TestCase):
         GroupFixtureHandler.restored_product_ids = set()
         GroupFixtureHandler.product_restore_requests = []
         GroupFixtureHandler.group_decision_requests = []
+        GroupFixtureHandler.filter_group_view = False
+        GroupFixtureHandler.update_unassigned_group = False
+        GroupFixtureHandler.delay_active_request_number = None
+        GroupFixtureHandler.delayed_active_started = threading.Event()
+        GroupFixtureHandler.release_delayed_active = threading.Event()
+        GroupFixtureHandler.delayed_active_completed = threading.Event()
 
     def test_collapsed_lazy_selection_pagination_and_product_navigation(self):
         from playwright.sync_api import sync_playwright
@@ -235,17 +266,15 @@ class GroupedLibraryBrowserTests(unittest.TestCase):
                     option.wait_for()
                     page.evaluate("window.__pickerNode = document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')")
                     initial_requests = GroupFixtureHandler.groups_requests
-                    page.wait_for_function("window.__pickerNode && document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]') === window.__pickerNode && window.__pickerNode.value === 'agapis' && document.activeElement === window.__pickerNode && !document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] .combobox-results').hidden", timeout=10000)
-                    page.wait_for_timeout(6500)
-                    self.assertGreaterEqual(GroupFixtureHandler.groups_requests, initial_requests + 1)
-                    self.assertTrue(page.evaluate("window.__pickerNode === document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')"))
-                    self.assertEqual(picker.input_value(), "agapis")
-                    self.assertTrue(picker.evaluate("el => document.activeElement === el"))
-                    self.assertTrue(option.is_visible())
-
                     GroupFixtureHandler.rename_product_group = True
-                    page.evaluate("refresh()")
+                    GroupFixtureHandler.update_unassigned_group = True
+                    page.wait_for_function("window.__pickerNode && document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]') === window.__pickerNode && window.__pickerNode.value === 'agapis' && document.activeElement === window.__pickerNode && !document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] .combobox-results').hidden", timeout=10000)
+                    page.wait_for_timeout(12000)
+                    self.assertGreaterEqual(GroupFixtureHandler.groups_requests, initial_requests + 2)
                     self.assertIn("Body Splash atualizado", page.locator('[data-library-group-row="product:1"]').inner_text())
+                    updated_group = page.locator('[data-library-group-row="folder:unassigned"]')
+                    self.assertIn("3 mídia(s)", updated_group.inner_text())
+                    self.assertIn("Contagem atualizada", updated_group.inner_text())
                     self.assertTrue(page.evaluate("window.__pickerNode === document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')"))
                     self.assertEqual(picker.input_value(), "agapis")
                     self.assertTrue(picker.evaluate("el => document.activeElement === el"))
@@ -277,6 +306,94 @@ class GroupedLibraryBrowserTests(unittest.TestCase):
                     self.assertTrue(override.evaluate("el => document.activeElement === el"))
                     self.assertTrue(page.get_by_role("option", name="Sérum").is_visible())
                     override.press("Escape")
+
+                    page.locator('[data-library-group-toggle="product:1"]').click()
+                    checkbox = page.locator('[data-library="G1C1A1"]')
+                    checkbox.wait_for()
+                    checkbox.check()
+                    page.wait_for_function("document.querySelector('#librarySelectionCount')?.textContent.includes('1 selecionado')")
+                    page.wait_for_timeout(12000)
+                    self.assertTrue(checkbox.is_checked())
+                    self.assertIn("1 selecionado", page.locator("#librarySelectionCount").inner_text())
+                    self.assertFalse(errors, errors)
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_periodic_refresh_cannot_overwrite_newer_library_filter_or_detach_picker(self):
+        from playwright.sync_api import sync_playwright
+
+        GroupFixtureHandler.all_groups = True
+        GroupFixtureHandler.filter_group_view = True
+        GroupFixtureHandler.delay_active_request_number = 2
+        server = ThreadingHTTPServer(("127.0.0.1", 0), GroupFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel="chrome", headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    errors = []
+                    page.on("pageerror", lambda error: errors.append(str(error)))
+                    page.goto(f"http://127.0.0.1:{server.server_port}/publisher.html")
+                    page.locator('nav [data-view="library"]').click()
+                    page.locator('[data-library-group-row="product:1"]').wait_for(timeout=15000)
+
+                    # Hold the real five-second refresh's old ACTIVE query while the operator changes views.
+                    self.assertTrue(GroupFixtureHandler.delayed_active_started.wait(timeout=12))
+                    page.locator("#libraryGroupView").select_option("REQUIRES_ATTENTION")
+                    picker = page.locator('[data-product-picker-key="folder:unassigned"] input[type=search]')
+                    picker.wait_for(timeout=10000)
+                    picker.fill("agapis")
+                    option = page.get_by_role("option", name="Sérum")
+                    option.wait_for(timeout=10000)
+                    page.evaluate("window.__pickerNode = document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')")
+
+                    GroupFixtureHandler.release_delayed_active.set()
+                    self.assertTrue(GroupFixtureHandler.delayed_active_completed.wait(timeout=10))
+                    page.wait_for_timeout(500)
+                    self.assertTrue(page.evaluate("window.__pickerNode.isConnected"))
+                    self.assertTrue(page.evaluate("window.__pickerNode === document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')"))
+                    self.assertEqual(picker.input_value(), "agapis")
+                    self.assertTrue(picker.evaluate("el => document.activeElement === el"))
+                    self.assertTrue(option.is_visible())
+                    self.assertFalse(errors, errors)
+                finally:
+                    context.close()
+        finally:
+            GroupFixtureHandler.release_delayed_active.set()
+            server.shutdown()
+            server.server_close()
+
+    def test_intentional_filter_removal_closes_picker_without_stale_dom(self):
+        from playwright.sync_api import sync_playwright
+
+        GroupFixtureHandler.all_groups = True
+        GroupFixtureHandler.filter_group_view = True
+        server = ThreadingHTTPServer(("127.0.0.1", 0), GroupFixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel="chrome", headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    errors = []
+                    page.on("pageerror", lambda error: errors.append(str(error)))
+                    page.goto(f"http://127.0.0.1:{server.server_port}/publisher.html")
+                    page.locator('nav [data-view="library"]').click()
+                    page.locator("#libraryGroupView").select_option("REQUIRES_ATTENTION")
+                    picker = page.locator('[data-product-picker-key="folder:unassigned"] input[type=search]')
+                    picker.wait_for(timeout=10000)
+                    picker.fill("agapis")
+                    page.evaluate("window.__pickerNode = document.querySelector('[data-product-picker-key=\\\"folder:unassigned\\\"] input[type=search]')")
+                    page.locator("#libraryGroupView").select_option("ACTIVE")
+                    page.wait_for_function("document.querySelectorAll('[data-library-group-row]').length === 1 && document.querySelector('[data-library-group-row=\\\"product:1\\\"]')")
+                    self.assertFalse(page.evaluate("window.__pickerNode.isConnected"))
+                    self.assertEqual(page.locator('[data-folder-combobox]').count(), 0)
                     self.assertFalse(errors, errors)
                 finally:
                     context.close()
