@@ -23,6 +23,7 @@ class MockDriveProvider:
         self.root = root
         self.children = children
         self.failures: set[str] = set()
+        self.metadata: dict[str, dict | None | Exception] = {}
 
     def get_folder(self, folder_id: str) -> DriveEntry:
         if folder_id != self.root.file_id:
@@ -33,6 +34,15 @@ class MockDriveProvider:
         if folder_id in self.failures:
             raise DriveInventoryError("sem permissao")
         return list(self.children.get(folder_id, []))
+
+    def get_item_metadata(self, file_id: str):
+        value = self.metadata.get(file_id)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def is_within_root(self, file_id: str, root_id: str):
+        return False
 
 
 class DriveInventoryTests(unittest.TestCase):
@@ -193,6 +203,76 @@ class DriveInventoryTests(unittest.TestCase):
         row = self.conn.execute("SELECT classification, missing_since FROM drive_files").fetchone()
         self.assertEqual(row["classification"], "MISSING_FROM_DRIVE")
         self.assertIsNotNone(row["missing_since"])
+
+    def test_missing_folder_subtree_is_tombstoned_only_after_authoritative_scan(self) -> None:
+        video = drive_video("video", "Produto_Alfa_G1C1A1.mp4", "product-folder")
+        self.provider.children["product-folder"] = [video]
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.provider.children["root"] = []
+        self.provider.metadata["product-folder"] = {"id": "product-folder", "trashed": True}
+        result = DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.assertEqual(result["status"], "COMPLETE")
+        folder = self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='product-folder'").fetchone()
+        item = self.conn.execute("SELECT missing_since,classification_reason FROM drive_files WHERE drive_file_id='video'").fetchone()
+        self.assertEqual(folder[0], "OUT_OF_SCOPE")
+        self.assertIsNotNone(item[0])
+        self.assertEqual(item[1], "REMOTE_UNAVAILABLE:TRASHED")
+
+    def test_missing_folder_not_found_marks_subtree_without_deleting_identity(self) -> None:
+        self.provider.children["product-folder"] = [drive_video("video", "Produto_Alfa_G1C1A1.mp4", "product-folder")]
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.provider.children["root"] = []
+        self.provider.metadata["product-folder"] = None
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.assertEqual(self.conn.execute("SELECT classification_reason FROM drive_files WHERE drive_file_id='video'").fetchone()[0], "REMOTE_UNAVAILABLE:NOT_FOUND")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drive_folders WHERE drive_folder_id='product-folder'").fetchone()[0], 1)
+
+    def test_folder_moved_outside_root_is_unavailable_and_can_return(self) -> None:
+        self.provider.children["product-folder"] = [drive_video("video", "Produto_Alfa_G1C1A1.mp4", "product-folder")]
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.provider.children["root"] = []
+        self.provider.metadata["product-folder"] = {"id": "product-folder", "trashed": False, "parents": ["foreign"]}
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.assertEqual(self.conn.execute("SELECT classification_reason FROM drive_files WHERE drive_file_id='video'").fetchone()[0], "REMOTE_UNAVAILABLE:OUTSIDE_ROOT")
+        self.provider.children["root"] = [self.product_folder]
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='product-folder'").fetchone()[0], "ACTIVE")
+        self.assertIsNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
+
+    def test_folder_move_within_root_preserves_drive_identity_and_manual_mapping(self) -> None:
+        second = folder("second", "Segundo", "root")
+        self.provider.children["root"].append(second)
+        self.provider.children["second"] = []
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.conn.execute("UPDATE drive_folders SET product_id=?,mapping_status='MAPPED_TO_PRODUCT',mapping_source='MANUAL' WHERE drive_folder_id='product-folder'", (self.product_id,))
+        self.conn.commit()
+        self.provider.children["root"] = [second]
+        self.provider.children["second"] = [folder("product-folder", "Produto Alfa", "second")]
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        row = self.conn.execute("SELECT parent_drive_folder_id,product_id,operational_status FROM drive_folders WHERE drive_folder_id='product-folder'").fetchone()
+        self.assertEqual(tuple(row), ("second", self.product_id, "ACTIVE"))
+
+    def test_missing_folder_metadata_failure_does_not_tombstone(self) -> None:
+        self.provider.children["product-folder"] = [drive_video("video", "Produto_Alfa_G1C1A1.mp4", "product-folder")]
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.provider.children["root"] = []
+        self.provider.metadata["product-folder"] = DriveInventoryError("temporary 503")
+        result = DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.assertEqual(result["status"], "PARTIAL")
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='product-folder'").fetchone()[0], "ACTIVE")
+        self.assertIsNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
+
+    def test_partial_scan_does_not_tombstone_missing_subtree(self) -> None:
+        self.provider.children["product-folder"] = [drive_video("video", "Produto_Alfa_G1C1A1.mp4", "product-folder")]
+        DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        blocked = folder("blocked", "Bloqueada", "root")
+        self.provider.children["root"] = [blocked]
+        self.provider.failures.add("blocked")
+        self.provider.metadata["product-folder"] = None
+        result = DriveInventoryScanner(self.provider, self.config).scan(self.conn, force=True)
+        self.assertEqual(result["status"], "PARTIAL")
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='product-folder'").fetchone()[0], "ACTIVE")
+        self.assertIsNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
 
     def test_inaccessible_folder_makes_partial_scan_without_losing_other_results(self) -> None:
         inaccessible = folder("blocked", "Bloqueada", "root")

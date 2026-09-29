@@ -711,6 +711,7 @@ class PublisherService:
     def media_library_group_items(self, params):
         return list_group_items(self.conn, str(params.get("group_key") or ""),
                                 page=params.get("page", 1), page_size=params.get("page_size", 50),
+                                group_view=params.get("group_view", "ACTIVE"),
                                 **self._library_group_filters(params))
 
     def select_media_library_group(self, data):

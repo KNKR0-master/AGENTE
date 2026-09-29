@@ -18,6 +18,7 @@ from src.publisher.drive_sync import (
     project_drive_inventory_to_publisher_media,
 )
 from src.publisher.service import PublisherService, init_publisher
+from src.publisher.library import get_library_items, list_group_items, list_library_groups
 from src.store import init_db, now_iso
 
 
@@ -240,14 +241,109 @@ class PublisherDriveSyncTests(unittest.TestCase):
         self.assertEqual(row["classification"], "MISSING_FROM_DRIVE")
         self.assertIsNotNone(row["missing_since"])
 
+    def test_trashed_file_does_not_inflate_operational_group_count(self):
+        self.add_product_folder(); self.ready()
+        sync, provider = self.sync({"C0": {"changes": [file_change("alive"), file_change("trash")], "new_start_page_token": "C1"}})
+        sync.cycle()
+        provider.pages["C1"] = {"changes": [file_change("trash", trashed=True)], "new_start_page_token": "C2"}
+        sync.cycle()
+        groups = list_library_groups(self.conn, group_view="ALL")["groups"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["total_media_count"], 1)
+        self.assertEqual(groups[0]["matching_media_count"], 1)
+        self.assertEqual(list_library_groups(self.conn, group_view="REMOTE_UNAVAILABLE")["total_matching_media"], 1)
+
+    def test_trashed_folder_preserves_human_state_and_excludes_descendants(self):
+        product = self.add_product_folder(manual=True); self.ready()
+        sync, provider = self.sync({"C0": {"changes": [file_change("video")], "new_start_page_token": "C1"}})
+        sync.cycle()
+        with self.conn:
+            self.conn.execute("INSERT INTO publisher_media_decisions VALUES ('video','VALID',?,'human',?)", (now_iso(), now_iso()))
+            self.conn.execute("INSERT INTO publisher_media_overrides VALUES ('video',?,?,'human')", (product, now_iso()))
+        provider.pages["C1"] = {"changes": [folder_change("product", "Produto", trashed=True)], "new_start_page_token": "C2"}
+        result = sync.cycle()
+        self.assertEqual(result["cursor_status"], "READY")
+        self.assertEqual(self.conn.execute("SELECT current_cursor FROM publisher_drive_sync_state").fetchone()[0], "C2")
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='product'").fetchone()[0], "OUT_OF_SCOPE")
+        self.assertEqual(self.conn.execute("SELECT classification_reason FROM drive_files WHERE drive_file_id='video'").fetchone()[0], "REMOTE_UNAVAILABLE:TRASHED")
+        self.assertEqual(get_library_items(self.conn, ["video"]), [])
+        self.assertEqual(list_library_groups(self.conn, group_view="ACTIVE")["total_groups"], 0)
+        unavailable = list_library_groups(self.conn, group_view="REMOTE_UNAVAILABLE")
+        self.assertEqual(unavailable["total_matching_media"], 1)
+        self.assertEqual(unavailable["groups"][0]["available_count"], 0)
+        unavailable_item = list_group_items(self.conn, unavailable["groups"][0]["group_key"],
+                                            group_view="REMOTE_UNAVAILABLE")["items"][0]
+        self.assertEqual(unavailable_item["status"], "REMOTE_UNAVAILABLE")
+        self.assertEqual(unavailable_item["reason"], "Na lixeira do Drive")
+        self.assertFalse(unavailable_item["eligible"])
+        self.assertIsNone(unavailable_item["web_view_link"])
+        self.assertIsNone(unavailable_item["thumbnail_link"])
+        preview = PublisherService(self.conn, ".").preflight_library_batch({
+            "name": "Fixture", "drive_file_ids": ["video"],
+        })
+        self.assertFalse(preview["can_create"])
+        self.assertIn("MEDIA_NOT_IN_INVENTORY", {problem["code"] for problem in preview["problems"]})
+        self.assertEqual(self.conn.execute("SELECT decision FROM publisher_media_decisions WHERE drive_file_id='video'").fetchone()[0], "VALID")
+        self.assertEqual(self.conn.execute("SELECT product_id FROM publisher_media_overrides WHERE drive_file_id='video'").fetchone()[0], product)
+        self.assertEqual(self.conn.execute("SELECT product_id FROM drive_folders WHERE drive_folder_id='product'").fetchone()[0], product)
+        provider.pages["C2"] = {"changes": [folder_change("product", "Produto", trashed=True)], "new_start_page_token": "C3"}
+        sync.cycle()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drive_files WHERE drive_file_id='video'").fetchone()[0], 1)
+
+    def test_restored_parent_does_not_resurrect_unverified_files(self):
+        self.add_product_folder(); self.ready()
+        sync, provider = self.sync({"C0": {"changes": [file_change("video"), folder_change("product", "Produto", trashed=True)], "new_start_page_token": "C1"}})
+        sync.cycle()
+        provider.pages["C1"] = {"changes": [folder_change("product", "Produto")], "new_start_page_token": "C2"}
+        sync.cycle()
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='product'").fetchone()[0], "ACTIVE")
+        self.assertIsNotNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
+        provider.pages["C2"] = {"changes": [file_change("video")], "new_start_page_token": "C3"}
+        sync.cycle()
+        self.assertIsNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
+
+    def test_removed_folder_tombstones_known_descendants(self):
+        self.add_product_folder(); self.ready()
+        sync, provider = self.sync({"C0": {"changes": [file_change("video")], "new_start_page_token": "C1"}})
+        sync.cycle()
+        provider.pages["C1"] = {"changes": [{"file_id": "product", "removed": True, "file": None}], "new_start_page_token": "C2"}
+        sync.cycle()
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='product'").fetchone()[0], "OUT_OF_SCOPE")
+        self.assertEqual(self.conn.execute("SELECT classification_reason FROM drive_files WHERE drive_file_id='video'").fetchone()[0], "REMOTE_UNAVAILABLE:REMOVED")
+        self.assertEqual(get_library_items(self.conn, ["video"]), [])
+
+    def test_folder_move_outside_then_inside_keeps_identity_and_product(self):
+        product = self.add_product_folder(manual=True); self.ready()
+        sync, provider = self.sync({"C0": {"changes": [file_change("video")], "new_start_page_token": "C1"}})
+        sync.cycle()
+        provider.pages["C1"] = {"changes": [folder_change("product", "Produto", parent="foreign")], "new_start_page_token": "C2"}
+        sync.cycle()
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='product'").fetchone()[0], "OUT_OF_SCOPE")
+        provider.pages["C2"] = {"changes": [folder_change("product", "Produto", parent="root")], "new_start_page_token": "C3"}
+        sync.cycle()
+        row = self.conn.execute("SELECT operational_status,product_id FROM drive_folders WHERE drive_folder_id='product'").fetchone()
+        self.assertEqual(tuple(row), ("ACTIVE", product))
+        self.assertIsNotNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
+
     def test_membership_unknown_does_not_create_false_missing(self):
         self.add_product_folder(); self.ready()
         sync, provider = self.sync({"C0": {"changes": [file_change("protected")], "new_start_page_token": "C1"}})
         sync.cycle(); self.conn.execute("UPDATE publisher_drive_sync_state SET current_cursor='C1'"); self.conn.commit()
         provider.is_within_root = lambda *_: None
         provider.pages["C1"] = {"changes": [file_change("protected", parent="inaccessible")], "new_start_page_token": "C2"}
-        sync.cycle()
+        result = sync.cycle()
+        self.assertEqual(result["status"], "TRANSIENT_ERROR")
+        self.assertEqual(self.conn.execute("SELECT current_cursor FROM publisher_drive_sync_state").fetchone()[0], "C1")
         self.assertIsNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='protected'").fetchone()[0])
+
+    def test_sparse_change_without_removed_flag_preserves_cursor(self):
+        self.add_product_folder(); self.ready()
+        sync, provider = self.sync({"C0": {"changes": [file_change("video")], "new_start_page_token": "C1"}})
+        sync.cycle()
+        provider.pages["C1"] = {"changes": [{"file_id": "video", "removed": False, "file": None}], "new_start_page_token": "C2"}
+        self.assertEqual(sync.cycle()["status"], "TRANSIENT_ERROR")
+        self.assertEqual(self.conn.execute("SELECT current_cursor FROM publisher_drive_sync_state").fetchone()[0], "C1")
+        self.assertIsNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
 
     def test_new_folder_defaults_to_review_without_auto_product(self):
         self.ready()

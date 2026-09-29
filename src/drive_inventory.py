@@ -20,6 +20,7 @@ from src.publisher.folder_catalog import sync_drive_product_name
 
 LOGGER = logging.getLogger(__name__)
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+MAX_MISSING_FOLDER_METADATA_PER_SCAN = 200
 STOCK_NAME_PATTERN = re.compile(r"(?:G\d+C\d+A\d+|FINAL)", re.IGNORECASE)
 VIDEO_CLASSES = (
     "AVAILABLE",
@@ -84,6 +85,10 @@ class DriveEntry:
 
 class DriveInventoryProvider(Protocol):
     def get_folder(self, folder_id: str) -> DriveEntry: ...
+
+    def get_item_metadata(self, file_id: str) -> dict[str, Any] | None: ...
+
+    def is_within_root(self, file_id: str, root_id: str) -> bool | None: ...
 
     def list_children(self, folder_id: str) -> list[DriveEntry]: ...
 
@@ -203,6 +208,17 @@ class GoogleApiDriveInventoryProvider:
         if not entry.is_folder:
             raise DriveInventoryError("O ID configurado nao representa uma pasta do Google Drive.")
         return entry
+
+    def get_item_metadata(self, file_id: str) -> dict[str, Any] | None:
+        try:
+            return self._service.files().get(
+                fileId=file_id, fields="id,name,mimeType,parents,trashed",
+                supportsAllDrives=True,
+            ).execute(num_retries=0)
+        except Exception as exc:
+            if getattr(getattr(exc, "resp", None), "status", None) == 404:
+                return None
+            raise DriveInventoryError(f"Falha ao consultar metadata: {_safe_provider_error(exc)}") from exc
 
     def list_children(self, folder_id: str) -> list[DriveEntry]:
         entries: list[DriveEntry] = []
@@ -385,6 +401,39 @@ class VideoPublicationEligibilityService:
             f"validacao/status pendente ({validation}/{status or 'SEM_STATUS'})",
             content_id=content_id,
         )
+
+
+def mark_remote_unavailable(conn, file_id: str, *, is_folder: bool, reason: str) -> int:
+    """Tombstone inventory rows while retaining Drive IDs and human mappings."""
+    if reason not in {"TRASHED", "REMOVED", "OUTSIDE_ROOT", "NOT_FOUND"}:
+        raise ValueError("INVALID_REMOTE_UNAVAILABLE_REASON")
+    timestamp = now_iso()
+    if not is_folder:
+        cursor = conn.execute(
+            """UPDATE drive_files SET classification='MISSING_FROM_DRIVE',
+               classification_reason=?,missing_since=COALESCE(missing_since,?),updated_at=?
+               WHERE drive_file_id=?""",
+            (f"REMOTE_UNAVAILABLE:{reason}", timestamp, timestamp, file_id),
+        )
+        return max(0, cursor.rowcount)
+    ids = [row[0] for row in conn.execute(
+        """WITH RECURSIVE tree(id) AS (SELECT drive_folder_id FROM drive_folders WHERE drive_folder_id=?
+           UNION ALL SELECT f.drive_folder_id FROM drive_folders f JOIN tree t ON f.parent_drive_folder_id=t.id)
+           SELECT id FROM tree""", (file_id,),
+    )]
+    if not ids:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    conn.execute(
+        f"UPDATE drive_folders SET operational_status='OUT_OF_SCOPE',updated_at=? WHERE drive_folder_id IN ({marks})",
+        (timestamp, *ids),
+    )
+    cursor = conn.execute(
+        f"""UPDATE drive_files SET classification='MISSING_FROM_DRIVE',classification_reason=?,
+            missing_since=COALESCE(missing_since,?),updated_at=? WHERE drive_folder_id IN ({marks})""",
+        (f"REMOTE_UNAVAILABLE:{reason}", timestamp, timestamp, *ids),
+    )
+    return len(ids) + max(0, cursor.rowcount)
 
 
 class DriveInventoryScanner:
@@ -585,6 +634,49 @@ class DriveInventoryScanner:
                     extra={"folder_id": folder_entry.file_id, "scan_id": scan_id},
                 )
 
+        if not counters["folders_failed"]:
+            missing_children = [row["drive_folder_id"] for row in conn.execute(
+                """SELECT drive_folder_id FROM drive_folders
+                   WHERE parent_drive_folder_id IN (SELECT drive_folder_id FROM drive_folders
+                                                    WHERE drive_folder_id IN (%s))
+                     AND operational_status='ACTIVE'""" % ",".join("?" for _ in successful_folders),
+                tuple(successful_folders),
+            ).fetchall() if row["drive_folder_id"] not in seen_folder_ids] if successful_folders else []
+            unavailable_children = []
+            if len(missing_children) > MAX_MISSING_FOLDER_METADATA_PER_SCAN:
+                counters["folders_failed"] += 1
+                LOGGER.warning("drive_missing_folder_metadata_limit_exceeded", extra={"count": len(missing_children)})
+            for child_id in missing_children:
+                if counters["folders_failed"]:
+                    break
+                try:
+                    metadata = self.provider.get_item_metadata(child_id)
+                    if metadata is None:
+                        reason = "NOT_FOUND"
+                    elif metadata.get("trashed"):
+                        reason = "TRASHED"
+                    else:
+                        membership = self.provider.is_within_root(child_id, operational_root.file_id)
+                        if membership is not False:
+                            raise DriveInventoryError("Pasta ausente da listagem mas ainda dentro da raiz ou indeterminada")
+                        reason = "OUTSIDE_ROOT"
+                    if reason:
+                        unavailable_children.append((child_id, reason))
+                except Exception:
+                    counters["folders_failed"] += 1
+                    LOGGER.warning("drive_missing_folder_metadata_unavailable", extra={"folder_id": child_id})
+                    break
+            if not counters["folders_failed"]:
+                conn.execute("SAVEPOINT unavailable_subtrees")
+                try:
+                    for child_id, reason in unavailable_children:
+                        mark_remote_unavailable(conn, child_id, is_folder=True, reason=reason)
+                    conn.execute("RELEASE SAVEPOINT unavailable_subtrees")
+                except Exception:
+                    conn.execute("ROLLBACK TO SAVEPOINT unavailable_subtrees")
+                    conn.execute("RELEASE SAVEPOINT unavailable_subtrees")
+                    counters["folders_failed"] += 1
+                    LOGGER.warning("drive_missing_folder_reconciliation_failed")
         for folder_id in successful_folders:
             conn.execute(
                 """
@@ -1247,10 +1339,11 @@ def _sync_creator_drive_profiles(
                 SELECT f.drive_folder_id FROM drive_folders f
                 JOIN tree t ON f.parent_drive_folder_id = t.folder_id
             )
-            UPDATE drive_folders SET creator_profile_id = ?, operational_status = ?,
+            UPDATE drive_folders SET creator_profile_id = ?,
+                operational_status = CASE WHEN ? = 'ACTIVE' THEN operational_status ELSE ? END,
                 updated_at = ? WHERE drive_folder_id IN (SELECT folder_id FROM tree)
             """,
-            (entry.file_id, profile_id, status, timestamp),
+            (entry.file_id, profile_id, status, status, timestamp),
         )
         if status != "ACTIVE":
             conn.execute(

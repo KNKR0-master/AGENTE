@@ -16,6 +16,14 @@ FRIENDLY_STATUS = {
     "IGNORED": "IGNORADO",
     "CONSUMED": "CONSUMIDO",
     "OUT_OF_SCOPE": "FORA DO FLUXO",
+    "REMOTE_UNAVAILABLE": "INDISPONÍVEL NO DRIVE",
+}
+
+REMOTE_UNAVAILABLE_REASONS = {
+    "TRASHED": "Na lixeira do Drive",
+    "REMOVED": "Arquivo removido do Drive",
+    "OUTSIDE_ROOT": "Fora da raiz do Publisher",
+    "NOT_FOUND": "Arquivo não localizado no Drive",
 }
 
 
@@ -49,10 +57,11 @@ def _ancestor_product_sql() -> str:
     """
 
 
-def _base_query() -> str:
+def _base_query(*, include_unavailable=False) -> str:
     return _ancestor_product_sql() + """
     SELECT df.*, f.name folder_name, f.relative_path folder_path,
            f.parent_drive_folder_id, f.product_id direct_folder_product_id,
+           f.operational_status folder_operational_status,
            f.mapping_status folder_mapping_status, f.folder_type folder_type,
            COALESCE(f.product_id, ancestor.product_id) inferred_product_id,
            pp.name inferred_product_name, pp.short_name inferred_product_short_name,
@@ -73,13 +82,14 @@ def _base_query() -> str:
       LEFT JOIN publisher_products pp ON pp.product_id=COALESCE(ov.product_id, f.product_id, ancestor.product_id)
       LEFT JOIN publisher_products direct_pp ON direct_pp.product_id=f.product_id
       LEFT JOIN publisher_products ancestor_pp ON ancestor_pp.product_id=ancestor.product_id
-     WHERE df.missing_since IS NULL
-       AND f.operational_status='ACTIVE'
-    """
+     WHERE 1=1
+    """ + (" AND (df.missing_since IS NOT NULL OR f.operational_status='OUT_OF_SCOPE')"
+           if include_unavailable else " AND df.missing_since IS NULL AND f.operational_status='ACTIVE'")
 
 
 def _raw_rows(conn, *, drive_file_ids: Iterable[str] | None = None, search: str = "",
-              path: str = "", product_id=None, file_type: str = "VIDEO") -> list[dict]:
+              path: str = "", product_id=None, file_type: str = "VIDEO",
+              include_unavailable=False) -> list[dict]:
     clauses: list[str] = []
     params: list = []
     if drive_file_ids is not None:
@@ -109,7 +119,7 @@ def _raw_rows(conn, *, drive_file_ids: Iterable[str] | None = None, search: str 
         else:
             clauses.append("df.file_kind=?")
             params.append(str(file_type).upper())
-    query = _base_query()
+    query = _base_query(include_unavailable=include_unavailable)
     if clauses:
         query += " AND " + " AND ".join(clauses)
     query += " ORDER BY COALESCE(df.modified_time, df.created_time, df.updated_at) DESC, df.name COLLATE NOCASE"
@@ -143,8 +153,8 @@ def _classify(row: dict) -> dict:
         "modified_time": row.get("modified_time"),
         "created_time": row.get("created_time"),
         "md5_checksum": row.get("md5_checksum"),
-        "web_view_link": row.get("web_view_link"),
-        "thumbnail_link": row.get("thumbnail_link"),
+        "web_view_link": None if row.get("missing_since") or row.get("folder_operational_status") != "ACTIVE" else row.get("web_view_link"),
+        "thumbnail_link": None if row.get("missing_since") or row.get("folder_operational_status") != "ACTIVE" else row.get("thumbnail_link"),
         "product_id": int(product_id) if product_id is not None else None,
         "product_name": product_name,
         "product_short_name": row.get("inferred_product_short_name") or product_name,
@@ -172,6 +182,13 @@ def _classify(row: dict) -> dict:
         "status_label": FRIENDLY_STATUS["ATTENTION"],
         "reason": "",
     }
+    if row.get("missing_since") or row.get("folder_operational_status") != "ACTIVE":
+        code = str(row.get("classification_reason") or "").removeprefix("REMOTE_UNAVAILABLE:")
+        fallback = ("Pasta fora do perfil operacional" if row.get("folder_operational_status") != "ACTIVE"
+                    else "Arquivo não localizado no último inventário")
+        result.update(status="REMOTE_UNAVAILABLE", status_label=FRIENDLY_STATUS["REMOTE_UNAVAILABLE"],
+                      reason=REMOTE_UNAVAILABLE_REASONS.get(code, fallback))
+        return result
     if media_status in {"RESERVED", "PROCESSING", "NEEDS_RECONCILIATION", "CONSUMED_PENDING_DELETE"} or (row.get("draft_id") and row.get("draft_status") != "ARCHIVED"):
         result.update(status="RESERVED", status_label=FRIENDLY_STATUS["RESERVED"], reason=f"Em uso pelo Draft #{row['draft_id']}" if row.get("draft_id") else "Mídia reservada")
         return result
@@ -254,9 +271,13 @@ def _group_key(item: dict) -> str:
 
 
 def _matching_group_items(conn, *, search="", path="", product_id=None, file_type="VIDEO",
-                          status="", decision="") -> list[dict]:
+                          status="", decision="", group_view="ACTIVE") -> list[dict]:
+    unavailable_view = str(group_view).upper() == "REMOTE_UNAVAILABLE"
     items = [_classify(row) for row in _raw_rows(conn, search=search, path=path,
-                                                 product_id=product_id, file_type=file_type)]
+                                                 product_id=product_id, file_type=file_type,
+                                                 include_unavailable=unavailable_view)]
+    if unavailable_view:
+        items = [item for item in items if item["status"] == "REMOTE_UNAVAILABLE"]
     status, decision = str(status or "").upper(), str(decision or "").upper()
     if status:
         items = [item for item in items if item["status"] == status]
@@ -273,7 +294,7 @@ def _group_sort_key(group: dict) -> tuple:
 
 def _safe_to_ignore(item: dict) -> bool:
     return (
-        item["status"] != "IGNORED"
+        item["status"] not in {"IGNORED", "REMOTE_UNAVAILABLE"}
         and item["media_status"] in {None, "", "AVAILABLE", "FAILED", "RELEASED"}
         and not (item["draft_id"] and item["draft_status"] != "ARCHIVED")
     )
@@ -283,9 +304,9 @@ def list_library_groups(conn, *, page=1, page_size=20, search="", path="", produ
                         file_type="VIDEO", status="", decision="", group_view="ACTIVE") -> dict:
     page, page_size = max(1, int(page or 1)), min(100, max(1, int(page_size or 20)))
     matching = _matching_group_items(conn, search=search, path=path, product_id=product_id,
-                                     file_type=file_type, status=status, decision=decision)
-    all_items = _matching_group_items(conn, file_type=file_type)
-    video_items = _matching_group_items(conn, file_type="VIDEO")
+                                     file_type=file_type, status=status, decision=decision, group_view=group_view)
+    all_items = _matching_group_items(conn, file_type=file_type, group_view=group_view)
+    video_items = _matching_group_items(conn, file_type="VIDEO", group_view=group_view)
     members_by_group: dict[str, list[dict]] = {}
     for item in video_items:
         members_by_group.setdefault(_group_key(item), []).append(item)
@@ -325,6 +346,8 @@ def list_library_groups(conn, *, page=1, page_size=20, search="", path="", produ
             for item in members
         )
         group["presentation_state"] = (
+            "REMOTE_UNAVAILABLE" if str(group_view).upper() == "REMOTE_UNAVAILABLE"
+            else
             "IGNORED" if members and not unsafe and all(item["status"] == "IGNORED" for item in members)
             else "REQUIRES_ATTENTION" if group["product_archived"] or any(item["status"] == "ATTENTION" for item in members)
             else "ACTIVE"
@@ -344,7 +367,7 @@ def list_library_groups(conn, *, page=1, page_size=20, search="", path="", produ
             if members and all(item["folder_mapping_status"] == "ADMINISTRATIVE" for item in members)
             else "Todos os vídeos deste grupo foram ignorados"
         ) if group["presentation_state"] == "IGNORED" else None
-        group["display_status"] = (group["review_reason"] or
+        group["display_status"] = ("Indisponível no Drive" if group["presentation_state"] == "REMOTE_UNAVAILABLE" else group["review_reason"] or
             (f"{group['attention_count']} requerem atenção" if group["attention_count"] else
              "Pronto" if group["available_count"] else
              "IGNORADO" if group["presentation_state"] == "IGNORED" else
@@ -354,7 +377,7 @@ def list_library_groups(conn, *, page=1, page_size=20, search="", path="", produ
         group["folder_count"] = len(group["folder_ids"])
         group["representative_folder_path"] = group["folder_paths"][0] if group["folder_paths"] else ""
     group_view = str(group_view or "ACTIVE").upper()
-    if group_view not in {"ACTIVE", "REQUIRES_ATTENTION", "IGNORED", "ALL"}:
+    if group_view not in {"ACTIVE", "REQUIRES_ATTENTION", "IGNORED", "ALL", "REMOTE_UNAVAILABLE"}:
         group_view = "ACTIVE"
     if group_view != "ALL":
         ordered = [group for group in ordered if group["presentation_state"] == group_view]

@@ -112,6 +112,10 @@ class PublisherUIStateTests(unittest.TestCase):
 
     def test_library_sync_wiring_has_no_parallel_discovery_or_automatic_rebuild(self):
         source=PUBLISHER_MODULE.read_text(encoding='utf-8')
+        self.assertIn("'Atualizar biblioteca'", source)
+        self.assertIn("group.presentation_state==='REMOTE_UNAVAILABLE'?'':", source)
+        self.assertIn("item.file_type==='VIDEO'&&!unavailable", source)
+        self.assertIn("${!unavailable&&item.web_view_link?", source)
         self.assertIn("$('#syncMedia').onclick=()=>runDriveSync();",source)
         self.assertIn("await api('/drive-sync/incremental'",source)
         self.assertNotIn("api('/sync-media'",source)

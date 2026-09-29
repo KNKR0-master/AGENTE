@@ -123,10 +123,11 @@ async function loadLibrary(){
  return request===libraryRequestSequence;
 }
 async function loadLibraryGroup(key,page=1,request=libraryRequestSequence){
- const params=libraryFilterParams();params.set('group_key',key);params.set('page',String(page));params.set('page_size','50');
+ const params=libraryFilterParams(true);params.set('group_key',key);params.set('page',String(page));params.set('page_size','50');
  const response=await fetch('/api/publisher/library/group-items?'+params),body=await response.json();
  if(request!==libraryRequestSequence)return false;
  if(!response.ok)throw Error(body.error||'Falha ao carregar vídeos do grupo');
+ for(const item of body.items||[])if(item.status==='REMOTE_UNAVAILABLE')uiState.setLibrarySelection(item.drive_file_id,false);
  const old=libraryGroupPages.get(key);
  libraryGroupPages.set(key,{...body,items:page>1&&old?[...old.items,...body.items]:body.items});
  return true;
@@ -348,7 +349,7 @@ function renderDriveSync(){
  const formatTime=value=>value?new Date(value).toLocaleString('pt-BR'):'';
  $('#drivePollTimes').textContent=poll.enabled?`Última: ${formatTime(poll.last_success_at)||'ainda não ocorreu'} · Próxima: ${formatTime(poll.next_attempt_at)||'aguardando ação'}`:'';
  $('#syncMedia').disabled=driveSyncBusy||view.needsRebuild||!!view.manualSyncBlocked;
- $('#syncMedia').textContent=driveSyncBusy?'Sincronizando…':'Sincronizar agora';
+ $('#syncMedia').textContent=driveSyncBusy?'Sincronizando…':'Atualizar biblioteca';
  $('#rebuildDriveSync').disabled=driveSyncBusy||!!view.manualSyncBlocked;
 }
 async function runDriveSync(bootstrap=false){
@@ -402,12 +403,13 @@ function renderLibrary(){
  $('#libraryPageLabel').textContent=library.total_groups?`Página ${library.page} de ${library.pages} · grupos`:'Nenhum resultado';
  const signature=value=>encodeURIComponent(JSON.stringify(value));
  const mediaRow=item=>{
-    const thumbnail=item.file_type==='VIDEO'?`<span class="thumbnail-wrap"><img class="media-thumbnail" data-thumbnail src="/api/publisher/library/thumbnail/${encodeURIComponent(item.drive_file_id)}" alt="Prévia de ${esc(item.filename)}" loading="lazy"><span class="media-thumbnail placeholder" hidden aria-hidden="true">▶</span></span>`:`<span class="media-thumbnail placeholder" aria-hidden="true">▶</span>`;
-    const canDelete=!item.media_asset_id&&item.status!=='CONSUMED'&&item.status!=='RESERVED';
+    const unavailable=item.status==='REMOTE_UNAVAILABLE';
+    const thumbnail=item.file_type==='VIDEO'&&!unavailable?`<span class="thumbnail-wrap"><img class="media-thumbnail" data-thumbnail src="/api/publisher/library/thumbnail/${encodeURIComponent(item.drive_file_id)}" alt="Prévia de ${esc(item.filename)}" loading="lazy"><span class="media-thumbnail placeholder" hidden aria-hidden="true">▶</span></span>`:`<span class="media-thumbnail placeholder" aria-hidden="true">▶</span>`;
+    const canDelete=!unavailable&&!item.media_asset_id&&item.status!=='CONSUMED'&&item.status!=='RESERVED';
     const menu=`<details class="row-menu"><summary aria-label="Mais ações para ${esc(item.filename)}">⋯</summary><div><button type="button" data-change-library-product="${esc(item.drive_file_id)}">Alterar somente este vídeo</button><button type="button" data-ignore-library="${esc(item.drive_file_id)}">Ignorar</button>${canDelete?`<button class="danger" type="button" data-delete-library="${esc(item.drive_file_id)}" data-delete-filename="${esc(item.filename)}" data-delete-size="${esc(item.size||0)}">Excluir do Drive</button>`:''}</div></details>`;
     const origin={MEDIA_OVERRIDE:'Override deste vídeo',DIRECT_FOLDER:'Produto da pasta',ANCESTOR_FOLDER:'Produto herdado da pasta'}[item.product_resolution]||'Produto da pasta não associado';
     const rowSignature=signature([item.drive_file_id,item.status,item.reason,item.product_id,item.product_archived,item.caption,item.classification_label,item.product_resolution,librarySelected.has(String(item.drive_file_id))]);
-    return `<tr data-library-row-key="media:${esc(item.drive_file_id)}" data-render-signature="${rowSignature}"><td><input type="checkbox" data-library="${esc(item.drive_file_id)}" aria-label="Selecionar ${esc(item.filename)}" ${librarySelected.has(String(item.drive_file_id))?'checked':''}></td><td><div class="media-file">${thumbnail}<span><strong>${esc(item.filename)}</strong><small>${esc(item.mime_type||item.file_type)} · ${item.size?`${(Number(item.size)/1048576).toFixed(1)} MB`:''}</small></span></div></td><td>${esc(item.folder_path||item.folder_name||'—')}</td><td><strong>${esc(item.product_short_name||item.product_name||'Sem produto')}</strong>${item.product_short_name&&item.product_name&&item.product_short_name!==item.product_name?`<small title="${esc(item.product_name)}">${esc(item.product_name)}</small>`:''}<small>${esc(origin)} · ${item.product_archived?'Produto arquivado':item.product_name?(item.caption?.trim()?'Legenda do produto pronta':'Legenda não configurada'):'Associe produto à pasta'}</small></td><td><span title="${esc(item.classification_reason||'')}">${esc(item.classification_label||'Revisar')}</span></td><td><span class="status ${item.status==='AVAILABLE'?'ready':item.status==='ATTENTION'?'warning':item.status==='IGNORED'?'muted':''}">${esc(item.status_label||item.status)}</span><small>${esc(friendlyLibraryReason(item.reason))}</small></td><td class="library-row-actions">${item.web_view_link?`<a href="${esc(item.web_view_link)}" target="_blank" rel="noopener">Ver no Drive ↗</a>`:''}${menu}</td></tr>`;
+    return `<tr data-library-row-key="media:${esc(item.drive_file_id)}" data-render-signature="${rowSignature}"><td><input type="checkbox" data-library="${esc(item.drive_file_id)}" aria-label="Selecionar ${esc(item.filename)}" ${unavailable?'disabled':''} ${librarySelected.has(String(item.drive_file_id))?'checked':''}></td><td><div class="media-file">${thumbnail}<span><strong>${esc(item.filename)}</strong><small>${esc(item.mime_type||item.file_type)} · ${item.size?`${(Number(item.size)/1048576).toFixed(1)} MB`:''}</small></span></div></td><td>${esc(item.folder_path||item.folder_name||'—')}</td><td><strong>${esc(item.product_short_name||item.product_name||'Sem produto')}</strong>${item.product_short_name&&item.product_name&&item.product_short_name!==item.product_name?`<small title="${esc(item.product_name)}">${esc(item.product_name)}</small>`:''}<small>${esc(origin)} · ${item.product_archived?'Produto arquivado':item.product_name?(item.caption?.trim()?'Legenda do produto pronta':'Legenda não configurada'):'Associe produto à pasta'}</small></td><td><span title="${esc(item.classification_reason||'')}">${esc(item.classification_label||'Revisar')}</span></td><td><span class="status ${item.status==='AVAILABLE'?'ready':item.status==='ATTENTION'?'warning':item.status==='IGNORED'?'muted':''}">${esc(item.status_label||item.status)}</span><small>${esc(friendlyLibraryReason(item.reason))}</small></td><td class="library-row-actions">${!unavailable&&item.web_view_link?`<a href="${esc(item.web_view_link)}" target="_blank" rel="noopener">Ver no Drive ↗</a>`:''}${unavailable?'':menu}</td></tr>`;
  };
  const rowMarkup=(library.groups||[]).map(group=>{
     const expanded=expandedLibraryGroups.has(group.group_key),loaded=libraryGroupPages.get(group.group_key);
@@ -419,7 +421,7 @@ function renderLibrary(){
     const paths=group.folder_paths||[];
     const identity=JSON.stringify([group.group_type,group.product_id,group.folder_ids]);
     const stateLabel=group.presentation_state==='IGNORED'?'muted':group.presentation_state==='REQUIRES_ATTENTION'?'warning':'ready';
-    const actions=`${folderAction}${group.ignoreable_count?`<button type="button" data-ignore-library-group="${esc(group.group_key)}" data-ignore-count="${group.ignoreable_count}">Ignorar ${group.ignoreable_count} ${group.ignoreable_count===1?'vídeo':'vídeos'} deste grupo</button>`:''}`;
+    const actions=group.presentation_state==='REMOTE_UNAVAILABLE'?'':`${folderAction}${group.ignoreable_count?`<button type="button" data-ignore-library-group="${esc(group.group_key)}" data-ignore-count="${group.ignoreable_count}">Ignorar ${group.ignoreable_count} ${group.ignoreable_count===1?'vídeo':'vídeos'} deste grupo</button>`:''}`;
     const headerSignature=signature([group.group_key,identity,group.display_name,count,group.folder_count,group.has_default_caption,group.presentation_state,group.display_status,group.review_reason,group.folder_paths,group.product_archived,selectableCount,group.ignoreable_count,expanded]);
     const header=`<tr class="library-group-row" data-library-row-key="group:${esc(group.group_key)}" data-library-group-row="${esc(group.group_key)}" data-group-identity="${esc(identity)}" data-render-signature="${headerSignature}"><td colspan="7"><div class="library-group-header"><button type="button" class="library-group-toggle" data-library-group-toggle="${esc(group.group_key)}" aria-expanded="${expanded}" aria-label="${expanded?'Recolher':'Expandir'} ${esc(label)}">${expanded?'▾':'▸'} <strong>${esc(label)}</strong></button><span>${esc(count)} · ${group.folder_count} pasta(s) · ${group.has_default_caption?'Legenda configurada':'Legenda não configurada'}</span><span class="status ${stateLabel}">${esc(group.display_status||group.review_reason||'Sem vídeos prontos')}</span><div class="library-group-actions">${actions}</div></div><small class="library-group-path" title="${esc(paths.join(' · '))}">${esc(group.representative_folder_path)}</small>${group.presentation_state==='IGNORED'?`<small>${esc(group.ignored_reason||'Grupo ignorado')}</small>`:''}${paths.length>1?`<details><summary>Ver ${paths.length} pastas</summary>${paths.map(path=>`<small>${esc(path)}</small>`).join('')}</details>`:''}</td></tr>`;
     const rows=[header];
@@ -621,7 +623,7 @@ document.addEventListener('click',event=>{const button=event.target.closest('[da
  });});
 async function reloadLibrary(){libraryPage=1;await loadLibrary();renderLibrary();renderBatchSummary();}
 ['#librarySearch','#libraryPath','#libraryProduct','#libraryType','#libraryGroupView','#libraryStatus','#libraryDecision'].forEach(selector=>{const el=$(selector);if(el){el.oninput=()=>task(reloadLibrary,'library');el.onchange=()=>task(reloadLibrary,'library');}});
-function selectVisibleLibrary(checked){const items=visibleLibraryItems();if(checked&&new Set([...librarySelected,...items.map(item=>String(item.drive_file_id))]).size>100){notice('A seleção excederia 100 vídeos. Selecione menos itens.',true,'library');renderLibrary();return;}uiState.setLibraryPageSelection(items,checked);renderLibrary();renderBatchSummary();}
+function selectVisibleLibrary(checked){const items=visibleLibraryItems().filter(item=>item.status!=='REMOTE_UNAVAILABLE');if(checked&&new Set([...librarySelected,...items.map(item=>String(item.drive_file_id))]).size>100){notice('A seleção excederia 100 vídeos. Selecione menos itens.',true,'library');renderLibrary();return;}uiState.setLibraryPageSelection(items,checked);renderLibrary();renderBatchSummary();}
 $('#selectAllLibrary').onchange=e=>selectVisibleLibrary(e.target.checked);
 $('#selectLibraryPage').onclick=()=>selectVisibleLibrary(true);
 $('#clearLibrarySelection').onclick=()=>{uiState.clearLibrarySelection();renderLibrary();renderBatchSummary();};

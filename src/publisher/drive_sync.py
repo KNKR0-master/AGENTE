@@ -14,6 +14,7 @@ from src.drive_inventory import (
     VideoPublicationEligibilityService,
     _file_kind,
     _upsert_drive_file,
+    mark_remote_unavailable,
 )
 from src.publisher.folder_catalog import sync_drive_product_name
 from src.store import now_iso
@@ -207,6 +208,16 @@ class IncrementalDriveSync:
                 self.conn.commit()
             except Exception as exc:
                 self.conn.rollback()
+                if isinstance(exc, DriveInventoryError) and str(exc) in {"MEMBERSHIP_UNKNOWN", "CHANGE_METADATA_MISSING"}:
+                    with self.conn:
+                        self.conn.execute(
+                            """UPDATE publisher_drive_sync_state SET last_error=?,updated_at=?
+                               WHERE account_identity=? AND provider=? AND root_folder_id=?""",
+                            (str(exc), now_iso(), self.scope.account_identity,
+                             self.scope.provider, self.scope.root_folder_id),
+                        )
+                    return {**totals, "status": "TRANSIENT_ERROR", "cursor_status": READY,
+                            "full_scan_required": False}
                 self._set_failure("ERROR", type(exc).__name__)
                 return {**totals, "status": "ERROR", "cursor_status": "ERROR"}
             totals["pages_processed"] += 1
@@ -222,24 +233,26 @@ class IncrementalDriveSync:
             raise ValueError("MALFORMED_CHANGE")
         existing_file = self.conn.execute("SELECT * FROM drive_files WHERE drive_file_id=?", (file_id,)).fetchone()
         existing_folder = self.conn.execute("SELECT * FROM drive_folders WHERE drive_folder_id=?", (file_id,)).fetchone()
-        if change.get("removed") or not change.get("file"):
+        if change.get("removed"):
             if existing_file or existing_folder:
                 counters["changes_in_scope"] = 1
-                counters["items_marked_unavailable"] = self._mark_unavailable(file_id, bool(existing_folder))
+                counters["items_marked_unavailable"] = self._mark_unavailable(file_id, bool(existing_folder), "REMOVED")
             return counters
+        if not change.get("file"):
+            raise DriveInventoryError("CHANGE_METADATA_MISSING")
         payload = change["file"]
         if payload.get("trashed"):
             if existing_file or existing_folder:
                 counters["changes_in_scope"] = 1
-                counters["items_marked_unavailable"] = self._mark_unavailable(file_id, bool(existing_folder))
+                counters["items_marked_unavailable"] = self._mark_unavailable(file_id, bool(existing_folder), "TRASHED")
             return counters
         membership = self._membership(file_id, payload, bool(existing_file or existing_folder))
         if membership == "MEMBERSHIP_UNKNOWN":
-            return counters
+            raise DriveInventoryError("MEMBERSHIP_UNKNOWN")
         if membership in {"OUT_OF_SCOPE", "PREVIOUSLY_IN_SCOPE"}:
             if existing_file or existing_folder:
                 counters["changes_in_scope"] = 1
-                counters["items_marked_unavailable"] = self._mark_unavailable(file_id, bool(existing_folder))
+                counters["items_marked_unavailable"] = self._mark_unavailable(file_id, bool(existing_folder), "OUTSIDE_ROOT")
             return counters
         counters["changes_in_scope"] = 1
         entry = DriveEntry.from_api(payload)
@@ -282,6 +295,7 @@ class IncrementalDriveSync:
     def _upsert_folder(self, entry: DriveEntry) -> None:
         parent = entry.parent_ids[0] if entry.parent_ids else None
         parent_row = self.conn.execute("SELECT relative_path,depth FROM drive_folders WHERE drive_folder_id=?", (parent,)).fetchone()
+        prior = self.conn.execute("SELECT name FROM drive_folders WHERE drive_folder_id=?", (entry.file_id,)).fetchone()
         path = f"{parent_row['relative_path']}/{entry.name}" if parent_row else entry.name
         depth = int(parent_row["depth"] + 1) if parent_row else 0
         timestamp = now_iso()
@@ -298,22 +312,9 @@ class IncrementalDriveSync:
                  updated_at=excluded.updated_at""",
             (entry.file_id, parent, entry.name, path, depth, timestamp, timestamp, timestamp),
         )
-        sync_drive_product_name(self.conn, entry.file_id, entry.name)
-        descendants = [row["id"] for row in self.conn.execute(
-            """WITH RECURSIVE tree(id) AS (SELECT drive_folder_id FROM drive_folders WHERE drive_folder_id=?
-               UNION ALL SELECT f.drive_folder_id FROM drive_folders f JOIN tree t ON f.parent_drive_folder_id=t.id)
-               SELECT id FROM tree""", (entry.file_id,)
-        )]
-        if descendants:
-            marks = ",".join("?" for _ in descendants)
-            self.conn.execute(
-                f"UPDATE drive_folders SET operational_status='ACTIVE',updated_at=? WHERE drive_folder_id IN ({marks})",
-                (timestamp, *descendants),
-            )
-            self.conn.execute(
-                f"UPDATE drive_files SET missing_since=NULL,updated_at=? WHERE drive_folder_id IN ({marks})",
-                (timestamp, *descendants),
-            )
+        if prior and prior["name"] != entry.name:
+            sync_drive_product_name(self.conn, entry.file_id, entry.name)
+        # Restoring a parent does not prove its previously unavailable children are back.
         self._refresh_descendant_paths(entry.file_id)
 
     def _upsert_file(self, entry: DriveEntry) -> None:
@@ -325,31 +326,8 @@ class IncrementalDriveSync:
         classification = self.eligibility.classify(self.conn, entry, folder)
         _upsert_drive_file(self.conn, entry, folder, classification, None, file_kind=_file_kind(entry))
 
-    def _mark_unavailable(self, file_id: str, is_folder: bool) -> int:
-        timestamp = now_iso()
-        if not is_folder:
-            cursor = self.conn.execute(
-                """UPDATE drive_files SET classification='MISSING_FROM_DRIVE',
-                   classification_reason='Drive change marcou item como removido, fora da raiz ou na lixeira',
-                   missing_since=COALESCE(missing_since,?),updated_at=? WHERE drive_file_id=?""",
-                (timestamp, timestamp, file_id),
-            )
-            return max(0, cursor.rowcount)
-        ids = [file_id]
-        for row in self.conn.execute(
-            """WITH RECURSIVE tree(id) AS (SELECT drive_folder_id FROM drive_folders WHERE drive_folder_id=?
-               UNION ALL SELECT f.drive_folder_id FROM drive_folders f JOIN tree t ON f.parent_drive_folder_id=t.id)
-               SELECT id FROM tree""", (file_id,)
-        ):
-            if row["id"] not in ids:
-                ids.append(row["id"])
-        marks = ",".join("?" for _ in ids)
-        self.conn.execute(f"UPDATE drive_folders SET operational_status='OUT_OF_SCOPE',updated_at=? WHERE drive_folder_id IN ({marks})", (timestamp, *ids))
-        cursor = self.conn.execute(
-            f"""UPDATE drive_files SET classification='MISSING_FROM_DRIVE',missing_since=COALESCE(missing_since,?),updated_at=?
-                WHERE drive_folder_id IN ({marks})""", (timestamp, timestamp, *ids)
-        )
-        return max(1, cursor.rowcount)
+    def _mark_unavailable(self, file_id: str, is_folder: bool, reason: str) -> int:
+        return mark_remote_unavailable(self.conn, file_id, is_folder=is_folder, reason=reason)
 
     def _refresh_descendant_paths(self, folder_id: str) -> None:
         queue = [folder_id]
