@@ -141,7 +141,7 @@
       selectedLibraryDetails() {
         return [...librarySelectionDetails.values()];
       },
-      librarySelectionSummary() {
+      librarySelectionSummary(maxDraftsPerBatch = Infinity) {
         const details = this.selectedLibraryDetails();
         const withoutProduct = details.filter(item => !item.product_name).length;
         const attention = details.filter(item => item.status !== 'AVAILABLE' || item.product_archived).length;
@@ -153,7 +153,7 @@
           ready: details.filter(item => item.status === 'AVAILABLE' && !item.product_archived).length,
           withoutProduct,
           attention,
-          canCreate: librarySelected.size > 0 && librarySelected.size <= 100 && details.length === librarySelected.size && withoutProduct === 0 && attention === 0,
+          canCreate: librarySelected.size > 0 && librarySelected.size <= maxDraftsPerBatch && details.length === librarySelected.size && withoutProduct === 0 && attention === 0,
         };
       },
       setMessage(scope, text, error) {

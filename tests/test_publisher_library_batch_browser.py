@@ -30,6 +30,7 @@ class BatchPanelFixtureHandler(GroupFixtureHandler):
                 self.send_error(503)
                 return
             body = fixture()
+            body["worker_config"]["max_drafts_per_batch"] = 30
             body["preferences"] = {
                 "default_publisher_account_id": 1,
                 "default_publisher_account_name": "CECILIA FIGUEIREDO",
@@ -246,6 +247,36 @@ class LibraryBatchPanelBrowserTests(unittest.TestCase):
         self.assertIn("Body Splash", batch.inner_text())
         self.assertIn("Legenda de teste", batch.inner_text())
         self.assertEqual(BatchPanelFixtureHandler.prepare_requests, [])
+        self.assertFalse(errors, errors)
+
+    def test_global_selection_limit_survives_refresh_and_rejects_31st(self):
+        page, errors = self._open()
+        page.locator('[data-library-group-toggle="product:1"]').click()
+        page.locator('[data-library="G1C1A1"]').wait_for()
+        page.evaluate("""() => {
+          for(let index=2;index<30;index++)uiState.setLibrarySelection(`saved-${index}`,true,
+            {drive_file_id:`saved-${index}`,filename:`Saved ${index}`,product_name:'Body Splash',status:'AVAILABLE'});
+          const group=libraryGroupPages.get('product:1');
+          group.items.push({...group.items[0],drive_file_id:'extra-31',filename:'Extra 31.mp4'});
+          renderLibrary();renderBatchSummary();
+        }""")
+        self.assertIn('30 / 30', page.locator('#librarySelectionCount').inner_text())
+        page.locator('[data-library="extra-31"]').click()
+        self.assertEqual(page.evaluate('librarySelected.size'), 30)
+        self.assertFalse(page.locator('[data-library="extra-31"]').is_checked())
+        self.assertIn('Limite de 30 rascunhos', page.locator('#notice').inner_text())
+        page.locator('#selectAllLibrary').click()
+        self.assertEqual(page.evaluate('librarySelected.size'), 30)
+        page.wait_for_timeout(11000)
+        self.assertEqual(page.evaluate('librarySelected.size'), 30)
+        self.assertIn('30 / 30', page.locator('#librarySelectionCount').inner_text())
+        page.locator('[data-library="G1C1A1"]').uncheck()
+        self.assertEqual(page.evaluate('librarySelected.size'), 29)
+        page.evaluate("""() => {const group=libraryGroupPages.get('product:1');
+          group.items.push({...group.items[0],drive_file_id:'extra-31',filename:'Extra 31.mp4'});
+          renderLibrary();}""")
+        page.locator('[data-library="extra-31"]').check()
+        self.assertEqual(page.evaluate('librarySelected.size'), 30)
         self.assertFalse(errors, errors)
 
     def test_archived_product_fix_restores_by_id_and_revalidates_without_losing_selection(self):

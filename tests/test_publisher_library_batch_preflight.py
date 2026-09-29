@@ -189,22 +189,60 @@ class LibraryBatchPreflightTests(unittest.TestCase):
             self.conn.execute("UPDATE publisher_products SET default_caption='Legenda alterada' WHERE product_id=?", (self.product_a,))
         self.assertEqual(self.conn.execute("SELECT caption FROM publisher_drafts WHERE product_id=?", (self.product_a,)).fetchone()[0], "Legenda A")
 
-    def test_limit_100_is_allowed_and_101_is_rejected_without_truncation(self):
+    def test_limit_30_and_31_rejected_without_truncation(self):
         ids = [self._file(f"limit-{index}", "folder-a", name=f"ITEM_G1C1A1_{index:03}.mp4", size=1000 + index)
-               for index in range(101)]
-        valid = self.service.preflight_library_batch(self._payload(ids[:100]))
-        oversized = self.service.preflight_library_batch(self._payload(ids))
-        self.assertTrue(valid["can_create"])
-        self.assertEqual(valid["total"], 100)
-        self.assertFalse(oversized["can_create"])
-        self.assertEqual((oversized["total"], oversized["blocked"]), (101, 101))
-        self.assertIn("BATCH_LIMIT_EXCEEDED", {row["code"] for row in oversized["configuration_blockers"]})
-        self.assertEqual(oversized["items"], [])
-        with self.assertRaisesRegex(ValueError, "1 e 100"):
-            self.service.create_library_batch(self._payload(ids))
+               for index in range(100)]
+        for count in (1, 29, 30):
+            with self.subTest(count=count):
+                valid = self.service.preflight_library_batch(self._payload(ids[:count]))
+                self.assertTrue(valid["can_create"])
+                self.assertEqual(valid["total"], count)
+        for count in (31, 100):
+            with self.subTest(count=count):
+                oversized = self.service.preflight_library_batch(self._payload(ids[:count]))
+                self.assertFalse(oversized["can_create"])
+                self.assertEqual((oversized["total"], oversized["blocked"]), (count, count))
+                self.assertEqual(oversized["configuration_blockers"][0], {
+                    "code": "BATCH_LIMIT_EXCEEDED",
+                    "message": f"{count} selecionados; máximo 30 rascunhos por lote",
+                    "actual": count, "max": 30,
+                })
+                self.assertEqual(oversized["items"], [])
+                with self.assertRaisesRegex(ValueError, "BATCH_LIMIT_EXCEEDED"):
+                    self.service.create_library_batch(self._payload(ids[:count]))
         self.assertEqual(self._counts()["publisher_batches"], 0)
         self.assertEqual(self._counts()["publisher_drafts"], 0)
         self.assertEqual(self._counts()["publisher_media_assets"], 0)
+
+    def test_preview_30_then_submit_31_is_atomic(self):
+        ids = [self._file(f"race-{index}", "folder-a") for index in range(31)]
+        self.assertTrue(self.service.preflight_library_batch(self._payload(ids[:30]))["can_create"])
+        before = self._counts()
+        with self.assertRaisesRegex(ValueError, "BATCH_LIMIT_EXCEEDED"):
+            self.service.create_library_batch(self._payload(ids))
+        self.assertEqual(self._counts(), before)
+        created = self.service.create_library_batch(self._payload(ids[:30]))
+        self.assertEqual(len(created["draft_ids"]), 30)
+        self.assertEqual(self._counts()["publisher_batches"], 1)
+        self.assertEqual(self._counts()["publisher_drafts"], 30)
+
+    def test_multi_product_total_limit(self):
+        product_c = self.service.save_product({"name": "Terceiro", "default_caption": "Legenda C"})
+        self._folder("folder-c", "Terceiro", product_c)
+        ids = [self._file(f"a-{index}", "folder-a") for index in range(10)]
+        ids += [self._file(f"b-{index}", "folder-b") for index in range(12)]
+        ids += [self._file(f"c-{index}", "folder-c") for index in range(9)]
+        self.assertTrue(self.service.preflight_library_batch(self._payload(ids[:30]))["can_create"])
+        self.assertEqual(self.service.preflight_library_batch(self._payload(ids[:30]))["product_count"], 3)
+        self.assertFalse(self.service.preflight_library_batch(self._payload(ids))["can_create"])
+        with self.assertRaisesRegex(ValueError, "BATCH_LIMIT_EXCEEDED"):
+            self.service.create_library_batch(self._payload(ids))
+        created = self.service.create_library_batch(self._payload(ids[:30]))
+        self.assertEqual(len(created["draft_ids"]), 30)
+        counts = dict(self.conn.execute(
+            'SELECT product_id,COUNT(*) FROM publisher_drafts GROUP BY product_id'
+        ).fetchall())
+        self.assertEqual(counts, {self.product_a: 10, self.product_b: 12, product_c: 8})
 
 
 if __name__ == "__main__":

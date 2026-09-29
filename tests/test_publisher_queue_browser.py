@@ -49,7 +49,8 @@ def fixture():
                                   'items': [{'draft_id': i, 'ready': i != 2,
                                              'blockers': ['CAPTION_MISSING'] if i == 2 else [],
                                              'warnings': []} for i in (1, 2, 3)]}},
-        'worker_config': {'persistence_workflow_version': 1, 'tiktok_actions_paused': False},
+        'worker_config': {'persistence_workflow_version': 1, 'tiktok_actions_paused': False,
+                          'max_drafts_per_batch': 30},
         'preferences': {}, 'system_status': {'system_label': 'Sistema pronto',
                                             'account_label': 'Cecília conectada',
                                             'drive_label': 'Drive conectado'}}

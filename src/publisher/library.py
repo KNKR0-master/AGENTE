@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable
 
 from src.store import now_iso
+from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH, BatchLimitExceeded
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
@@ -442,8 +443,9 @@ def select_group_items(conn, group_key: str, *, selected_drive_file_ids=(), **fi
              if _group_key(item) == group_key and item["eligible"] and not item["product_archived"]]
     if not items:
         raise ValueError("Nenhum vídeo pronto neste grupo")
-    if len(selected | {item["drive_file_id"] for item in items}) > 100:
-        raise ValueError(f"Este grupo possui {len(items)} vídeo(s) elegíveis; o lote aceita no máximo 100. Selecione individualmente até 100 vídeos.")
+    combined_count = len(selected | {item["drive_file_id"] for item in items})
+    if combined_count > MAX_DRAFTS_PER_BATCH:
+        raise BatchLimitExceeded(combined_count)
     return {"group_key": group_key, "items": items,
             "drive_file_ids": [item["drive_file_id"] for item in items],
             "media_asset_ids": [item["media_asset_id"] for item in items if item["media_asset_id"] is not None]}

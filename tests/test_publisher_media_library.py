@@ -255,8 +255,8 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         result = select_group_items(self.conn, key)
         self.assertEqual(set(result["drive_file_ids"]), {"high", "medium"})
         self.assertEqual(result["media_asset_ids"], [])
-        with self.assertRaisesRegex(ValueError, "100"):
-            select_group_items(self.conn, key, selected_drive_file_ids=[f"already-{n}" for n in range(99)])
+        with self.assertRaisesRegex(ValueError, "BATCH_LIMIT_EXCEEDED"):
+            select_group_items(self.conn, key, selected_drive_file_ids=[f"already-{n}" for n in range(29)])
         with self.assertRaisesRegex(ValueError, "Nenhum vídeo pronto"):
             select_group_items(self.conn, "folder:folder-unknown")
         response = {}

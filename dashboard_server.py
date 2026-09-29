@@ -960,16 +960,16 @@ class Handler(SimpleHTTPRequestHandler):
         status = 400
         if isinstance(exc, TikTokShopApiError):
             status = 502 if (exc.http_status or 0) >= 500 else 409
-        self._json(
-            {
-                "ok": False,
-                "error": str(exc),
-                "integration_status": getattr(exc, "integration_status", "ERROR"),
-                "code": getattr(exc, "code", None),
-                "request_id": getattr(exc, "request_id", None),
-            },
-            status=status,
-        )
+        payload = {
+            "ok": False,
+            "error": str(exc),
+            "integration_status": getattr(exc, "integration_status", "ERROR"),
+            "code": getattr(exc, "code", None),
+            "request_id": getattr(exc, "request_id", None),
+        }
+        if payload["code"] == "BATCH_LIMIT_EXCEEDED":
+            payload.update(max=exc.max, actual=exc.actual)
+        self._json(payload, status=status)
 
     def _json(self, data: dict, status: int = 200, *, no_store: bool = False) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")

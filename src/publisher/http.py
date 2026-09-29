@@ -19,6 +19,7 @@ from src.publisher.media import media_provider, TemporaryMediaCache
 from src.publisher.account_safety import AccountSafetyGuard
 from src.publisher.drive_sync import drive_sync_status, incremental_drive_sync
 from src.publisher.drive_polling import DrivePollCoordinator, configure_polling, polling_status
+from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH
 from src.publisher.thumbnails import PublisherThumbnailService, ThumbnailUnavailable
 
 
@@ -368,6 +369,7 @@ class PublisherAPI:
                 "ffprobe_media_test": ffprobe["media_test"],
                 "durable_confirmation_validated": bool(json.loads(mapping.read_text(encoding='utf-8')).get('durable_confirmation_validated')) if mapping.exists() else False,
                 "publisher_concurrency": 1,
+                "max_drafts_per_batch": MAX_DRAFTS_PER_BATCH,
                 "auth_diagnostics_available": True,
                 "manual_profile_available": True,
                 "persistence_workflow_version": 1,

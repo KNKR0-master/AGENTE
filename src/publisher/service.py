@@ -22,6 +22,7 @@ from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_cap
 from src.publisher.reconciliation_evidence import (
     evaluate_reconciliation_evidence_validity, get_latest_reconciliation_evidence,
 )
+from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH, require_batch_size
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -709,8 +710,7 @@ class PublisherService:
 
     def create_remote_batch(self, data):
         ids = list(dict.fromkeys(int(i) for i in data.get('media_asset_ids', [])))
-        if not ids or len(ids) > 100:
-            raise ValueError('Selecione entre 1 e 100 videos remotos')
+        require_batch_size(len(ids))
         fields = {k: data.get(k) or None for k in ('product_id','account_id','preset_id','scheduled_at')}
         fields['account_id'] = fields['account_id'] or self.default_account_id()
         fields['caption'] = ''
@@ -875,8 +875,9 @@ class PublisherService:
 
         if not ids:
             config_blocker("SELECTION_REQUIRED", "Selecione pelo menos um vídeo da Biblioteca")
-        elif len(ids) > 100:
-            config_blocker("BATCH_LIMIT_EXCEEDED", "Um lote aceita no máximo 100 vídeos")
+        elif len(ids) > MAX_DRAFTS_PER_BATCH:
+            config_blocker("BATCH_LIMIT_EXCEEDED", f"{len(ids)} selecionados; máximo {MAX_DRAFTS_PER_BATCH} rascunhos por lote")
+            configuration_blockers[-1].update(actual=len(ids), max=MAX_DRAFTS_PER_BATCH)
 
         name = str(data.get("name") or "").strip()
         if not name:
@@ -918,7 +919,7 @@ class PublisherService:
                 if account and preset.get("account_id") and int(preset["account_id"]) != int(account["id"]):
                     config_blocker("PRESET_ACCOUNT_MISMATCH", "O preset pertence a outra conta")
 
-        within_limit = 0 < len(ids) <= 100
+        within_limit = 0 < len(ids) <= MAX_DRAFTS_PER_BATCH
         source_items = get_library_items(self.conn, ids) if within_limit else []
         by_id = {item["drive_file_id"]: item for item in source_items}
         items = []
@@ -1010,7 +1011,7 @@ class PublisherService:
             })
             product["count"] += 1
 
-        can_create = bool(ids) and len(ids) <= 100 and not configuration_blockers and len(items) == len(ids) and all(
+        can_create = bool(ids) and len(ids) <= MAX_DRAFTS_PER_BATCH and not configuration_blockers and len(items) == len(ids) and all(
             item["readiness"] == "READY" for item in items
         )
         ready_count = sum(item["readiness"] == "READY" for item in items)
@@ -1036,8 +1037,7 @@ class PublisherService:
         raw_ids = data.get("drive_file_ids")
         ids = list(dict.fromkeys(str(value).strip() for value in raw_ids
                                  if str(value).strip())) if isinstance(raw_ids, (list, tuple)) else []
-        if not ids or len(ids) > 100:
-            raise ValueError("Selecione entre 1 e 100 vídeos")
+        require_batch_size(len(ids))
         if data.get("scheduled_at"):
             raise ValueError("A Biblioteca não agenda lotes; horário desejado não é definido")
         name = str(data.get("name") or "").strip()
@@ -1201,6 +1201,9 @@ class PublisherService:
     def queue_preflight(self, batch_id):
         rows = self.conn.execute("SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id", (int(batch_id),)).fetchall()
         get_row(self.conn, 'publisher_batches', int(batch_id))
+        batch_size = self.conn.execute('SELECT COUNT(*) FROM publisher_drafts WHERE batch_id=?',
+                                       (int(batch_id),)).fetchone()[0]
+        oversized = batch_size > MAX_DRAFTS_PER_BATCH
         items = []
         for source in rows:
             draft = dict(source)
@@ -1210,6 +1213,8 @@ class PublisherService:
             actions = draft_queue_capabilities(self.conn, draft, media, account_blocked=blocked)
             blockers = []
             warnings = []
+            if oversized:
+                blockers.append('BATCH_LIMIT_EXCEEDED')
             if not actions['can_start']:
                 blockers.append('DRAFT_NOT_STARTABLE')
             if not str(draft['caption'] or '').strip():
@@ -1352,8 +1357,7 @@ class PublisherService:
         if not fields["caption"]:
             fields["caption"] = product.get("default_caption") or ""
         self.validate_fields(fields)
-        if not files or len(files) > 100:
-            raise ValueError("Selecione entre 1 e 100 videos")
+        require_batch_size(len(files))
         paths = []
         for filename, path in files:
             resolved = Path(path).resolve()

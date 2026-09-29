@@ -180,6 +180,20 @@ class PublisherUIStateTests(unittest.TestCase):
         self.assertEqual(result["blocked"], {"canCreate": False, "ready": 1, "withoutProduct": 1, "attention": 1})
         self.assertEqual(result["ready"], {"canCreate": True, "productCount": 1})
 
+    def test_selection_summary_uses_backend_limit_argument(self):
+        result = self.run_node(
+            f"""
+            const ui = require({json.dumps(str(STATE_MODULE))}).create();
+            for(let index=0;index<31;index++)ui.setLibrarySelection(`file-${{index}}`,true,
+              {{drive_file_id:`file-${{index}}`,product_name:'Produto',status:'AVAILABLE'}});
+            const over=ui.librarySelectionSummary(30);
+            ui.setLibrarySelection('file-30',false);
+            const exact=ui.librarySelectionSummary(30);
+            console.log(JSON.stringify({{over:over.canCreate,exact:exact.canCreate,count:exact.selected}}));
+            """
+        )
+        self.assertEqual(result, {"over": False, "exact": True, "count": 30})
+
     def test_error_is_scoped_and_success_clears_only_same_operation(self):
         result = self.run_node(
             f"""

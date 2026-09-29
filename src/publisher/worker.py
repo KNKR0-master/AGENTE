@@ -35,6 +35,7 @@ from src.publisher.browser_runtime import BrowserRuntimeManager
 from src.publisher.reconciliation_evidence import (
     record_reconciliation_evidence,
 )
+from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH, MAX_DRAFTS_PER_EXECUTION, BatchLimitExceeded
 from src.publisher.profile_paths import resolve_browser_profile
 from src.publisher.account_safety import (
     AccountSafetyGuard, AccountProtectionBlocked, BLOCKED_BY_ACCOUNT_PROTECTION, map_risk_signal,
@@ -659,8 +660,10 @@ class PublisherWorker:
         if self.login_traces:
             raise ValueError('Teste de login isolado; preparacao de drafts bloqueada nesta execucao')
         ids = list(dict.fromkeys(int(i) for i in ids))
-        if not ids or len(ids) > 100:
-            raise ValueError("Selecione entre 1 e 100 drafts")
+        if not ids:
+            raise ValueError('Selecione pelo menos um draft')
+        if len(ids) > MAX_DRAFTS_PER_EXECUTION:
+            raise ValueError(f'Selecione até {MAX_DRAFTS_PER_EXECUTION} drafts por execução')
         with conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
@@ -670,6 +673,12 @@ class PublisherWorker:
             if len(rows) != len(ids) or any(row['queue_position'] is None for row in rows):
                 raise ValueError('QUEUE_POSITION_REQUIRED')
             ids = [row['id'] for row in rows]
+            batch_ids = {get_row(conn, 'publisher_drafts', row_id)['batch_id'] for row_id in ids}
+            for batch_id in batch_ids - {None}:
+                count = conn.execute("SELECT COUNT(*) FROM publisher_drafts WHERE batch_id=?",
+                                     (batch_id,)).fetchone()[0]
+                if count > MAX_DRAFTS_PER_BATCH:
+                    raise BatchLimitExceeded(count)
             batches = set()
             for row_id in ids:
                 row = get_row(conn, "publisher_drafts", row_id)
