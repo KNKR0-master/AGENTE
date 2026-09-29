@@ -113,6 +113,45 @@ def init_publisher(conn):
       draft_id INTEGER NOT NULL REFERENCES publisher_drafts(id),
       status TEXT NOT NULL DEFAULT 'QUEUED', error_code TEXT,
       PRIMARY KEY(execution_id,draft_id));
+    CREATE TABLE IF NOT EXISTS publisher_reconciliation_evidence (
+      id INTEGER PRIMARY KEY,
+      draft_id INTEGER NOT NULL REFERENCES publisher_drafts(id),
+      media_asset_id INTEGER NOT NULL REFERENCES publisher_media_assets(id),
+      execution_id INTEGER REFERENCES publisher_batch_executions(id),
+      execution_item_draft_id INTEGER,
+      account_id INTEGER NOT NULL REFERENCES publisher_accounts(id),
+      expected_account TEXT NOT NULL,
+      observed_account TEXT,
+      outcome TEXT NOT NULL CHECK(outcome IN (
+        'REMOTE_EXISTS_CONFIRMED','REMOTE_ABSENCE_CONFIRMED',
+        'REMOTE_MATCH_AMBIGUOUS','REMOTE_STATE_UNKNOWN')),
+      coverage_status TEXT NOT NULL CHECK(coverage_status IN ('COMPLETE','PARTIAL','UNKNOWN')),
+      blocker_code TEXT,
+      source_surface TEXT NOT NULL,
+      candidate_count INTEGER NOT NULL CHECK(candidate_count >= 0),
+      matched_candidate_fingerprint TEXT,
+      matcher_version TEXT NOT NULL,
+      remote_effect_checkpoint_id INTEGER NOT NULL REFERENCES publisher_execution_logs(id),
+      verification_started_at TEXT NOT NULL,
+      verification_completed_at TEXT NOT NULL,
+      valid_until TEXT,
+      evidence_payload_json TEXT NOT NULL,
+      CHECK ((execution_id IS NULL AND execution_item_draft_id IS NULL) OR
+             (execution_id IS NOT NULL AND execution_item_draft_id = draft_id)),
+      FOREIGN KEY (execution_id,execution_item_draft_id)
+        REFERENCES publisher_execution_items(execution_id,draft_id));
+    CREATE INDEX IF NOT EXISTS publisher_reconciliation_by_draft
+      ON publisher_reconciliation_evidence(draft_id,id DESC);
+    CREATE INDEX IF NOT EXISTS publisher_reconciliation_by_item
+      ON publisher_reconciliation_evidence(execution_id,execution_item_draft_id,id DESC);
+    CREATE INDEX IF NOT EXISTS publisher_reconciliation_by_media
+      ON publisher_reconciliation_evidence(media_asset_id,id DESC);
+    CREATE TRIGGER IF NOT EXISTS publisher_reconciliation_no_update
+      BEFORE UPDATE ON publisher_reconciliation_evidence
+      BEGIN SELECT RAISE(ABORT,'RECONCILIATION_EVIDENCE_APPEND_ONLY'); END;
+    CREATE TRIGGER IF NOT EXISTS publisher_reconciliation_no_delete
+      BEFORE DELETE ON publisher_reconciliation_evidence
+      BEGIN SELECT RAISE(ABORT,'RECONCILIATION_EVIDENCE_APPEND_ONLY'); END;
     """)
     sync_columns = {row[1] for row in conn.execute('PRAGMA table_info(publisher_drive_sync_state)')}
     if 'last_sync_mode' not in sync_columns:
