@@ -67,9 +67,125 @@ class ProductFixtureHandler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
 
+class ProductCreateFixtureHandler(ProductFixtureHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == '/api/publisher':
+            body = fixture()
+            body['drive_folders'] = [
+                dict(id=folder_id, name=folder_id, relative_path=f'CECI/FEMININO/{folder_id}')
+                for folder_id in ('folder-a', 'folder-b')
+            ]
+            body['products'] = [*body.get('products', []), *self.server.saved_products]
+        elif parsed.path == '/api/publisher/products/workspace':
+            query = parse_qs(parsed.query)
+            scope, search = query.get('scope', ['current'])[0], query.get('search', [''])[0]
+            body = workspace(scope, search)
+            if scope == 'current':
+                body['products'].extend(product for product in self.server.saved_products if search.casefold() in product['name'].casefold())
+        else:
+            return super().do_GET()
+        data = json.dumps(body).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        if urlparse(self.path).path != '/api/publisher/products':
+            return self.send_error(404)
+        body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+        self.server.product_posts.append(body)
+        if body['name'] == 'Erro':
+            response, status = {'error': 'Pasta indisponível; escolha outra pasta'}, 400
+        else:
+            product_id = 9
+            folders = [dict(id=folder_id, name=folder_id, relative_path=f'CECI/FEMININO/{folder_id}')
+                       for folder_id in body.get('folder_ids', [])]
+            self.server.saved_products.append(dict(
+                id=product_id, name=body['name'], short_name=body.get('short_name', ''),
+                default_caption=body.get('default_caption', ''), flow_prompt=body.get('flow_prompt', ''),
+                active=True, aliases=[], folders=folders, folder_count=len(folders), current_media_count=0,
+                has_default_caption=bool(body.get('default_caption')), has_historical_references=True,
+                reference_count=len(folders), can_archive=True, can_restore=False, can_hard_delete=False,
+                possible_duplicate_name=False, catalog_presentation_state='current',
+            ))
+            response, status = {'id': product_id}, 200
+        data = json.dumps(response).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
 @unittest.skipUnless(shutil.which("chrome") or Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe").exists(),
                      "Chrome Stable is required")
 class ProductBrowserTests(unittest.TestCase):
+    def test_create_product_with_pending_folders_cancel_refresh_error_and_double_submit(self):
+        from playwright.sync_api import sync_playwright
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), ProductCreateFixtureHandler)
+        server.saved_products = []
+        server.product_posts = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('[data-view="products"]').click()
+                    page.locator('#products .heading summary').click()
+                    page.locator('#newProduct').click()
+                    page.locator('#productFolderSelect').select_option('folder-a')
+                    page.locator('#addProductFolder').click()
+                    page.locator('#productFolderSelect').select_option('folder-b')
+                    page.locator('#addProductFolder').click()
+                    page.locator('#productForm [name=name]').fill('Erro')
+                    page.locator('#productForm [name=default_caption]').fill('Legenda de teste')
+                    page.wait_for_timeout(11500)
+                    self.assertEqual(page.locator('#productForm [name=name]').input_value(), 'Erro')
+                    self.assertEqual(page.locator('#productForm [name=default_caption]').input_value(), 'Legenda de teste')
+                    self.assertEqual(page.locator('#productFolders .folder-association').count(), 2)
+                    self.assertEqual(server.product_posts, [])
+                    page.locator('#cancelProductCreate').click()
+                    self.assertEqual(page.locator('#productFolders .folder-association').count(), 0)
+                    self.assertEqual(server.product_posts, [])
+
+                    page.locator('#newProduct').click()
+                    page.locator('#productFolderSelect').select_option('folder-a')
+                    page.locator('#addProductFolder').click()
+                    page.locator('#productFolderSelect').select_option('folder-b')
+                    page.locator('#addProductFolder').click()
+                    page.locator('#productForm [name=name]').fill('Erro')
+                    page.locator('#productForm [name=default_caption]').fill('Legenda de teste')
+                    page.locator('#productForm [type=submit]').click()
+                    page.get_by_text('Pasta indisponível; escolha outra pasta').wait_for()
+                    self.assertEqual(page.locator('#productFolders .folder-association').count(), 2)
+                    self.assertEqual(page.locator('#productForm [name=name]').input_value(), 'Erro')
+                    self.assertFalse(page.locator('#productForm [type=submit]').is_disabled())
+
+                    page.locator('#productForm [name=name]').fill('Novo produto')
+                    page.evaluate("document.querySelector('#productForm [type=submit]').click(); document.querySelector('#productForm [type=submit]').click()")
+                    try:
+                        page.get_by_text('Produto e pastas salvos. Nenhum arquivo foi movido.').wait_for(timeout=5000)
+                    except Exception:
+                        self.fail(f'Posts: {server.product_posts!r}; notices: {page.locator("[role=status]").all_inner_texts()!r}')
+                    self.assertEqual(len(server.saved_products), 1)
+                    self.assertEqual(len(server.product_posts), 2)
+                    self.assertEqual(server.product_posts[-1]['folder_ids'], ['folder-a', 'folder-b'])
+                    self.assertEqual(page.locator('#productFolders .folder-association').count(), 2)
+                    self.assertEqual(page.locator('#productForm [name=id]').input_value(), '9')
+                    self.assertIn('Novo produto', page.locator('#productList').inner_text())
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_scoped_workspace_and_duplicate_review(self):
         from playwright.sync_api import sync_playwright
 

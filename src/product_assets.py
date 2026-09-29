@@ -11,7 +11,7 @@ from src.store import now_iso
 CAPTION_STATUSES = {"DRAFT", "READY", "USED", "ARCHIVED"}
 
 
-def sync_folder_prompts(conn: sqlite3.Connection, folder_id: str) -> int:
+def sync_folder_prompts(conn: sqlite3.Connection, folder_id: str, *, commit: bool = True) -> int:
     folder = conn.execute(
         "SELECT * FROM drive_folders WHERE drive_folder_id = ?", (folder_id,)
     ).fetchone()
@@ -27,7 +27,8 @@ def sync_folder_prompts(conn: sqlite3.Connection, folder_id: str) -> int:
             "UPDATE product_prompts SET status = 'UNMAPPED', updated_at = ? WHERE drive_folder_id = ? AND status <> 'SOURCE_MISSING'",
             (timestamp, folder_id),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
         return 0
 
     sources = conn.execute(
@@ -107,7 +108,8 @@ def sync_folder_prompts(conn: sqlite3.Connection, folder_id: str) -> int:
             """,
             (timestamp, timestamp, folder_id),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
     return synced
 
 

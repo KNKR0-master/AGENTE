@@ -771,6 +771,8 @@ def set_folder_mapping(
     mapping_status: str | None = None,
     actor: str = "local-dashboard",
     reason: str | None = None,
+    *,
+    commit: bool = True,
 ) -> dict[str, Any]:
     folder = conn.execute("SELECT * FROM drive_folders WHERE drive_folder_id = ?", (folder_id,)).fetchone()
     if not folder:
@@ -835,9 +837,10 @@ def set_folder_mapping(
                 """,
                 (product_id, timestamp, descendant_id),
             )
-    conn.commit()
-    reprocess_folder_eligibility(conn, folder_id, include_descendants=True)
-    sync_folder_prompts(conn, folder_id)
+    if commit:
+        conn.commit()
+    reprocess_folder_eligibility(conn, folder_id, include_descendants=True, commit=commit)
+    sync_folder_prompts(conn, folder_id, commit=commit)
     return dict(conn.execute("SELECT * FROM drive_folders WHERE drive_folder_id = ?", (folder_id,)).fetchone())
 
 
@@ -850,7 +853,7 @@ def create_and_map_folder_product(conn, folder_id: str, product_name: str) -> di
     return {"product_id": product_id, "folder": folder}
 
 
-def reprocess_folder_eligibility(conn, folder_id: str, include_descendants: bool = False) -> int:
+def reprocess_folder_eligibility(conn, folder_id: str, include_descendants: bool = False, *, commit: bool = True) -> int:
     folder_ids = [folder_id]
     if include_descendants:
         folder_ids = [
@@ -909,7 +912,8 @@ def reprocess_folder_eligibility(conn, folder_id: str, include_descendants: bool
                 ),
             )
             updated += 1
-    conn.commit()
+    if commit:
+        conn.commit()
     return updated
 
 

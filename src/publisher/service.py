@@ -32,6 +32,12 @@ EDITABLE = {"DRAFT", *ERRORS, *LEGACY_ERRORS}
 STATUSES = ["DRAFT", "PREPARING", "READY_FOR_REVIEW", "SCHEDULED", "PUBLISHED", *sorted(ERRORS), *sorted(LEGACY_ERRORS), "ARCHIVED"]
 
 
+class ProductFolderError(ValueError):
+    def __init__(self, code, message):
+        self.code = code
+        super().__init__(message)
+
+
 def init_publisher(conn):
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS publisher_accounts (
@@ -521,17 +527,23 @@ class PublisherService:
         if not folder_id:
             raise ValueError("Pasta do Drive obrigatoria")
         folder = self.conn.execute(
-            "SELECT product_id FROM drive_folders WHERE drive_folder_id=? AND operational_status='ACTIVE'",
+            "SELECT product_id,name,operational_status FROM drive_folders WHERE drive_folder_id=?",
             (folder_id,),
         ).fetchone()
         if not folder:
-            raise ValueError("Pasta do Drive nao encontrada")
+            raise ProductFolderError('PRODUCT_FOLDER_NOT_FOUND', 'Pasta do Drive não encontrada')
+        if folder['operational_status'] != 'ACTIVE':
+            raise ProductFolderError('PRODUCT_FOLDER_UNAVAILABLE', 'Pasta do Drive indisponível neste perfil')
+        if folder['product_id'] is not None and folder['product_id'] != product_id:
+            raise ProductFolderError('PRODUCT_FOLDER_CONFLICT', f'Pasta {folder["name"]} já pertence a outro produto')
         if action == "remove":
             target = None
         elif action == "add":
             target = product_id
         else:
             raise ValueError("Acao de pasta invalida")
+        if folder['product_id'] == target:
+            return {"product_id": product_id, "folder_id": folder_id, "action": action}
         from src.drive_inventory import set_folder_mapping
         set_folder_mapping(self.conn, folder_id, target, reason=f"Publisher product folder {action}")
         return {"product_id": product_id, "folder_id": folder_id, "action": action}
@@ -1241,7 +1253,17 @@ class PublisherService:
                 'warning_items': sum(bool(item['warnings']) for item in items), 'items': items}
 
     def save_product(self, data):
+        requested_folders = data.get('folder_ids', [])
+        if not isinstance(requested_folders, list):
+            raise ValueError('PRODUCT_FOLDER_IDS_INVALID')
+        folder_ids = [str(folder_id).strip() for folder_id in requested_folders]
+        if any(not folder_id for folder_id in folder_ids):
+            raise ValueError('PRODUCT_FOLDER_IDS_INVALID')
+        if len(folder_ids) != len(set(folder_ids)):
+            raise ProductFolderError('PRODUCT_FOLDER_DUPLICATE', 'A mesma pasta foi selecionada mais de uma vez')
         if data.get('id'):
+            if folder_ids:
+                raise ValueError('Associe pastas ao produto existente pela acao de pasta')
             explicit = dict(data)
             data = {**self.get_product(data['id']), **explicit}
             if "name" in explicit and "name_source" not in explicit:
@@ -1263,6 +1285,23 @@ class PublisherService:
             get_row(self.conn, "publisher_accounts", account_id)
         timestamp = now_iso()
         with self.conn:
+            if folder_ids:
+                self.conn.execute('BEGIN IMMEDIATE')
+                folders = self.conn.execute(
+                    f"SELECT drive_folder_id,name,operational_status,product_id FROM drive_folders WHERE drive_folder_id IN ({','.join('?' for _ in folder_ids)})",
+                    folder_ids,
+                ).fetchall()
+                by_id = {folder['drive_folder_id']: folder for folder in folders}
+                for folder_id in folder_ids:
+                    folder = by_id.get(folder_id)
+                    if not folder:
+                        raise ProductFolderError('PRODUCT_FOLDER_NOT_FOUND', f'Pasta {folder_id} não encontrada no inventário')
+                    if folder['operational_status'] != 'ACTIVE':
+                        raise ProductFolderError('PRODUCT_FOLDER_UNAVAILABLE', f'Pasta {folder["name"]} não está disponível neste perfil')
+                    if folder['product_id'] is not None:
+                        existing = self.conn.execute('SELECT name FROM publisher_products WHERE product_id=?', (folder['product_id'],)).fetchone()
+                        name = existing['name'] if existing else f'ID {folder["product_id"]}'
+                        raise ProductFolderError('PRODUCT_FOLDER_CONFLICT', f'Pasta {folder["name"]} já pertence ao produto {name}')
             if not product_id:
                 # Keep existing foreign keys while isolating editorial fields from Analytics.
                 product_id = self.conn.execute("INSERT INTO products(product_key,name,created_at,updated_at) VALUES (?,?,?,?)",
@@ -1277,6 +1316,10 @@ class PublisherService:
               source_drive_folder_id=COALESCE(publisher_products.source_drive_folder_id,excluded.source_drive_folder_id)""",
               (product_id,name,str(data.get('short_name') or '').strip(),caption,flow_prompt,account_id,int(data.get('active',True)),timestamp,timestamp,
                str(data.get('name_source') or 'MANUAL'),data.get('source_drive_folder_id')))
+            if folder_ids:
+                from src.drive_inventory import set_folder_mapping
+                for folder_id in folder_ids:
+                    set_folder_mapping(self.conn, folder_id, product_id, reason='Pasta selecionada ao criar produto manual', commit=False)
         return product_id
 
     def save_account(self, data):
