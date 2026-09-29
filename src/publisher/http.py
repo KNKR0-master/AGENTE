@@ -481,6 +481,9 @@ class PublisherAPI:
                         result = {"execution_id": self.worker.enqueue(conn, ids, bool(data.get('auto_cleanup', False)))}
                     elif action == 'resume-batch':
                         result = {"execution_id": self.worker.resume_execution(conn, data['execution_id'])}
+                    elif path == '/api/publisher/verify-reconciliation':
+                        # REMOTE_READ_ONLY: only local append-only evidence is written.
+                        result = self.worker.request_draft_verification(data['id'])
                     elif action == 'inspect-existing-session':
                         if not isinstance(data.get('navigate', False), bool):
                             raise ValueError('navigate deve ser booleano')

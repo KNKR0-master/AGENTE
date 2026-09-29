@@ -17,7 +17,7 @@ BLOCKERS = frozenset({
     'LISTING_ERROR', 'MATCH_EVIDENCE_INSUFFICIENT',
 })
 REMOTE_EFFECT_STEPS = ('UPLOAD_STARTED', 'SAVE_DRAFT', 'TIKTOK_DRAFT_CONFIRMED')
-SOURCES = frozenset({'TIKTOK_STUDIO_DRAFT_LIST', 'TIKTOK_STUDIO_EDITOR'})
+SOURCES = frozenset({'TIKTOK_STUDIO_DRAFT_LIST', 'TIKTOK_STUDIO_EDITOR', 'TIKTOK_STUDIO_AUTH'})
 PAYLOAD_KEYS = frozenset({
     'candidate_summaries', 'observed_duration', 'caption_fingerprint',
     'thumbnail_fingerprint', 'listing_bounds', 'pagination_observations',
@@ -106,10 +106,15 @@ def record_reconciliation_evidence(conn, *, draft_id, media_asset_id, account_id
 
     conn.execute('BEGIN IMMEDIATE')
     try:
-        draft = conn.execute('SELECT media_asset_id,account_id FROM publisher_drafts WHERE id=?', (draft_id,)).fetchone()
+        draft = conn.execute('SELECT media_asset_id,account_id,status,persistence_status FROM publisher_drafts WHERE id=?', (draft_id,)).fetchone()
+        media = conn.execute('SELECT status FROM publisher_media_assets WHERE id=?', (media_asset_id,)).fetchone()
         account = conn.execute('SELECT tiktok_username FROM publisher_accounts WHERE id=?', (account_id,)).fetchone()
         if not draft or draft['media_asset_id'] != media_asset_id or draft['account_id'] != account_id or not account:
             raise ValueError('EVIDENCE_IDENTITY_MISMATCH')
+        if not media or draft['status'] not in {'MANUAL_ACTION_REQUIRED', 'STUDIO_CHANGED'} or (
+            draft['persistence_status'] != 'UNCONFIRMED' or media['status'] != 'NEEDS_RECONCILIATION'
+        ):
+            raise ValueError('EVIDENCE_LIFECYCLE_CHANGED')
         if account['tiktok_username'] and account['tiktok_username'] != expected_account:
             raise ValueError('EXPECTED_ACCOUNT_MISMATCH')
         checkpoint = _latest_remote_checkpoint(conn, draft_id)

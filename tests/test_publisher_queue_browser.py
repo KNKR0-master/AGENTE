@@ -147,6 +147,9 @@ class QueueFixtureHandler(SimpleHTTPRequestHandler):
                 batch['queue_capabilities']['can_cancel'] = False
                 result, status = ({'batch_id': int(cancel[1]), 'cancelled_drafts': 3,
                                    'reservations_released': 3, 'audit_preserved': True}, 200)
+        elif path == '/api/publisher/verify-reconciliation':
+            result, status = ({'outcome': 'REMOTE_STATE_UNKNOWN', 'remote_read_only': True,
+                               'local_evidence_append': True}, 200)
         else:
             self.send_error(405)
             return
@@ -288,18 +291,31 @@ class QueueBrowserTests(unittest.TestCase):
                     self.assertEqual(page.locator('[data-queue-draft="1"] [data-edit]').count(), 0)
                     self.assertEqual(page.locator('[data-queue-draft="1"] [data-cleanup]').count(), 0)
                     self.assertEqual(page.locator('[data-batch-cancel]').count(), 0)
-                    self.assertIn('Verificar status', page.locator('[data-queue-draft="1"]').inner_text())
-                    page.locator('[data-queue-draft="1"] [data-review]').click()
-                    self.assertTrue(page.locator('#reviewDialog').is_visible())
-                    self.assertEqual(page.locator('#reviewDialog [data-complete]').count(), 0)
-                    page.locator('#reviewDialog [data-close]').click()
+                    self.assertIn('Verificar no TikTok', page.locator('[data-queue-draft="1"]').inner_text())
+                    page.locator('[data-queue-draft="1"] [data-verify-draft]').click()
+                    page.wait_for_function("document.querySelector('#notice')?.textContent.includes('Verificação registrada')")
+                    self.assertIn(('POST', '/api/publisher/verify-reconciliation', {'id': 1}),
+                                  QueueFixtureHandler.requests)
+                    self.assertFalse(any(path.endswith('/resume-batch') for method, path, _ in QueueFixtureHandler.requests
+                                         if method == 'POST'))
+                    for outcome, expected in (
+                        ('REMOTE_EXISTS_CONFIRMED', 'Rascunho correspondente encontrado'),
+                        ('REMOTE_MATCH_AMBIGUOUS', 'Mais de um possível rascunho'),
+                        ('REMOTE_STATE_UNKNOWN', 'Não foi possível concluir a verificação'),
+                    ):
+                        page.evaluate("""outcome => {
+                          state.drafts[0].reconciliation_evidence={outcome,current:true,blocker_code:'LISTING_ERROR'};
+                          renderQueue();
+                        }""", outcome)
+                        self.assertIn(expected, page.locator('[data-queue-draft="1"]').inner_text())
                     page.evaluate("""() => {
                       const draft=state.drafts[0];
                       draft.status='MANUAL_ACTION_REQUIRED';draft.media_status='NEEDS_RECONCILIATION';
+                      draft.queue_capabilities={can_edit:false,can_remove:false,can_reorder:false,can_verify:true,remote_effect_possible:true};
                       draft.queue_display={label:'Requer verificação',kind:'attention',message:'Confirme o resultado antes de qualquer nova ação.'};
                       renderQueue();
                     }""")
-                    self.assertIn('Verificar / Reconciliar', page.locator('[data-queue-draft="1"]').inner_text())
+                    self.assertIn('Verificar no TikTok', page.locator('[data-queue-draft="1"]').inner_text())
                     self.assertNotIn('Retry', page.locator('[data-queue-draft="1"]').inner_text())
                     self.assertEqual(page.locator('[data-queue-draft="1"] [data-remove-draft]').count(), 0)
                     screenshot = os.environ.get('PUBLISHER_QUEUE_SCREENSHOT')

@@ -19,6 +19,9 @@ from src.publisher.folder_catalog import (
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
 from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation
+from src.publisher.reconciliation_evidence import (
+    evaluate_reconciliation_evidence_validity, get_latest_reconciliation_evidence,
+)
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -608,6 +611,21 @@ class PublisherService:
             blocked = protections_by_account[draft['account_id']]
             draft['queue_capabilities'] = draft_queue_capabilities(self.conn, draft, media, account_blocked=blocked)
             draft['queue_display'] = draft_queue_presentation(draft, media)
+            evidence = get_latest_reconciliation_evidence(self.conn, draft_id=draft['id'])
+            if evidence:
+                validity = evaluate_reconciliation_evidence_validity(
+                    self.conn, evidence['id'], draft_id=draft['id'],
+                    media_asset_id=draft['media_asset_id'], account_id=draft['account_id'],
+                    execution_id=evidence['execution_id'],
+                )
+                draft['reconciliation_evidence'] = {
+                    'outcome': evidence['outcome'],
+                    'coverage_status': evidence['coverage_status'],
+                    'blocker_code': evidence['blocker_code'],
+                    'verified_at': evidence['verification_completed_at'],
+                    'current': validity['valid'],
+                    'stale_reason': None if validity['valid'] else validity['reason'],
+                }
         batch_ids = {draft['batch_id'] for draft in drafts if draft['batch_id'] is not None}
         queue_preflights = {batch_id: self.queue_preflight(batch_id) for batch_id in batch_ids}
         protections = []

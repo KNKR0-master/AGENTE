@@ -51,6 +51,11 @@ def draft_queue_capabilities(conn, draft, media=None, *, account_blocked=False):
     )
     active = bool(execution and execution['item_status'] in ACTIVE_ITEM_STATES)
     pending = draft['status'] in ('DRAFT', 'CAPTION_MISSING') and not execution and not remote_possible
+    verification_ready = bool(
+        execution and execution['status'] == 'PAUSED' and execution['item_status'] == 'WAITING_MANUAL'
+        and media and media['status'] == 'NEEDS_RECONCILIATION'
+        and draft.get('persistence_status') != 'PERSISTED'
+    )
     batch_executed = bool(conn.execute(
         'SELECT 1 FROM publisher_execution_items i '
         'JOIN publisher_drafts d ON d.id=i.draft_id WHERE d.batch_id=? LIMIT 1',
@@ -63,7 +68,7 @@ def draft_queue_capabilities(conn, draft, media=None, *, account_blocked=False):
         'can_start': (draft['status'] == 'DRAFT' and pending and not account_blocked
                       and media is not None and media['status'] in ('AVAILABLE', 'RESERVED')
                       and bool(str(draft.get('caption') or '').strip())),
-        'can_verify': remote_possible and draft.get('persistence_status') != 'PERSISTED',
+        'can_verify': verification_ready,
         'can_reconcile': remote_possible and draft.get('persistence_status') != 'PERSISTED',
         'remote_effect_possible': remote_possible,
         'execution_active': active,

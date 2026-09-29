@@ -6,7 +6,8 @@ import os
 import queue
 import re
 import threading
-from datetime import datetime, timezone
+import unicodedata
+from datetime import datetime, timedelta, timezone
 from time import monotonic
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from urllib.parse import urlsplit
@@ -23,7 +24,7 @@ from src.publisher.lifecycle import confirm_received, reconcile_received, cleanu
 from src.publisher.auth import (
     AUTHENTICATED, LOGIN_IN_PROGRESS, NEEDS_LOGIN, NOT_AUTHENTICATED,
     LOGIN_URL, STUDIO_URL, LoginSession, TikTokAuthDetector,
-    is_login_url, is_studio_url, persist_auth, recover_auth,
+    is_login_url, is_studio_url, is_tiktok_url, persist_auth, recover_auth,
     evaluate_studio_snapshot,
 )
 from src.publisher.diagnostics import AuthDiagnostics, safe_error, safe_url
@@ -31,6 +32,9 @@ from src.publisher.login_trace import LoginTrace
 from src.publisher.auth_test_lock import AuthTestLock
 from src.publisher.manual_profile import ProfileOwnership
 from src.publisher.browser_runtime import BrowserRuntimeManager
+from src.publisher.reconciliation_evidence import (
+    record_reconciliation_evidence,
+)
 from src.publisher.profile_paths import resolve_browser_profile
 from src.publisher.account_safety import (
     AccountSafetyGuard, AccountProtectionBlocked, BLOCKED_BY_ACCOUNT_PROTECTION, map_risk_signal,
@@ -151,36 +155,92 @@ def _parse_tiktok_draft_time(value):
         return None
 
 
-def select_existing_draft_row(rows, caption, reference_time=None):
+def _draft_duration_seconds(value):
+    parts = str(value or '').strip().split(':')
+    if len(parts) not in (2, 3) or any(not part.isdigit() for part in parts):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds
+
+
+def canonical_draft_candidates(rows, caption, reference_time=None, *,
+                               expected_duration_seconds=None, require_strong=False):
+    """The same row identity rules used by normal persistence and verification."""
+    candidates = [row for row in rows if str(row.get('caption_text') or '').strip() == str(caption or '').strip()]
+    expected = _parse_checkpoint_time(reference_time)
+    if require_strong:
+        if expected is None or expected_duration_seconds is None:
+            return []
+        expected_local = expected.astimezone(ZoneInfo('America/Sao_Paulo'))
+        return [row for row in candidates if (
+            (observed := _parse_tiktok_draft_time(row.get('updated_text'))) is not None
+            and abs((observed - expected_local).total_seconds()) <= 120
+            and (duration := _draft_duration_seconds(row.get('duration_text'))) is not None
+            and abs(duration - expected_duration_seconds) <= 1.5
+        )]
+    if len(candidates) <= 1 or expected is None:
+        return candidates
+    expected_local = expected.astimezone(ZoneInfo('America/Sao_Paulo'))
+    return [row for row in candidates if (
+        (observed := _parse_tiktok_draft_time(row.get('updated_text'))) is not None
+        and abs((observed - expected_local).total_seconds()) <= 120
+    )]
+
+
+def select_existing_draft_row(rows, caption, reference_time=None, *,
+                              expected_duration_seconds=None, require_strong=False):
     """Select a persisted Studio row without relying on DOM position.
 
     A duplicated caption is accepted only when the visible update timestamp
     uniquely matches the persisted SAVE_DRAFT checkpoint. Otherwise this
     deliberately fails closed and requires manual reconciliation.
     """
-    candidates = [
-        row for row in rows
-        if str(row.get('caption_text') or '').strip() == str(caption or '').strip()
-    ]
+    candidates = canonical_draft_candidates(
+        rows, caption, reference_time,
+        expected_duration_seconds=expected_duration_seconds,
+        require_strong=require_strong,
+    )
+    if len(candidates) != 1:
+        message = 'Associacao do rascunho ausente' if not candidates else 'Associacao do rascunho ambigua ou ausente'
+        if require_strong and not candidates:
+            message = 'Associacao do rascunho ambigua ou ausente'
+        raise PreparationError('MANUAL_ACTION_REQUIRED', message)
+    return candidates[0]
+
+
+def assess_remote_draft_rows(rows, caption, save_checkpoint_at, expected_duration_seconds,
+                             *, listing_complete=False):
+    """Classify visible rows without treating no visible match as remote absence."""
+    candidates = canonical_draft_candidates(
+        rows, caption, save_checkpoint_at,
+        expected_duration_seconds=expected_duration_seconds, require_strong=True,
+    )
+    coverage = 'COMPLETE' if listing_complete else 'PARTIAL'
+    if not listing_complete or not save_checkpoint_at or expected_duration_seconds is None:
+        return {'outcome': 'REMOTE_STATE_UNKNOWN', 'coverage_status': coverage,
+                'blocker_code': 'PARTIAL_LISTING' if not listing_complete else 'MATCH_EVIDENCE_INSUFFICIENT',
+                'candidate_count': len(candidates), 'matched_candidate_fingerprint': None}
+    if len(candidates) > 1:
+        return {'outcome': 'REMOTE_MATCH_AMBIGUOUS', 'coverage_status': coverage,
+                'blocker_code': None, 'candidate_count': len(candidates),
+                'matched_candidate_fingerprint': None}
     if len(candidates) == 1:
-        return candidates[0]
-    if not candidates:
-        raise PreparationError('MANUAL_ACTION_REQUIRED', 'Associacao do rascunho ausente')
-    expected = _parse_checkpoint_time(reference_time)
-    if expected is None:
-        raise PreparationError('MANUAL_ACTION_REQUIRED', 'Associacao do rascunho ambigua ou ausente')
-    expected_local = expected.astimezone(ZoneInfo('America/Sao_Paulo'))
-    timestamped = []
-    for row in candidates:
-        observed = _parse_tiktok_draft_time(row.get('updated_text'))
-        if observed is None:
-            continue
-        distance = abs((observed - expected_local).total_seconds())
-        if distance <= 120:
-            timestamped.append((distance, row))
-    if len(timestamped) != 1:
-        raise PreparationError('MANUAL_ACTION_REQUIRED', 'Associacao do rascunho ambigua ou ausente')
-    return timestamped[0][1]
+        matched = select_existing_draft_row(
+            rows, caption, save_checkpoint_at,
+            expected_duration_seconds=expected_duration_seconds, require_strong=True,
+        )
+        fingerprint = hashlib.sha256(json.dumps({
+            'caption': matched['caption_text'], 'duration': matched['duration_text'],
+            'updated': matched['updated_text'],
+        }, sort_keys=True, ensure_ascii=True).encode('utf-8')).hexdigest()
+        return {'outcome': 'REMOTE_EXISTS_CONFIRMED', 'coverage_status': coverage,
+                'blocker_code': None, 'candidate_count': 1,
+                'matched_candidate_fingerprint': f'sha256:{fingerprint}'}
+    return {'outcome': 'REMOTE_STATE_UNKNOWN', 'coverage_status': 'PARTIAL',
+            'blocker_code': 'MATCH_EVIDENCE_INSUFFICIENT', 'candidate_count': 0,
+            'matched_candidate_fingerprint': None}
 
 
 def restore_pre_upload_failure(conn, draft_id):
@@ -540,6 +600,7 @@ class PublisherWorker:
         self.auth_detector = TikTokAuthDetector()
         self.auth_diagnostics = AuthDiagnostics()
         self.diagnostic_requests = queue.Queue(maxsize=8)
+        self.verification_requests = {}
         self.inspection_guards = {}
         self.login_traces = {}
         self.auth_test_lock = AuthTestLock(db)
@@ -781,6 +842,33 @@ class PublisherWorker:
             return self.request_login(int(row_id))
         self.start()
         self.commands.put((command, int(row_id)))
+
+    def request_draft_verification(self, draft_id, timeout=90):
+        """Coalesce concurrent reads of one execution item; never enqueue a mutation."""
+        draft_id = int(draft_id)
+        with closing(connect(self.db)) as conn:
+            draft = get_row(conn, 'publisher_drafts', draft_id)
+            asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
+            if draft['persistence_status'] != 'UNCONFIRMED' or asset['status'] != 'NEEDS_RECONCILIATION':
+                raise ValueError('DRAFT_NOT_VERIFY_ELIGIBLE')
+            item = conn.execute(
+                'SELECT i.execution_id,i.status,e.status execution_status '
+                'FROM publisher_execution_items i JOIN publisher_batch_executions e '
+                'ON e.id=i.execution_id WHERE i.draft_id=? ORDER BY i.execution_id DESC LIMIT 1',
+                (draft_id,),
+            ).fetchone()
+            if not item or item['status'] != 'WAITING_MANUAL' or item['execution_status'] != 'PAUSED':
+                raise ValueError('EXECUTION_ITEM_NOT_PAUSED_FOR_VERIFICATION')
+            execution_id = item['execution_id']
+        key = (execution_id, draft_id)
+        with self.lock:
+            future = self.verification_requests.get(key)
+            if future is None:
+                future = Future()
+                self.verification_requests[key] = future
+                self.start()
+                self.commands.put(('verify-draft', (draft_id, execution_id, future)))
+        return future.result(timeout=timeout)
 
     def account_lock(self, account_id):
         with self.lock:
@@ -1236,6 +1324,188 @@ class PublisherWorker:
         )
         return result
 
+    def _inspect_draft_list_read_only(self, playwright, account):
+        """Only navigation and DOM reads; editor state is never dismissed."""
+        result = {'source_surface': 'TIKTOK_STUDIO_AUTH', 'observed_account': None,
+                  'rows': [], 'listing_complete': False, 'blocker_code': None,
+                  'listing_bounds': {}}
+        context = self.context(playwright, account)
+        live = [page for page in context.pages if not page.is_closed()]
+        if len(live) != 1:
+            result['blocker_code'] = 'LISTING_ERROR'
+            return result
+        page = live[0]
+        if page.url != 'about:blank' and not is_tiktok_url(page.url):
+            result['blocker_code'] = 'LISTING_ERROR'
+            return result
+        path = urlsplit(page.url).path.rstrip('/')
+        if path.startswith('/tiktokstudio/upload') or path.startswith('/tiktokstudio/edit'):
+            result.update(source_surface='TIKTOK_STUDIO_EDITOR', blocker_code='UNSAVED_EDITOR')
+            return result
+        body = page.locator('body').inner_text(timeout=5000) if page.url != 'about:blank' else ''
+        folded = ''.join(char for char in unicodedata.normalize('NFD', body.casefold())
+                         if not unicodedata.combining(char))
+        if ('continuar editando' in folded and ('nao salv' in folded or 'rascunho' in folded)):
+            result.update(source_surface='TIKTOK_STUDIO_EDITOR', blocker_code='UNSAVED_EDITOR')
+            return result
+        if is_login_url(page.url) or 'entrar no tiktok' in folded:
+            result['blocker_code'] = 'AUTH_REQUIRED'
+            return result
+        if 'captcha' in folded:
+            result['blocker_code'] = 'CAPTCHA'
+            return result
+        if any(marker in folded for marker in ('verifique se voce e humano', 'security challenge', 'verificacao de seguranca')):
+            result['blocker_code'] = 'SECURITY_CHALLENGE'
+            return result
+        if any(marker in folded for marker in ('codigo de verificacao', 'two-factor authentication', 'verificacao em duas etapas')):
+            result['blocker_code'] = 'TWO_FACTOR'
+            return result
+        if page.url == 'about:blank' or path in ('/tiktokstudio', '/tiktokstudio/content'):
+            if path != '/tiktokstudio':
+                page.goto('https://www.tiktok.com/tiktokstudio', wait_until='domcontentloaded', timeout=30000)
+        else:
+            result['blocker_code'] = 'LISTING_ERROR'
+            return result
+        auth = self._verify_runtime_session(account, context)
+        expected = str(account.get('tiktok_username') or '').strip().lstrip('@').casefold()
+        handles = auth.get('observed_handles') or []
+        if len(handles) == 1:
+            result['observed_account'] = handles[0]
+        if auth.get('account_identity') == 'ACCOUNT_MISMATCH' or (
+            result['observed_account'] is not None and result['observed_account'] != expected
+        ):
+            result['blocker_code'] = 'WRONG_ACCOUNT'
+            return result
+        if auth.get('auth_result') != AUTHENTICATED:
+            result['blocker_code'] = 'AUTH_REQUIRED'
+            return result
+        if result['observed_account'] is None or auth.get('account_identity') != 'ACCOUNT_CONFIRMED':
+            result['blocker_code'] = 'WRONG_ACCOUNT'
+            return result
+        page.goto('https://www.tiktok.com/tiktokstudio/content', wait_until='domcontentloaded', timeout=30000)
+        if urlsplit(page.url).path.rstrip('/') != '/tiktokstudio/content':
+            result['blocker_code'] = 'AUTH_REQUIRED' if is_login_url(page.url) else 'LISTING_ERROR'
+            return result
+        result['source_surface'] = 'TIKTOK_STUDIO_DRAFT_LIST'
+        text = page.locator('body').inner_text(timeout=5000)
+        folded = ''.join(char for char in unicodedata.normalize('NFD', text.casefold())
+                         if not unicodedata.combining(char))
+        if 'captcha' in folded:
+            result['blocker_code'] = 'CAPTCHA'
+            return result
+        if any(marker in folded for marker in ('codigo de verificacao', 'verificacao em duas etapas')):
+            result['blocker_code'] = 'TWO_FACTOR'
+            return result
+        if any(marker in folded for marker in ('security challenge', 'verificacao de seguranca')):
+            result['blocker_code'] = 'SECURITY_CHALLENGE'
+            return result
+        if 'rascunhos' in folded and 'todos os computadores' not in folded:
+            drafts_tab = page.locator('[data-tt="Header_HeaderTabBar_Container"]').filter(
+                has_text=re.compile(r'^Rascunhos\s+\d+$', re.I))
+            if drafts_tab.count() != 1 or not drafts_tab.is_visible():
+                result['blocker_code'] = 'PARTIAL_LISTING'
+                return result
+            drafts_tab.click(timeout=10000)
+            text = page.locator('body').inner_text(timeout=5000)
+            folded = text.casefold()
+        if 'rascunhos' not in folded or 'todos os computadores' not in folded:
+            result['blocker_code'] = 'PARTIAL_LISTING'
+            return result
+        listing = page.evaluate("""() => {
+          const rows = [...document.querySelectorAll('[data-tt="components_DraftRowLayout_FlexRow"]')]
+            .map(el => {
+              const lines = (el.querySelector('[data-tt="components_DraftRowLayout_FlexRow_2"]')?.innerText || '')
+                .split(/\\r?\\n/).map(x => x.trim()).filter(Boolean);
+              return {
+                caption_text: lines.slice(1).join('\\n'), duration_text: lines[0] || '',
+                updated_text: (el.querySelector('[data-tt="components_DraftRowLayout_FlexRow_3"]')?.innerText || '').trim()
+              };
+            });
+          const tabs = [...document.querySelectorAll('[data-tt="Header_HeaderTabBar_Container"]')];
+          const draftTab = tabs.find(el => /^Rascunhos\\s+\\d+$/i.test((el.innerText || '').trim()));
+          const total = draftTab ? Number((draftTab.innerText || '').match(/\\d+/)?.[0]) : null;
+          return {
+            rows, total, loading: !!document.querySelector('[aria-busy="true"], [role="progressbar"]'),
+            pagination: !!document.querySelector('[aria-label*="próxima" i], [aria-label*="next" i], [data-e2e*="pagination"]')
+          };
+        }""")
+        rows = listing.get('rows') or []
+        total = listing.get('total')
+        result['rows'] = rows
+        result['listing_bounds'] = {'visible_rows': len(rows), 'tab_total': total,
+                                    'loading': bool(listing.get('loading')),
+                                    'pagination': bool(listing.get('pagination'))}
+        result['listing_complete'] = (
+            isinstance(total, int) and total == len(rows) and
+            all(row.get('caption_text') and row.get('updated_text') for row in rows) and
+            not listing.get('loading') and not listing.get('pagination')
+        )
+        if not result['listing_complete']:
+            result['blocker_code'] = 'PARTIAL_LISTING'
+        return result
+
+    def _verify_remote_draft_record(self, playwright, conn, draft_id, execution_id):
+        draft = get_row(conn, 'publisher_drafts', draft_id)
+        asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
+        account = get_row(conn, 'publisher_accounts', draft['account_id'])
+        if draft['persistence_status'] != 'UNCONFIRMED' or asset['status'] != 'NEEDS_RECONCILIATION':
+            raise ValueError('DRAFT_NOT_VERIFY_ELIGIBLE')
+        if not str(account.get('tiktok_username') or '').strip():
+            raise ValueError('EXPECTED_ACCOUNT_REQUIRED')
+        checkpoint = conn.execute(
+            "SELECT id FROM publisher_execution_logs WHERE draft_id=? "
+            "AND step IN ('UPLOAD_STARTED','SAVE_DRAFT','TIKTOK_DRAFT_CONFIRMED') "
+            'ORDER BY id DESC LIMIT 1', (draft_id,),
+        ).fetchone()
+        if not checkpoint:
+            raise ValueError('REMOTE_EFFECT_CHECKPOINT_REQUIRED')
+        started = now_iso()
+        try:
+            observation = self._inspect_draft_list_read_only(playwright, account)
+        except Exception:
+            observation = {'source_surface': 'TIKTOK_STUDIO_AUTH', 'observed_account': None,
+                           'rows': [], 'listing_complete': False,
+                           'blocker_code': 'LISTING_ERROR', 'listing_bounds': {}}
+        save = conn.execute(
+            "SELECT created_at FROM publisher_execution_logs WHERE draft_id=? "
+            "AND step='SAVE_DRAFT' AND status='OK' ORDER BY id DESC LIMIT 1", (draft_id,),
+        ).fetchone()
+        duration = None
+        path = Path(draft.get('temp_path') or '')
+        if draft.get('temp_path') and path.resolve().is_relative_to(self.cache.root.resolve()) and path.is_file():
+            try:
+                duration = probe_video(path, str(ensure_ffprobe_available(self.root))).results.get('duration')
+            except (OSError, FFProbeError):
+                pass
+        if observation.get('blocker_code') and observation['blocker_code'] != 'PARTIAL_LISTING':
+            assessment = {'outcome': 'REMOTE_STATE_UNKNOWN', 'coverage_status': 'UNKNOWN',
+                          'candidate_count': 0, 'matched_candidate_fingerprint': None,
+                          'blocker_code': observation['blocker_code']}
+        else:
+            assessment = assess_remote_draft_rows(
+                observation.get('rows') or [], draft['caption'], save['created_at'] if save else None,
+                duration, listing_complete=observation.get('listing_complete') is True,
+            )
+        completed = datetime.now(timezone.utc)
+        evidence_id = record_reconciliation_evidence(
+            conn, draft_id=draft_id, media_asset_id=asset['id'], execution_id=execution_id,
+            account_id=account['id'], expected_account=account['tiktok_username'],
+            observed_account=observation.get('observed_account'),
+            source_surface=observation['source_surface'], matcher_version='canonical-v1-strong',
+            remote_effect_checkpoint_id=checkpoint['id'],
+            verification_started_at=started, verification_completed_at=completed.isoformat(),
+            valid_until=(completed + timedelta(minutes=5)).isoformat(),
+            evidence_payload={'listing_bounds': observation.get('listing_bounds') or {},
+                              'observed_duration': duration,
+                              'pagination_observations': {'complete': observation.get('listing_complete') is True}},
+            **assessment,
+        )
+        return {'evidence_id': evidence_id, 'remote_read_only': True,
+                'local_evidence_append': True, 'outcome': assessment['outcome'],
+                'coverage_status': assessment['coverage_status'],
+                'blocker_code': assessment['blocker_code'],
+                'candidate_count': assessment['candidate_count']}
+
     def run(self):
         try:
             from playwright.sync_api import sync_playwright
@@ -1257,6 +1527,21 @@ class PublisherWorker:
                                 pass
                         continue
                     with closing(connect(self.db)) as conn:
+                        if command == 'verify-draft':
+                            draft_id, verify_execution_id, future = row_id
+                            try:
+                                if future.set_running_or_notify_cancel():
+                                    future.set_result(self._verify_remote_draft_record(
+                                        playwright, conn, draft_id, verify_execution_id,
+                                    ))
+                            except Exception as exc:
+                                future.set_exception(exc)
+                            finally:
+                                with self.lock:
+                                    key = (verify_execution_id, draft_id)
+                                    if self.verification_requests.get(key) is future:
+                                        self.verification_requests.pop(key, None)
+                            continue
                         if command=='draft-one-probe':
                             from src.publisher.functional_probe import run_probe
                             operation,data,future=row_id
