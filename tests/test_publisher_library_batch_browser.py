@@ -197,6 +197,60 @@ class LibraryBatchPanelBrowserTests(unittest.TestCase):
         page.wait_for_function("document.querySelector('#librarySelectionCount')?.textContent.includes('2 selecionados')")
         return page, errors
 
+    def test_selected_details_remove_clear_and_filter_survive_refresh(self):
+        page, errors = self._open()
+        self.assertIn('2 / 30', page.locator('#librarySelectionCount').inner_text())
+        panel = page.locator('#librarySelectedPanel')
+        panel.locator('summary').click()
+        self.assertIn('Body Splash', panel.locator('.library-selected-products').inner_text())
+        self.assertIn('G1C1A1.mp4', panel.inner_text())
+        self.assertIn('Feminino/Body Splash', panel.inner_text())
+        page.locator('#libraryGroupView').select_option('REQUIRES_ATTENTION')
+        page.wait_for_timeout(700)
+        self.assertIn('2 / 30', page.locator('#librarySelectionCount').inner_text())
+        self.assertTrue(panel.evaluate('el => el.open'))
+        page.wait_for_timeout(11500)
+        self.assertTrue(panel.evaluate('el => el.open'))
+        self.assertEqual(panel.locator('[data-remove-library-selection]').count(), 2)
+        panel.locator('[data-remove-library-selection="G1C1A1"]').click()
+        self.assertIn('1 / 30', page.locator('#librarySelectionCount').inner_text())
+        self.assertNotIn('G1C1A1.mp4', panel.inner_text())
+        page.locator('#libraryGroupView').select_option('ACTIVE')
+        page.wait_for_function("document.querySelector('#librarySelectionCount')?.textContent.includes('1 / 30')")
+        page.locator('#clearLibrarySelection').click()
+        self.assertIn('0 / 30', page.locator('#librarySelectionCount').inner_text())
+        self.assertEqual(panel.locator('[data-remove-library-selection]').count(), 0)
+        self.assertEqual(errors, [])
+
+    def test_selected_item_removal_revalidates_open_batch_panel(self):
+        page, errors = self._open()
+        page.locator('#createBatchFromLibrary').click()
+        selected = page.locator('#libraryBatchSelectedPanel')
+        selected.locator('summary').click()
+        selected.locator('[data-remove-library-selection="G1C1A1"]').click()
+        page.wait_for_function("document.querySelector('#libraryBatchSelectionText')?.textContent.startsWith('1 vídeo')")
+        page.wait_for_function("window.PublisherUIState && document.querySelector('#libraryBatchReadiness')?.textContent.includes('1 prontos')")
+        self.assertEqual(BatchPanelFixtureHandler.preview_requests[-1]['drive_file_ids'], ['G1C2A1'])
+        self.assertTrue(page.locator('#libraryBatchDialog').evaluate('el => el.open'))
+        self.assertEqual(errors, [])
+
+    def test_selected_attention_remains_visible_without_silent_deselect(self):
+        page, errors = self._open()
+        page.evaluate("""() => {
+          const item = uiState.selectedLibraryDetails().find(row => row.drive_file_id === 'G1C1A1');
+          uiState.setLibrarySelection('G1C1A1', true, {...item, status: 'REMOTE_UNAVAILABLE'});
+          const archived = uiState.selectedLibraryDetails().find(row => row.drive_file_id === 'G1C2A1');
+          uiState.setLibrarySelection('G1C2A1', true, {...archived, product_archived: true});
+          renderLibrary(); renderBatchSummary();
+        }""")
+        panel = page.locator('#librarySelectedPanel')
+        panel.locator('summary').click()
+        self.assertEqual(panel.locator('[data-remove-library-selection]').count(), 2)
+        self.assertIn('Indisponível no Drive', panel.inner_text())
+        self.assertIn('Produto arquivado', panel.inner_text())
+        self.assertIn('2 / 30', page.locator('#librarySelectionCount').inner_text())
+        self.assertEqual(errors, [])
+
     def test_inline_panel_survives_refresh_cancel_and_success_stays_in_library(self):
         page, errors = self._open()
         self.assertEqual(page.locator('nav [data-view="batch"]').count(), 0)

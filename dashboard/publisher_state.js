@@ -145,11 +145,19 @@
         const details = this.selectedLibraryDetails();
         const withoutProduct = details.filter(item => !item.product_name).length;
         const attention = details.filter(item => item.status !== 'AVAILABLE' || item.product_archived).length;
+        const products = new Map();
+        for (const item of details) {
+          const key = item.product_id == null ? item.product_name || 'UNASSIGNED' : String(item.product_id);
+          const group = products.get(key) || {key, name: item.product_short_name || item.product_name || 'Sem Product', count: 0};
+          group.count++;
+          products.set(key, group);
+        }
         return {
           selected: librarySelected.size,
           known: details.length,
           details,
-          productCount: new Set(details.map(item => item.product_name || 'Sem produto')).size,
+          productCount: products.size,
+          products: [...products.values()],
           ready: details.filter(item => item.status === 'AVAILABLE' && !item.product_archived).length,
           withoutProduct,
           attention,

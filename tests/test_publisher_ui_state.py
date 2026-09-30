@@ -194,6 +194,30 @@ class PublisherUIStateTests(unittest.TestCase):
         )
         self.assertEqual(result, {"over": False, "exact": True, "count": 30})
 
+    def test_selection_summary_groups_products_and_retains_unavailable_item(self):
+        result = self.run_node(
+            f"""
+            const ui = require({json.dumps(str(STATE_MODULE))}).create();
+            ui.setLibraryPageSelection([
+              {{drive_file_id:'one',filename:'one.mp4',folder_path:'Pasta A',product_id:1,product_name:'Agapis',status:'AVAILABLE'}},
+              {{drive_file_id:'two',filename:'two.mp4',folder_path:'Pasta B',product_id:1,product_name:'Agapis',status:'AVAILABLE'}},
+              {{drive_file_id:'three',filename:'three.mp4',folder_path:'Pasta C',product_id:2,product_name:'Bermuda',status:'AVAILABLE'}},
+              {{drive_file_id:'four',filename:'four.mp4',folder_path:'Pasta D',product_id:null,product_name:null,status:'ATTENTION'}},
+            ],true);
+            ui.setLibrarySelection('one',true,{{drive_file_id:'one',filename:'one.mp4',folder_path:'Pasta A',product_id:1,product_name:'Agapis',status:'REMOTE_UNAVAILABLE'}});
+            const before = ui.librarySelectionSummary(30);
+            ui.setLibrarySelection('one',false);
+            const after = ui.librarySelectionSummary(30);
+            console.log(JSON.stringify({{before:{{selected:before.selected,products:before.products,attention:before.attention,canCreate:before.canCreate,unavailable:before.details.find(item=>item.drive_file_id==='one')?.status}},after:{{selected:after.selected,hasOne:after.details.some(item=>item.drive_file_id==='one')}}}}));
+            """
+        )
+        self.assertEqual(result['before']['selected'], 4)
+        self.assertEqual([(item['name'], item['count']) for item in result['before']['products']],
+                         [('Agapis', 2), ('Bermuda', 1), ('Sem Product', 1)])
+        self.assertEqual(result['before']['unavailable'], 'REMOTE_UNAVAILABLE')
+        self.assertFalse(result['before']['canCreate'])
+        self.assertEqual(result['after'], {'selected': 3, 'hasOne': False})
+
     def test_error_is_scoped_and_success_clears_only_same_operation(self):
         result = self.run_node(
             f"""
