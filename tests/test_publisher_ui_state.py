@@ -77,6 +77,19 @@ class PublisherUIStateTests(unittest.TestCase):
         self.assertIn('mais tarde', result['backoff'])
         self.assertIn('Reconecte', result['manualAuth']['message'])
 
+    def test_stale_auto_sync_is_not_shown_as_current(self):
+        result = self.run_node(
+            f"""
+            const ui = require({json.dumps(str(STATE_MODULE))});
+            console.log(JSON.stringify(ui.driveSyncPresentation({{
+              cursor_status:'READY', polling:{{enabled:true,status:'SCHEDULED'}},
+              last_successful_sync_at:'2026-09-24T11:34:34Z'
+            }})));
+            """
+        )
+        self.assertEqual(result['label'], 'Atenção necessária')
+        self.assertIn('15 minutos', result['message'])
+
     def test_current_polling_state_overrides_historical_success(self):
         result = self.run_node(
             f"""

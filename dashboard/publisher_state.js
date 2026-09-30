@@ -214,6 +214,12 @@
       message: status === 'SYNC_IN_PROGRESS' ? 'Já existe uma sincronização em andamento.'
         : 'Sincronização não concluída. Seus arquivos do Drive não foram modificados. Verifique o diagnóstico antes de tentar novamente.',
     };
+    const lastSync = Date.parse(record.last_successful_sync_at || '');
+    if (poll.enabled && poll.status === 'SCHEDULED' && Number.isFinite(lastSync) &&
+        Date.now() - lastSync > 15 * 60 * 1000) return {
+      label: 'Atenção necessária', needsRebuild: false, summary: '',
+      message: 'O inventário do Drive não é atualizado há mais de 15 minutos. Confira a sincronização antes de usar as mídias.',
+    };
     return {label: 'Atualizado', message: summary || 'Sincronização pronta.', summary, needsRebuild: false};
   }
 

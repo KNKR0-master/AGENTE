@@ -363,7 +363,7 @@ function renderDriveSync(){
  $('#driveSyncDetails').textContent=`Estado: ${driveSyncRecord.cursor_status||'desconhecido'}${counts?` · ${counts}`:''}`;
  const poll=driveSyncRecord.polling||{};
  $('#drivePollEnabled').checked=!!poll.enabled;
- const intervalSelect=$('#drivePollInterval'), interval=String(poll.interval_seconds||60);
+ const intervalSelect=$('#drivePollInterval'), interval=String(poll.interval_seconds||300);
  intervalSelect.querySelector('option[data-custom]')?.remove();
  if(![...intervalSelect.options].some(option=>option.value===interval)){const custom=new Option(`A cada ${interval} s`,interval);custom.dataset.custom='true';intervalSelect.add(custom);}
  intervalSelect.value=interval;

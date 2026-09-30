@@ -13,7 +13,7 @@ from src.publisher.drive_sync import configured_scope, incremental_drive_sync
 from src.store import connect
 
 MIN_INTERVAL = 30
-DEFAULT_INTERVAL = 60
+DEFAULT_INTERVAL = 300
 MAX_BACKOFF = 900
 
 
@@ -44,9 +44,12 @@ def polling_status(conn, *, config=None):
               "next_attempt_at", "consecutive_failures", "paused_reason", "last_error_category",
               "last_changes_seen")
     if row is None:
-        return {"enabled": False, "interval_seconds": DEFAULT_INTERVAL, "status": "DISABLED",
+        cursor = _cursor_status(conn, scope)
+        return {"enabled": True, "interval_seconds": DEFAULT_INTERVAL,
+                "status": "SCHEDULED" if cursor == "READY" else "PAUSED",
                 "last_attempt_at": None, "last_success_at": None, "next_attempt_at": None,
-                "consecutive_failures": 0, "paused_reason": None, "last_error_category": None,
+                "consecutive_failures": 0, "paused_reason": None if cursor == "READY" else cursor,
+                "last_error_category": None,
                 "last_changes_seen": 0}
     result = {key: row[key] for key in fields}
     result["enabled"] = bool(result["enabled"])
@@ -132,10 +135,11 @@ class DrivePollCoordinator:
             try:
                 with closing(connect(self.db)) as conn:
                     state = polling_status(conn, config=self.config)
-                    if state["enabled"] and state["status"] != "PAUSED":
-                        # Re-arm one due time from startup; the scheduler then reads only that stored value.
+                    if state["enabled"] and state["status"] not in {"PAUSED", "BACKOFF"}:
                         configure_polling(conn, "enable", state["interval_seconds"],
                                           now=self.clock(), config=self.config)
+                        # The same scheduled cycle performs startup catch-up before the 5-minute cadence.
+                        self._update(conn, scope, next_attempt_at=_stamp(self.clock()))
                 self._thread = threading.Thread(target=self._run, name="publisher-drive-poll", daemon=True)
                 self._thread.start()
             except Exception:

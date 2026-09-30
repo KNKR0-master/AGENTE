@@ -1,5 +1,6 @@
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -61,9 +62,16 @@ class PollingTests(unittest.TestCase):
     def advance(self, seconds):
         self.now += timedelta(seconds=seconds)
 
-    def test_default_disabled_and_validation(self):
-        self.assertFalse(self.state()["enabled"])
-        self.assertEqual(self.state()["interval_seconds"], 60)
+    def wait_for_calls(self, count):
+        deadline = time.monotonic() + 5
+        while len(self.calls) < count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(self.calls), count)
+
+    def test_default_enabled_and_validation(self):
+        self.assertTrue(self.state()["enabled"])
+        self.assertEqual(self.state()["interval_seconds"], 300)
+        self.assertEqual(self.state()["paused_reason"], "UNINITIALIZED")
         with self.assertRaises(ValueError):
             self.configure(interval=MIN_INTERVAL - 1)
         with self.assertRaises(ValueError):
@@ -79,7 +87,7 @@ class PollingTests(unittest.TestCase):
         other = DriveInventoryConfig(root_folder_id="another-root", account_email="owner@example.com",
                                      credentials_file=None)
         with closing(connect(self.db)) as conn:
-            self.assertFalse(polling_status(conn, config=other)["enabled"])
+            self.assertTrue(polling_status(conn, config=other)["enabled"])
             self.assertNotIn("current_cursor", polling_status(conn, config=self.config))
 
     def test_enable_disable_preserves_cursor_and_history(self):
@@ -96,6 +104,29 @@ class PollingTests(unittest.TestCase):
             row = conn.execute("SELECT current_cursor FROM publisher_drive_sync_state").fetchone()
             self.assertEqual(row[0], "C0")
 
+    def test_explicit_disable_survives_restart(self):
+        self.cursor()
+        self.configure("disable", 30)
+        poller = self.coordinator()
+        self.assertTrue(poller.start())
+        self.assertTrue(poller.stop())
+        self.assertFalse(self.state()["enabled"])
+        self.assertEqual(self.state()["interval_seconds"], 30)
+        self.assertEqual(self.calls, [])
+
+    def test_fresh_ready_scope_catches_up_at_startup(self):
+        self.cursor()
+        poller = self.coordinator()
+        self.assertTrue(poller.start())
+        self.addCleanup(poller.stop)
+        self.wait_for_calls(1)
+        self.assertEqual(poller.poll_due_once(), "NOT_DUE")
+        self.assertEqual(self.calls, [False])
+        self.assertEqual(self.state()["interval_seconds"], 300)
+        self.advance(300)
+        self.assertEqual(poller.poll_due_once(), "SUCCESS")
+        self.assertEqual(self.calls, [False, False])
+
     def test_missing_cursor_never_bootstraps(self):
         self.configure()
         self.assertEqual(self.state()["status"], "PAUSED")
@@ -108,21 +139,23 @@ class PollingTests(unittest.TestCase):
         self.assertEqual(self.state()["paused_reason"], "FULL_SCAN_REQUIRED")
         self.assertEqual(self.calls, [])
 
-    def test_success_zero_changes_and_restart_delay(self):
+    def test_success_zero_changes_and_startup_catchup(self):
         self.cursor()
         self.configure()
         poller = self.coordinator()
         poller.start()
         self.addCleanup(poller.stop)
+        self.wait_for_calls(1)
         self.assertEqual(poller.poll_due_once(), "NOT_DUE")
-        self.assertEqual(self.calls, [])
+        self.assertEqual(self.calls, [False])
         self.advance(60)
         self.assertEqual(poller.poll_due_once(), "SUCCESS")
-        self.assertEqual(self.calls, [False])
+        self.assertEqual(self.calls, [False, False])
         poller.stop()
         restarted = self.coordinator()
         restarted.start()
         self.addCleanup(restarted.stop)
+        self.wait_for_calls(3)
         self.assertEqual(restarted.poll_due_once(), "NOT_DUE")
         self.assertTrue(self.state()["enabled"])
 
@@ -194,10 +227,12 @@ class PollingTests(unittest.TestCase):
         second = self.coordinator()
         self.assertTrue(second.start())
         self.addCleanup(second.stop)
+        expected = len(self.calls) + 1
+        self.wait_for_calls(expected)
         self.assertEqual(second.poll_due_once(), "NOT_DUE")
         self.advance(60)
         self.assertEqual(second.poll_due_once(), "SUCCESS")
-        self.assertEqual(self.calls, [False])
+        self.assertEqual(self.calls, [False] * (expected + 1))
 
     def test_status_exposes_external_sync_lock_without_acquiring_it(self):
         lock = threading.Lock()
@@ -232,6 +267,21 @@ class PollingTests(unittest.TestCase):
         self.assertEqual(poller.poll_due_once(), "SUCCESS")
         self.assertEqual(self.state()["consecutive_failures"], 0)
         self.assertEqual(self.state()["last_changes_seen"], 2)
+
+    def test_restart_does_not_bypass_backoff(self):
+        self.cursor()
+        self.configure()
+        self.result = {"status": "TRANSIENT_ERROR"}
+        self.advance(60)
+        poller = self.coordinator()
+        self.assertEqual(poller.poll_due_once(), "BACKOFF")
+        due = self.state()["next_attempt_at"]
+        restarted = self.coordinator()
+        self.assertTrue(restarted.start())
+        self.addCleanup(restarted.stop)
+        self.assertEqual(self.state()["status"], "BACKOFF")
+        self.assertEqual(self.state()["next_attempt_at"], due)
+        self.assertEqual(restarted.poll_due_once(), "NOT_DUE")
 
     def test_busy_lock_skips_without_failure(self):
         self.cursor()
