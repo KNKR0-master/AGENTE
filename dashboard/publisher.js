@@ -17,6 +17,7 @@ let libraryRequestSequence = 0;
 let productScope = 'current', productWorkspace = {products:[],counts:{},repeated_name_groups:0}, productWorkspaceRequest = 0;
 let folderCatalogSelected = new Set(), activeFolderCatalogGroup = 'probable_matches';
 let driveSyncRecord = {}, driveSyncResult = null, driveSyncPhase = 'IDLE', driveSyncBusy = false;
+let driveAuthRecord = {state:'AUTH_REQUIRED'};
 const libraryBatchPanelState = {preview:null,request:0,submitting:false,resumeAfterFix:false,filterSnapshot:null};
 let libraryBatchPreviewTimer = null;
 const loginRequests = new Set();
@@ -346,7 +347,7 @@ if($('#mediaSearch'))$('#mediaSearch').oninput=renderMedia;if($('#mediaStatus'))
 if($('#selectAllMedia'))$('#selectAllMedia').onchange=e=>{visibleMedia().filter(m=>m.status==='AVAILABLE').forEach(m=>e.target.checked?remoteSelected.add(m.id):remoteSelected.delete(m.id));renderMedia();};
 const driveSyncPanel=document.createElement('div');
 driveSyncPanel.className='drive-sync-panel';
-driveSyncPanel.innerHTML='<div><strong id="driveSyncLabel"></strong><span id="driveSyncTime"></span><span id="driveSyncMode"></span><span id="driveSyncMessage" role="status" aria-live="polite"></span></div><label><input id="drivePollEnabled" type="checkbox"> Sincronização automática</label><label>Intervalo <select id="drivePollInterval"><option value="30">A cada 30 s</option><option value="60">A cada 1 min</option><option value="300">A cada 5 min</option><option value="900">A cada 15 min</option></select></label><span id="drivePollStatus" role="status"></span><small id="drivePollTimes"></small><button id="rebuildDriveSync" type="button">Verificação completa do Drive</button><details><summary>Detalhes técnicos</summary><small id="driveSyncDetails"></small></details>';
+driveSyncPanel.innerHTML='<div><strong id="driveSyncLabel"></strong><span id="driveSyncTime"></span><span id="driveSyncMode"></span><span id="driveSyncMessage" role="status" aria-live="polite"></span></div><div id="driveAuthPanel" hidden><span id="driveAuthMessage" role="status" aria-live="polite"></span><button id="reconnectDrive" type="button">Reconectar Google Drive</button></div><label><input id="drivePollEnabled" type="checkbox"> Sincronização automática</label><label>Intervalo <select id="drivePollInterval"><option value="30">A cada 30 s</option><option value="60">A cada 1 min</option><option value="300">A cada 5 min</option><option value="900">A cada 15 min</option></select></label><span id="drivePollStatus" role="status"></span><small id="drivePollTimes"></small><button id="rebuildDriveSync" type="button">Verificação completa do Drive</button><details><summary>Detalhes técnicos</summary><small id="driveSyncDetails"></small></details>';
 $('#syncMedia').closest('.heading').insertAdjacentElement('afterend',driveSyncPanel);
 $('#libraryBatchProductSummary').remove();
 const reviewLibraryBlockers=document.createElement('button');
@@ -357,7 +358,10 @@ async function loadDriveSyncStatus(){
  const response=await fetch('/api/publisher/drive-sync/status',{cache:'no-store'});
  if(response.ok)driveSyncRecord=await response.json();
  else driveSyncRecord={cursor_status:'ERROR'};
+ const authResponse=await fetch('/api/publisher/drive-auth/status',{cache:'no-store'});
+ if(authResponse.ok)driveAuthRecord=await authResponse.json();
 }
+const driveAuthErrors={REFRESH_TOKEN_MISSING:'A autorização não forneceu acesso duradouro. Tente novamente por ação manual.',ACCOUNT_VALIDATION_FAILED:'Não foi possível confirmar a conta Google. Tente novamente mais tarde.',ACCOUNT_MISMATCH:'A conta selecionada não é a conta Drive da Cecília.',DPAPI_SAVE_FAILED:'Não foi possível salvar a conexão neste Windows.',TOKEN_EXCHANGE_FAILED:'O Google não concluiu a autorização.',OAUTH_CALLBACK_FAILED:'A autorização não foi concluída a tempo.',BROWSER_OPEN_FAILED:'Não foi possível abrir o navegador para autorização.',POLLING_RESUME_FAILED:'Drive conectado, mas a atualização automática não foi retomada. Verifique os detalhes técnicos.',UNKNOWN_AUTH_FAILURE:'Não foi possível concluir a reconexão.'};
 function renderDriveSync(){
  const view=PublisherUIState.driveSyncPresentation(driveSyncRecord,driveSyncResult,driveSyncPhase);
  $('#driveSyncLabel').textContent=view.label;
@@ -376,10 +380,21 @@ function renderDriveSync(){
  $('#drivePollStatus').textContent=PublisherUIState.drivePollingPresentation(poll);
  const formatTime=value=>value?new Date(value).toLocaleString('pt-BR'):'';
  $('#drivePollTimes').textContent=poll.enabled?`Última: ${formatTime(poll.last_success_at)||'ainda não ocorreu'} · Próxima: ${formatTime(poll.next_attempt_at)||'aguardando ação'}`:'';
+ const authRequired=poll.enabled&&poll.status==='PAUSED'&&poll.paused_reason==='AUTH_REQUIRED';
+ const reauthorizing=driveAuthRecord.state==='REAUTHORIZING';
+ $('#driveAuthPanel').hidden=!authRequired&&!reauthorizing;
+ $('#reconnectDrive').disabled=reauthorizing||!authRequired||driveAuthRecord.state==='READY';
+ $('#driveAuthMessage').textContent=reauthorizing?'Reconectando Google Drive... Conclua a autorização no navegador.':driveAuthRecord.error_code?(driveAuthErrors[driveAuthRecord.error_code]||driveAuthErrors.UNKNOWN_AUTH_FAILURE):'A conexão com o Google Drive expirou. Reconecte para retomar a atualização automática.';
  $('#syncMedia').disabled=driveSyncBusy||view.needsRebuild||!!view.manualSyncBlocked;
  $('#syncMedia').textContent=driveSyncBusy?'Sincronizando…':'Atualizar biblioteca';
  $('#rebuildDriveSync').disabled=driveSyncBusy||!!view.manualSyncBlocked;
 }
+$('#reconnectDrive').onclick=()=>task(async()=>{
+ const result=await api('/drive-auth/reauthorize',{});
+ driveAuthRecord=result;
+ renderDriveSync();
+ if(result.started)notice('Conclua a autorização Google no navegador.');
+});
 async function runDriveSync(bootstrap=false){
  if(driveSyncBusy)return;
  if(bootstrap&&!confirm('Verificar novamente toda a pasta operacional do Drive? Isso pode demorar. Nenhum arquivo remoto será excluído ou modificado.'))return;

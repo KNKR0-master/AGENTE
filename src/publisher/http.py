@@ -19,6 +19,7 @@ from src.publisher.media import media_provider, TemporaryMediaCache
 from src.publisher.account_safety import AccountSafetyGuard
 from src.publisher.drive_sync import drive_sync_status, incremental_drive_sync
 from src.publisher.drive_polling import DrivePollCoordinator, configure_polling, polling_status
+from src.publisher.drive_reauth import DriveReauthManager
 from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH
 from src.publisher.thumbnails import PublisherThumbnailService, ThumbnailUnavailable
 
@@ -32,6 +33,7 @@ class PublisherAPI:
         self.root, self.db = Path(root), db
         self.worker = PublisherWorker(root, db)
         self.drive_poller = DrivePollCoordinator(db)
+        self.drive_reauth = DriveReauthManager(root, self.drive_poller)
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.thumbnails = PublisherThumbnailService()
 
@@ -263,6 +265,9 @@ class PublisherAPI:
             if path == "/api/publisher/drive-sync/status":
                 handler._json({**drive_sync_status(conn), "polling": polling_status(conn)}, no_store=True)
                 return
+            if path == "/api/publisher/drive-auth/status":
+                handler._json(self.drive_reauth.status(), no_store=True)
+                return
             if path == "/api/publisher/execution-history":
                 before_id = query.get('before_id', [None])[0]
                 limit = query.get('limit', ['30'])[0]
@@ -438,13 +443,19 @@ class PublisherAPI:
                     elif action in {"products", "accounts", "presets"}:
                         result = {"id": getattr(service, f"save_{action[:-1]}")(data)}
                     elif path in {'/api/publisher/sync-media', '/api/publisher/drive-sync/incremental'}:
+                        if self.drive_reauth.status()['state'] == 'REAUTHORIZING':
+                            raise ValueError('DRIVE_REAUTH_IN_PROGRESS')
                         bootstrap = data.get('bootstrap') is True
                         if bootstrap and data.get('human_confirmed') is not True:
                             raise ValueError('FULL_DRIVE_RESCAN_REQUIRES_CONFIRMATION')
                         result = incremental_drive_sync(conn, bootstrap=bootstrap)
                     elif path == '/api/publisher/drive-sync/polling':
+                        if self.drive_reauth.status()['state'] == 'REAUTHORIZING':
+                            raise ValueError('DRIVE_REAUTH_IN_PROGRESS')
                         result = configure_polling(conn, data.get('action'), data.get('interval_seconds'))
                         self.drive_poller.wake()
+                    elif path == '/api/publisher/drive-auth/reauthorize':
+                        result = self.drive_reauth.start(polling=polling_status(conn))
                     elif action == 'batches':
                         result = service.create_remote_batch(data)
                     elif path == '/api/publisher/library-batches/preflight':

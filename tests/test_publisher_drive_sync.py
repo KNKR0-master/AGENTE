@@ -425,6 +425,8 @@ class PublisherDriveSyncTests(unittest.TestCase):
             with closing(connect(db)) as conn:
                 init_db(conn);init_publisher(conn)
             api=object.__new__(PublisherAPI);api.db=db;api.root=Path(directory)
+            api.drive_reauth=Mock()
+            api.drive_reauth.status.return_value={'state':'AUTH_REQUIRED'}
             def request(path,body):
                 import json
                 payload=json.dumps(body).encode()

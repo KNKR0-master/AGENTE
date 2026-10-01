@@ -152,6 +152,21 @@ class DrivePollCoordinator:
     def wake(self):
         self._wake.set()
 
+    def resume_after_reauth(self):
+        """Schedule one incremental catch-up, without enabling polling or a full scan."""
+        with self._cycle_guard:
+            with closing(connect(self.db)) as conn:
+                scope = _scope(self.config)
+                state = polling_status(conn, config=self.config)
+                if (not state['enabled'] or state['status'] != 'PAUSED'
+                        or state['paused_reason'] != 'AUTH_REQUIRED'
+                        or _cursor_status(conn, scope) != 'READY'):
+                    return False
+                self._update(conn, scope, status='SCHEDULED', paused_reason=None,
+                             last_error_category=None, next_attempt_at=_stamp(self.clock()))
+        self.wake()
+        return True
+
     def stop(self, timeout=20):
         self._stop.set()
         self._wake.set()

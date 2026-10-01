@@ -81,6 +81,25 @@ class PollingTests(unittest.TestCase):
             init_publisher(conn)
             self.assertEqual(conn.execute("SELECT count(*) FROM publisher_drive_poll_state").fetchone()[0], 0)
 
+    def test_reauth_resume_requires_ready_cursor_and_paused_auth(self):
+        self.cursor()
+        self.configure()
+        poller = self.coordinator()
+        with closing(connect(self.db)) as conn:
+            poller._update(conn, self.scope, status='PAUSED', paused_reason='AUTH_REQUIRED',
+                           next_attempt_at=None)
+        self.assertTrue(poller.resume_after_reauth())
+        self.assertEqual(self.state()['status'], 'SCHEDULED')
+        self.assertEqual(self.state()['next_attempt_at'], self.now.isoformat())
+        self.assertEqual(self.calls, [])
+        self.assertFalse(poller.resume_after_reauth())
+        self.cursor(status='FULL_SCAN_REQUIRED')
+        with closing(connect(self.db)) as conn:
+            poller._update(conn, self.scope, status='PAUSED', paused_reason='AUTH_REQUIRED',
+                           next_attempt_at=None)
+        self.assertFalse(poller.resume_after_reauth())
+        self.assertEqual(self.state()['status'], 'PAUSED')
+
     def test_poll_state_is_scoped_and_status_has_no_cursor(self):
         self.cursor()
         self.configure()
