@@ -71,7 +71,7 @@ def _base_query(*, include_unavailable=False) -> str:
            ancestor_pp.name ancestor_product_name,
            ov.product_id override_product_id, dec.decision, dec.reason decision_reason,
            ma.id media_asset_id, ma.status media_status, ma.consumed_by_draft_id,
-           d.id draft_id, d.status draft_status
+           d.id draft_id, d.status draft_status, d.batch_id batch_id, b.name batch_name
       FROM drive_files df
       JOIN drive_folders f ON f.drive_folder_id=df.drive_folder_id
       LEFT JOIN mapped ancestor ON ancestor.folder_id=f.drive_folder_id
@@ -80,6 +80,7 @@ def _base_query(*, include_unavailable=False) -> str:
       LEFT JOIN publisher_media_decisions dec ON dec.drive_file_id=df.drive_file_id
       LEFT JOIN publisher_media_assets ma ON ma.remote_file_id=df.drive_file_id
       LEFT JOIN publisher_drafts d ON d.media_asset_id=ma.id AND d.status<>'ARCHIVED'
+      LEFT JOIN publisher_batches b ON b.id=d.batch_id
       LEFT JOIN publisher_products pp ON pp.product_id=COALESCE(ov.product_id, f.product_id, ancestor.product_id)
       LEFT JOIN publisher_products direct_pp ON direct_pp.product_id=f.product_id
       LEFT JOIN publisher_products ancestor_pp ON ancestor_pp.product_id=ancestor.product_id
@@ -178,6 +179,8 @@ def _classify(row: dict) -> dict:
         "media_status": media_status or None,
         "draft_id": row.get("draft_id"),
         "draft_status": row.get("draft_status"),
+        "batch_id": row.get("batch_id"),
+        "batch_name": row.get("batch_name"),
         "eligible": False,
         "status": "ATTENTION",
         "status_label": FRIENDLY_STATUS["ATTENTION"],
@@ -191,7 +194,10 @@ def _classify(row: dict) -> dict:
                       reason=REMOTE_UNAVAILABLE_REASONS.get(code, fallback))
         return result
     if media_status in {"RESERVED", "PROCESSING", "NEEDS_RECONCILIATION", "CONSUMED_PENDING_DELETE"} or (row.get("draft_id") and row.get("draft_status") != "ARCHIVED"):
-        result.update(status="RESERVED", status_label=FRIENDLY_STATUS["RESERVED"], reason=f"Em uso pelo Draft #{row['draft_id']}" if row.get("draft_id") else "Mídia reservada")
+        batch_name = str(row.get("batch_name") or "").strip()
+        reason = (f"Em uso em: {batch_name}" if batch_name else
+                  f"Em uso por Rascunho #{row['draft_id']}" if row.get("draft_id") else "Mídia reservada")
+        result.update(status="RESERVED", status_label=FRIENDLY_STATUS["RESERVED"], reason=reason)
         return result
     if media_status == "CONSUMED":
         result.update(status="CONSUMED", status_label=FRIENDLY_STATUS["CONSUMED"], reason="Mídia já consumida")

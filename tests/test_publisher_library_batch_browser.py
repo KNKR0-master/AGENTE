@@ -251,6 +251,50 @@ class LibraryBatchPanelBrowserTests(unittest.TestCase):
         self.assertIn('2 / 30', page.locator('#librarySelectionCount').inner_text())
         self.assertEqual(errors, [])
 
+    def test_reserved_media_link_finds_exact_draft_by_ids(self):
+        page, errors = self._open()
+        page.locator('[data-library-group-toggle="product:1"]').click()
+        page.locator('[data-library-row-key="media:G1C1A1"]').wait_for()
+        page.evaluate("""() => {
+          state.drafts[0].media_asset_id = 501;
+          state.batches.push({...state.batches[0], id:25});
+          state.drafts.push({...state.drafts[0], id:99, batch_id:25, media_asset_id:502});
+          const item = libraryGroupPages.get('product:1').items.find(row => row.drive_file_id === 'G1C1A1');
+          Object.assign(item, {status:'RESERVED', status_label:'Reservado', reason:'Em uso em: Lote de revisão',
+            batch_id:24, draft_id:1, media_asset_id:501});
+          renderLibrary();
+        }""")
+        link = page.locator('[data-reservation-draft-id="1"]')
+        self.assertEqual(link.inner_text(), 'Em uso em: Lote de revisão')
+        self.assertEqual((link.get_attribute('data-reservation-batch-id'),
+                          link.get_attribute('data-reservation-media-id')), ('24', '501'))
+        link.click()
+        self.assertIn('active', page.locator('#queue').get_attribute('class'))
+        row = page.locator('[data-queue-draft="1"]')
+        self.assertIn('queue-target', row.get_attribute('class'))
+        self.assertNotIn('queue-target', page.locator('[data-queue-draft="99"]').get_attribute('class'))
+        self.assertTrue(row.locator('.queue-details').evaluate('el => el.open'))
+        self.assertFalse(errors, errors)
+
+    def test_blocker_disables_create_and_removal_reenables_it(self):
+        page, errors = self._open()
+        page.evaluate("""() => {
+          const item=uiState.selectedLibraryDetails().find(row=>row.drive_file_id==='G1C1A1');
+          uiState.setLibrarySelection('G1C1A1',true,{...item,status:'RESERVED',reason:'Em uso em: Outro lote'});
+          librarySelectionChanged();
+        }""")
+        self.assertTrue(page.locator('#createBatchFromLibrary').is_disabled())
+        self.assertIn('1 item(ns) precisam ser corrigidos', page.locator('#librarySelectionCount').inner_text())
+        page.locator('#reviewLibraryBlockers').click()
+        self.assertEqual(page.locator('#libraryBatchProductSummary').count(), 0)
+        page.locator('#libraryBatchSelectedPanel summary').click()
+        page.locator('#libraryBatchSelectedPanel [data-remove-library-selection="G1C1A1"]').click()
+        self.assertFalse(page.locator('#createBatchFromLibrary').is_disabled())
+        self.assertNotIn('precisam ser corrigidos', page.locator('#librarySelectionCount').inner_text())
+        page.wait_for_function("document.querySelector('#libraryBatchReadiness')?.textContent.includes('1 prontos')")
+        self.assertEqual(BatchPanelFixtureHandler.preview_requests[-1]['drive_file_ids'], ['G1C2A1'])
+        self.assertFalse(errors, errors)
+
     def test_inline_panel_survives_refresh_cancel_and_success_stays_in_library(self):
         page, errors = self._open()
         self.assertEqual(page.locator('nav [data-view="batch"]').count(), 0)
@@ -399,7 +443,9 @@ class LibraryBatchPanelBrowserTests(unittest.TestCase):
         page.locator("#libraryGroupView").select_option("REQUIRES_ATTENTION")
         page.locator('[data-library-group-toggle="folder:unassigned"]').click()
         page.locator('[data-library="other"]').check()
-        page.locator("#createBatchFromLibrary").click()
+        self.assertTrue(page.locator("#createBatchFromLibrary").is_disabled())
+        self.assertIn('1 item(ns) precisam ser corrigidos', page.locator('#librarySelectionCount').inner_text())
+        page.locator("#reviewLibraryBlockers").click()
         page.locator('#libraryBatchForm [name="name"]').fill("Teste pasta")
         associate = page.locator("#libraryBatchDialog").get_by_role("button", name="Associar produto", exact=True)
         expect(associate).to_be_visible()

@@ -3,7 +3,7 @@ import tempfile
 from types import SimpleNamespace
 from pathlib import Path
 
-from src.publisher.library import list_library, list_library_groups, list_group_items, select_group_items
+from src.publisher.library import _classify, list_library, list_library_groups, list_group_items, select_group_items
 from src.publisher.http import PublisherAPI
 from src.publisher.service import PublisherService, init_publisher
 from src.store import connect, init_db, now_iso
@@ -99,6 +99,35 @@ class PublisherMediaLibraryTests(unittest.TestCase):
         self.assertEqual(by_id["high"]["classification_label"], "Reconhecido")
         self.assertEqual(by_id["medium"]["classification_label"], "Provável")
         self.assertEqual(by_id["suspicious"]["classification_label"], "Revisar")
+
+    def test_reserved_media_uses_batch_name_and_canonical_ids(self):
+        stamp = now_iso()
+        with self.conn:
+            for batch_id in (91, 92):
+                self.conn.execute("INSERT INTO publisher_batches(id,name,created_at) VALUES (?, 'Mesmo nome', ?)",
+                                  (batch_id, stamp))
+            for media_id, draft_id, batch_id, file_id in ((51, 61, 91, 'high'), (52, 62, 92, 'medium')):
+                self.conn.execute("""INSERT INTO publisher_media_assets
+                    (id,remote_file_id,filename,mime_type,status,created_at,updated_at)
+                    VALUES (?,?,?,'video/mp4','RESERVED',?,?)""",
+                    (media_id, file_id, file_id + '.mp4', stamp, stamp))
+                self.conn.execute("""INSERT INTO publisher_drafts
+                    (id,batch_id,product_id,account_id,media_asset_id,video_path,filename,caption,status,created_at,updated_at)
+                    VALUES (?,?,?,?,?,'',?,'Legenda','DRAFT',?,?)""",
+                    (draft_id, batch_id, self.product_a, self.account, media_id, file_id + '.mp4', stamp, stamp))
+        rows = {row['drive_file_id']: row for row in list_library(self.conn, page_size=20)['items']}
+        for file_id, batch_id, draft_id, media_id in (('high', 91, 61, 51), ('medium', 92, 62, 52)):
+            row = rows[file_id]
+            self.assertEqual(row['reason'], 'Em uso em: Mesmo nome')
+            self.assertEqual((row['batch_id'], row['draft_id'], row['media_asset_id']),
+                             (batch_id, draft_id, media_id))
+            self.assertEqual(row['status'], 'RESERVED')
+            self.assertFalse(row['eligible'])
+
+        fallback = _classify({'drive_file_id': 'standalone', 'name': 'STANDALONE_G1C1A1.mp4',
+                              'mime_type': 'video/mp4', 'media_status': 'RESERVED', 'draft_id': 77,
+                              'folder_operational_status': 'ACTIVE'})
+        self.assertEqual(fallback['reason'], 'Em uso por Rascunho #77')
 
     def test_decision_and_product_override_are_persistent(self):
         self.service.decide_media({"drive_file_id": "low", "decision": "VALID"})
