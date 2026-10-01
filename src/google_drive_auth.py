@@ -12,7 +12,42 @@ CECILIA = 'ceciliafigueiredo.shop@gmail.com'
 
 
 class DriveAuthError(ValueError):
-    pass
+    def __init__(self, message, *, code=None, stage=None):
+        super().__init__(message)
+        self.code = code or message
+        self.stage = stage
+
+
+class SafeAuthCause(Exception):
+    def __init__(self, exception_type, *, http_status=None, reason=None, winerror=None):
+        self.exception_type = exception_type
+        self.http_status = http_status
+        self.reason = reason
+        self.winerror = winerror
+        super().__init__(f"{exception_type}:{http_status or 'unknown'}:{reason or 'unspecified'}")
+
+
+def safe_auth_cause(exc):
+    response = getattr(exc, 'resp', None) or getattr(exc, 'response', None)
+    status = getattr(response, 'status', None) or getattr(response, 'status_code', None)
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    allowed_reasons = {'invalid_grant', 'insufficientPermissions', 'authError', 'forbidden',
+                       'rateLimitExceeded', 'userRateLimitExceeded'}
+    reason = getattr(exc, 'error', None)
+    reason = reason if isinstance(reason, str) and reason in allowed_reasons else None
+    return SafeAuthCause(type(exc).__name__, http_status=status, reason=reason,
+                         winerror=getattr(exc, 'winerror', None))
+
+
+def _auth_event(sink, stage, **fields):
+    if sink is not None:
+        try:
+            sink({'stage': stage, **fields})
+        except Exception:
+            pass
 
 
 class DriveCredentialStore:
@@ -75,14 +110,23 @@ class DriveCredentialStore:
             Path(temporary).unlink(missing_ok=True)
 
 
-def validate_account(service, expected):
+def validate_account(service, expected, *, event_sink=None):
+    _auth_event(event_sink, 'ACCOUNT_VALIDATION_STARTED')
     try:
         user = service.about().get(fields='user(emailAddress,me)').execute().get('user', {})
-    except Exception:
-        raise DriveAuthError('GOOGLE_ACCOUNT_MISMATCH') from None
+    except Exception as exc:
+        cause = safe_auth_cause(exc)
+        _auth_event(event_sink, 'ACCOUNT_VALIDATION_FAILED', exception_type=cause.exception_type,
+                    http_status=cause.http_status, reason=cause.reason)
+        raise DriveAuthError('GOOGLE_ACCOUNT_MISMATCH', code='ACCOUNT_VALIDATION_FAILED',
+                             stage='ACCOUNT_VALIDATION') from cause
+    _auth_event(event_sink, 'ACCOUNT_VALIDATION_REQUEST_COMPLETED', identity_observed=bool(user.get('emailAddress')))
     email = str(user.get('emailAddress') or '').strip().lower()
     if not expected or not user.get('me') or email != expected.strip().lower():
-        raise DriveAuthError('GOOGLE_ACCOUNT_MISMATCH')
+        _auth_event(event_sink, 'ACCOUNT_VALIDATION_COMPLETED', account_match=False)
+        raise DriveAuthError('GOOGLE_ACCOUNT_MISMATCH', code='ACCOUNT_MISMATCH',
+                             stage='ACCOUNT_VALIDATION')
+    _auth_event(event_sink, 'ACCOUNT_VALIDATION_COMPLETED', account_match=True)
     return email
 
 
@@ -139,14 +183,30 @@ def user_drive_service(store_path, expected, *, store=None, credential_factory=N
     return service
 
 
-def save_authorized_user(credentials, store_path, expected=CECILIA, *, builder=None, store=None):
+def save_authorized_user(credentials, store_path, expected=CECILIA, *, builder=None, store=None,
+                         event_sink=None):
     """For a future explicit consent flow; this function never opens a browser."""
     from googleapiclient.discovery import build
+    _auth_event(event_sink, 'SAVE_AUTHORIZED_USER_STARTED')
     granted = credentials.granted_scopes
-    if (not credentials.has_scopes([DRIVE_SCOPE]) or not credentials.refresh_token or
-            (granted is not None and DRIVE_SCOPE not in granted)):
-        raise DriveAuthError('GOOGLE_OAUTH_SCOPE_OR_REFRESH_TOKEN_MISSING')
+    refresh_present = bool(credentials.refresh_token)
+    _auth_event(event_sink, 'REFRESH_TOKEN_CHECK', refresh_token_present=refresh_present)
+    if not refresh_present:
+        raise DriveAuthError('GOOGLE_OAUTH_SCOPE_OR_REFRESH_TOKEN_MISSING',
+                             code='REFRESH_TOKEN_MISSING', stage='REFRESH_TOKEN_CHECK')
+    if not credentials.has_scopes([DRIVE_SCOPE]) or (granted is not None and DRIVE_SCOPE not in granted):
+        raise DriveAuthError('GOOGLE_OAUTH_SCOPE_OR_REFRESH_TOKEN_MISSING',
+                             code='GOOGLE_OAUTH_SCOPE_OR_REFRESH_TOKEN_MISSING', stage='REFRESH_TOKEN_CHECK')
     service = (builder or build)('drive', 'v3', credentials=credentials, cache_discovery=False)
-    validate_account(service, expected)
-    (store or DriveCredentialStore(store_path)).save(json.loads(credentials.to_json()))
+    validate_account(service, expected, event_sink=event_sink)
+    _auth_event(event_sink, 'DPAPI_SAVE_STARTED')
+    try:
+        (store or DriveCredentialStore(store_path)).save(json.loads(credentials.to_json()))
+    except Exception as exc:
+        cause = safe_auth_cause(exc)
+        _auth_event(event_sink, 'DPAPI_SAVE_FAILED', exception_type=cause.exception_type,
+                    winerror=cause.winerror)
+        raise DriveAuthError('DPAPI_SAVE_FAILED', code='DPAPI_SAVE_FAILED', stage='DPAPI_SAVE') from cause
+    _auth_event(event_sink, 'DPAPI_SAVE_COMPLETED')
+    _auth_event(event_sink, 'AUTH_COMPLETED')
     return service

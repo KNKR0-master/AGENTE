@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.google_drive_auth import (CECILIA, DRIVE_SCOPE, DriveAuthError,
                                    DriveCredentialStore, save_authorized_user)
+from src.google_drive_oauth_diagnostics import run_instrumented_local_server
 
 REMOTE = '1A72hhOtiz0I6DZOz4BIpAjnjKkYCZ4uX'
 LOCK = ROOT / 'data/credentials/cecilia-user-consent-20260913.consumed'
@@ -55,7 +56,10 @@ def main():
     with LOCK.open('x', encoding='utf-8') as marker:
         marker.write('SINGLE_AUTHORIZATION_CONSUMED\n')
     print('SINGLE_OAUTH_STARTED=true', flush=True)
-    credentials = flow.run_local_server(
+    def diagnostic(event):
+        print('OAUTH_DIAGNOSTIC=' + json.dumps(event, sort_keys=True), flush=True)
+
+    credentials = run_instrumented_local_server(flow, event_sink=diagnostic,
         host='localhost', bind_addr='127.0.0.1', port=0,
         open_browser=True, timeout_seconds=600,
         authorization_prompt_message=None,
@@ -64,7 +68,7 @@ def main():
         access_type='offline')
     if set(credentials.granted_scopes or credentials.scopes or []) != {DRIVE_SCOPE}:
         raise DriveAuthError('GOOGLE_OAUTH_SCOPE_MISMATCH')
-    service = save_authorized_user(credentials, store_path, CECILIA)
+    service = save_authorized_user(credentials, store_path, CECILIA, event_sink=diagnostic)
     stored = DriveCredentialStore(store_path).load()
     valid = bool(stored.get('refresh_token') and stored.get('token')
                  and store_path.read_text().startswith('dpapi:v1:'))
@@ -93,7 +97,8 @@ if __name__ == '__main__':
         print('OAUTH_RESULT=AUTHORIZATION_ALREADY_CONSUMED', flush=True)
         sys.exit(1)
     except DriveAuthError as exc:
-        print('OAUTH_RESULT=' + str(exc), flush=True)
+        print('OAUTH_RESULT=' + exc.code, flush=True)
+        print('OAUTH_FAILURE_STAGE=' + str(exc.stage or 'UNKNOWN'), flush=True)
         sys.exit(1)
     except Exception:
         # OAuth exceptions may contain callback codes or token response bodies.

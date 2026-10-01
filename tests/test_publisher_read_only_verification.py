@@ -129,7 +129,9 @@ class ReadOnlyVerificationTests(unittest.TestCase):
         worker = PublisherWorker(self.root, self.root / 'test.db')
         worker.cache.root.mkdir(parents=True, exist_ok=True)
         now_local = datetime.now(timezone.utc).astimezone(ZoneInfo('America/Sao_Paulo'))
-        updated = f'{now_local.day} de set de {now_local.year}, {now_local:%H:%M}'
+        months = ('jan', 'fev', 'mar', 'abr', 'mai', 'jun',
+                  'jul', 'ago', 'set', 'out', 'nov', 'dez')
+        updated = f'{now_local.day} de {months[now_local.month - 1]} de {now_local.year}, {now_local:%H:%M}'
         row = {'caption_text': 'Legenda', 'duration_text': '00:23', 'updated_text': updated}
         for draft_id, rows, expected in (
             (first, [row], 'REMOTE_EXISTS_CONFIRMED'),
