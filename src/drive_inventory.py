@@ -403,7 +403,8 @@ class VideoPublicationEligibilityService:
         )
 
 
-def mark_remote_unavailable(conn, file_id: str, *, is_folder: bool, reason: str) -> int:
+def mark_remote_unavailable(conn, file_id: str, *, is_folder: bool, reason: str,
+                            stop_at_folder_id: str | None = None) -> int:
     """Tombstone inventory rows while retaining Drive IDs and human mappings."""
     if reason not in {"TRASHED", "REMOVED", "OUTSIDE_ROOT", "NOT_FOUND"}:
         raise ValueError("INVALID_REMOTE_UNAVAILABLE_REASON")
@@ -417,9 +418,15 @@ def mark_remote_unavailable(conn, file_id: str, *, is_folder: bool, reason: str)
         )
         return max(0, cursor.rowcount)
     ids = [row[0] for row in conn.execute(
-        """WITH RECURSIVE tree(id) AS (SELECT drive_folder_id FROM drive_folders WHERE drive_folder_id=?
-           UNION ALL SELECT f.drive_folder_id FROM drive_folders f JOIN tree t ON f.parent_drive_folder_id=t.id)
-           SELECT id FROM tree""", (file_id,),
+        """WITH RECURSIVE tree(id) AS (
+           SELECT drive_folder_id FROM drive_folders
+            WHERE drive_folder_id=? AND (? IS NULL OR drive_folder_id<>?)
+           UNION ALL
+           SELECT f.drive_folder_id FROM drive_folders f JOIN tree t ON f.parent_drive_folder_id=t.id
+            WHERE ? IS NULL OR f.drive_folder_id<>?)
+           SELECT id FROM tree""",
+        (file_id, stop_at_folder_id, stop_at_folder_id,
+         stop_at_folder_id, stop_at_folder_id),
     )]
     if not ids:
         return 0

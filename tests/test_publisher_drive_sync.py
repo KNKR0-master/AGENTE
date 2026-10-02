@@ -216,6 +216,150 @@ class PublisherDriveSyncTests(unittest.TestCase):
         sync.cycle()
         self.assertIsNotNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='moving-out'").fetchone()[0])
 
+    def test_outside_ancestor_must_not_invalidate_configured_operational_root(self):
+        self.add_product_folder(); self.ready()
+        stamp = now_iso()
+        branch_ids = [f"branch-{index}" for index in range(10)]
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO drive_folders(drive_folder_id,name,relative_path,depth,
+                   operational_status,created_at,updated_at)
+                   VALUES ('flow','Flow','Flow',0,'OUT_OF_SCOPE',?,?)""", (stamp, stamp))
+            self.conn.execute("UPDATE drive_folders SET parent_drive_folder_id='flow' WHERE drive_folder_id='root'")
+            self.conn.execute(
+                """INSERT INTO drive_folders(drive_folder_id,parent_drive_folder_id,name,
+                   relative_path,depth,operational_status,created_at,updated_at)
+                   VALUES ('sibling','root','Sibling','Root/Sibling',1,'ACTIVE',?,?)""", (stamp, stamp))
+            self.conn.executemany(
+                """INSERT INTO drive_folders(drive_folder_id,parent_drive_folder_id,name,
+                   relative_path,depth,operational_status,created_at,updated_at)
+                   VALUES (?,'root',?,'Root/Branch',1,'ACTIVE',?,?)""",
+                [(branch, branch, stamp, stamp) for branch in branch_ids],
+            )
+        sync, provider = self.sync({"C0": {"changes": [
+            file_change("file-a", parent="product"),
+            file_change("file-b", parent="sibling"),
+            *(file_change(f"file-{branch}", parent=branch) for branch in branch_ids),
+        ], "new_start_page_token": "C1"}})
+        self.assertEqual(sync.cycle()["status"], "READY")
+        provider.pages["C1"] = {"changes": [folder_change("flow", "Flow", parent="outside")],
+                                 "new_start_page_token": "C2"}
+        self.assertEqual(sync.cycle()["status"], "READY")
+        folders = dict(self.conn.execute(
+            "SELECT drive_folder_id,operational_status FROM drive_folders"))
+        self.assertEqual(folders["flow"], "OUT_OF_SCOPE")
+        self.assertEqual([folders[key] for key in ("root", "product", "sibling", *branch_ids)], ["ACTIVE"] * 13)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drive_files WHERE missing_since IS NULL").fetchone()[0], 12)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publisher_media_assets WHERE status='AVAILABLE'").fetchone()[0], 12)
+        self.assertEqual(len(get_library_items(self.conn, ["file-a", "file-b"])), 2)
+        provider.pages["C2"] = {"changes": [folder_change("root", "Root", parent="flow")],
+                                 "new_start_page_token": "C3"}
+        self.assertEqual(sync.cycle()["status"], "READY")
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='root'").fetchone()[0], "ACTIVE")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drive_files WHERE missing_since IS NULL").fetchone()[0], 12)
+
+    def test_unrelated_outside_folder_does_not_change_operational_inventory(self):
+        self.add_product_folder(); self.ready()
+        stamp = now_iso()
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO drive_folders(drive_folder_id,name,relative_path,depth,
+                   operational_status,created_at,updated_at)
+                   VALUES ('outside','Outside','Outside',0,'OUT_OF_SCOPE',?,?)""", (stamp, stamp))
+        sync, provider = self.sync({"C0": {"changes": [file_change("video")],
+                                            "new_start_page_token": "C1"}})
+        sync.cycle()
+        provider.pages["C1"] = {"changes": [folder_change("outside", "Outside", parent="foreign")],
+                                 "new_start_page_token": "C2"}
+        self.assertEqual(sync.cycle()["status"], "READY")
+        self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='root'").fetchone()[0], "ACTIVE")
+        self.assertIsNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
+        self.assertEqual(self.conn.execute("SELECT status FROM publisher_media_assets WHERE remote_file_id='video'").fetchone()[0], "AVAILABLE")
+
+    def test_configured_root_removed_or_trashed_still_invalidates_subtree(self):
+        for change in ({"file_id": "root", "removed": True, "file": None},
+                       folder_change("root", "Root", parent="outside", trashed=True)):
+            with self.subTest(change=change):
+                self.tearDown(); self.setUp()
+                self.add_product_folder(); self.ready()
+                sync, provider = self.sync({"C0": {"changes": [file_change("video")],
+                                                    "new_start_page_token": "C1"}})
+                sync.cycle()
+                provider.pages["C1"] = {"changes": [change], "new_start_page_token": "C2"}
+                self.assertEqual(sync.cycle()["status"], "READY")
+                self.assertEqual(self.conn.execute("SELECT operational_status FROM drive_folders WHERE drive_folder_id='root'").fetchone()[0], "OUT_OF_SCOPE")
+                self.assertIsNotNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
+
+    def test_moved_out_subtree_cascades_without_touching_sibling_and_restores_only_verified_files(self):
+        self.add_product_folder(); self.ready()
+        stamp = now_iso()
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO drive_folders(drive_folder_id,parent_drive_folder_id,name,
+                   relative_path,depth,operational_status,created_at,updated_at)
+                   VALUES ('child','product','Child','Root/Produto/Child',2,'ACTIVE',?,?)""", (stamp, stamp))
+            self.conn.execute(
+                """INSERT INTO drive_folders(drive_folder_id,parent_drive_folder_id,name,
+                   relative_path,depth,operational_status,created_at,updated_at)
+                   VALUES ('sibling','root','Sibling','Root/Sibling',1,'ACTIVE',?,?)""", (stamp, stamp))
+        sync, provider = self.sync({"C0": {"changes": [
+            file_change("direct", parent="product"),
+            file_change("nested", parent="child"),
+            file_change("trashed", parent="child"),
+            file_change("sibling-file", parent="sibling"),
+        ], "new_start_page_token": "C1"}})
+        self.assertEqual(sync.cycle()["status"], "READY")
+        provider.pages["C1"] = {"changes": [file_change("trashed", parent="child", trashed=True)],
+                                 "new_start_page_token": "C2"}
+        self.assertEqual(sync.cycle()["status"], "READY")
+        provider.pages["C2"] = {"changes": [folder_change("product", "Produto", parent="outside")],
+                                 "new_start_page_token": "C3"}
+        self.assertEqual(sync.cycle()["status"], "READY")
+        folders = dict(self.conn.execute("SELECT drive_folder_id,operational_status FROM drive_folders"))
+        self.assertEqual((folders["product"], folders["child"], folders["sibling"]),
+                         ("OUT_OF_SCOPE", "OUT_OF_SCOPE", "ACTIVE"))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drive_files WHERE missing_since IS NOT NULL").fetchone()[0], 3)
+        self.assertEqual(self.conn.execute("SELECT status FROM publisher_media_assets WHERE remote_file_id='sibling-file'").fetchone()[0], "AVAILABLE")
+        self.assertEqual(len(get_library_items(self.conn, ["sibling-file"])), 1)
+        provider.pages["C3"] = {"changes": [
+            folder_change("product", "Produto", parent="root"),
+            folder_change("child", "Child", parent="product"),
+            file_change("direct", parent="product"),
+            file_change("nested", parent="child"),
+        ], "new_start_page_token": "C4"}
+        self.assertEqual(sync.cycle()["status"], "READY")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM drive_files WHERE missing_since IS NULL").fetchone()[0], 3)
+        self.assertIsNotNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='trashed'").fetchone()[0])
+        self.assertEqual(self.conn.execute("SELECT status FROM publisher_media_assets WHERE remote_file_id='trashed'").fetchone()[0], "MISSING")
+        self.assertEqual(len(get_library_items(self.conn, ["direct", "nested", "sibling-file"])), 3)
+
+    def test_folder_move_within_root_keeps_descendant_media_operational(self):
+        self.add_product_folder(); self.ready()
+        stamp = now_iso()
+        with self.conn:
+            for folder_id in ("x", "y"):
+                self.conn.execute(
+                    """INSERT INTO drive_folders(drive_folder_id,parent_drive_folder_id,name,
+                       relative_path,depth,operational_status,created_at,updated_at)
+                       VALUES (?,'root',?,'Root/Category',1,'ACTIVE',?,?)""",
+                    (folder_id, folder_id, stamp, stamp),
+                )
+            self.conn.execute("UPDATE drive_folders SET parent_drive_folder_id='x' WHERE drive_folder_id='product'")
+            self.conn.execute(
+                """INSERT INTO drive_folders(drive_folder_id,parent_drive_folder_id,name,
+                   relative_path,depth,operational_status,created_at,updated_at)
+                   VALUES ('child','product','Child','Root/X/Produto/Child',3,'ACTIVE',?,?)""", (stamp, stamp))
+        sync, provider = self.sync({"C0": {"changes": [file_change("video", parent="child")],
+                                            "new_start_page_token": "C1"}})
+        self.assertEqual(sync.cycle()["status"], "READY")
+        provider.pages["C1"] = {"changes": [folder_change("product", "Produto", parent="y")],
+                                 "new_start_page_token": "C2"}
+        self.assertEqual(sync.cycle()["status"], "READY")
+        self.assertEqual(self.conn.execute("SELECT parent_drive_folder_id,operational_status FROM drive_folders WHERE drive_folder_id='product'").fetchone()[:], ("y", "ACTIVE"))
+        self.assertIn("/Produto/Child", self.conn.execute("SELECT relative_path FROM drive_folders WHERE drive_folder_id='child'").fetchone()[0])
+        self.assertIsNone(self.conn.execute("SELECT missing_since FROM drive_files WHERE drive_file_id='video'").fetchone()[0])
+        self.assertEqual(self.conn.execute("SELECT status FROM publisher_media_assets WHERE remote_file_id='video'").fetchone()[0], "AVAILABLE")
+
     def test_move_into_root_reuses_existing_identity(self):
         self.add_product_folder(); self.ready()
         stamp = now_iso()

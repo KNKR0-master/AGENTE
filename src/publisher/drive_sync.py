@@ -327,7 +327,10 @@ class IncrementalDriveSync:
         _upsert_drive_file(self.conn, entry, folder, classification, None, file_kind=_file_kind(entry))
 
     def _mark_unavailable(self, file_id: str, is_folder: bool, reason: str) -> int:
-        return mark_remote_unavailable(self.conn, file_id, is_folder=is_folder, reason=reason)
+        return mark_remote_unavailable(
+            self.conn, file_id, is_folder=is_folder, reason=reason,
+            stop_at_folder_id=self.scope.root_folder_id if is_folder and reason == "OUTSIDE_ROOT" else None,
+        )
 
     def _refresh_descendant_paths(self, folder_id: str) -> None:
         queue = [folder_id]
