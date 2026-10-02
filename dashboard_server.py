@@ -166,7 +166,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/publisher/runtime-info":
             PUBLISHER.runtime_info(self)
             return
-        if path in {"/api/publisher", "/api/publisher/library", "/api/publisher/library/groups", "/api/publisher/library/group-items", "/api/publisher/products/workspace", "/api/publisher/folder-catalog", "/api/publisher/drive-sync/status", "/api/publisher/execution-history"} or path.startswith("/api/publisher/library/thumbnail/") or re.fullmatch(r'/api/publisher/batches/\d+/preflight', path):
+        if path in {"/api/publisher", "/api/publisher/library", "/api/publisher/library/groups", "/api/publisher/library/group-items", "/api/publisher/products/workspace", "/api/publisher/folder-catalog", "/api/publisher/drive-sync/status", "/api/publisher/drive-auth/status", "/api/publisher/execution-history"} or path.startswith("/api/publisher/library/thumbnail/") or re.fullmatch(r'/api/publisher/batches/\d+/preflight', path):
             PUBLISHER.get(self, query, path)
             return
         conn = connect(DB_PATH)
