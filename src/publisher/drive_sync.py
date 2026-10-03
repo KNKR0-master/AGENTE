@@ -67,65 +67,91 @@ def get_sync_state(conn, scope: SyncScope) -> dict[str, Any]:
     ).fetchone())
 
 
-def project_drive_inventory_to_publisher_media(conn, account_identity: str = "cecilia") -> int:
+def project_drive_inventory_to_publisher_media(conn, account_identity: str = "cecilia",
+                                             *, root_folder_id: str | None = None) -> int:
+    """Project remote availability locally without changing human or in-flight state."""
     timestamp = now_iso()
+    folders = {row["drive_folder_id"]: dict(row) for row in conn.execute("SELECT * FROM drive_folders")}
+
+    def in_scope(folder_id):
+        seen = set()
+        while folder_id and folder_id not in seen:
+            seen.add(folder_id)
+            folder = folders.get(folder_id)
+            if not folder or folder["operational_status"] != "ACTIVE":
+                return False
+            if root_folder_id is None or folder_id == root_folder_id:
+                return True
+            folder_id = folder["parent_drive_folder_id"]
+        return False
+
     rows = conn.execute(
         """SELECT df.*,f.relative_path FROM drive_files df
            JOIN drive_folders f ON f.drive_folder_id=df.drive_folder_id
            WHERE df.missing_since IS NULL AND f.operational_status='ACTIVE'
+             AND df.classification<>'MISSING_FROM_DRIVE'
              AND (df.file_kind='VIDEO' OR LOWER(COALESCE(df.mime_type,'')) LIKE 'video/%')"""
     ).fetchall()
     updates = 0
     present: set[str] = set()
     for source in rows:
         item = dict(source)
+        if not in_scope(item["drive_folder_id"]):
+            continue
         present.add(item["drive_file_id"])
         before = conn.execute(
-            """SELECT id,status FROM publisher_media_assets
+            """SELECT * FROM publisher_media_assets
                WHERE provider=? AND source_account=? AND remote_file_id=?""",
             (PROVIDER, account_identity, item["drive_file_id"]),
         ).fetchone()
-        conn.execute(
-            """INSERT INTO publisher_media_assets
-               (provider,source_account,remote_file_id,remote_folder_id,filename,mime_type,
-                size_bytes,checksum,folder_path,web_view_link,remote_created_at,
-                remote_modified_at,last_seen_at,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(provider,source_account,remote_file_id) DO UPDATE SET
-                 remote_folder_id=excluded.remote_folder_id,
-                 filename=CASE WHEN publisher_media_assets.status IN ('AVAILABLE','MISSING')
-                               THEN excluded.filename ELSE publisher_media_assets.filename END,
-                 mime_type=excluded.mime_type,
-                 size_bytes=CASE WHEN publisher_media_assets.status IN ('AVAILABLE','MISSING')
-                                 THEN excluded.size_bytes ELSE publisher_media_assets.size_bytes END,
-                 checksum=CASE WHEN publisher_media_assets.status IN ('AVAILABLE','MISSING')
-                               THEN excluded.checksum ELSE publisher_media_assets.checksum END,
-                 folder_path=excluded.folder_path,web_view_link=excluded.web_view_link,
-                 remote_modified_at=excluded.remote_modified_at,last_seen_at=excluded.last_seen_at,
-                 status=CASE WHEN publisher_media_assets.status='MISSING' THEN 'AVAILABLE'
-                             ELSE publisher_media_assets.status END,
-                 updated_at=excluded.updated_at""",
-            (PROVIDER, account_identity, item["drive_file_id"], item["drive_folder_id"],
-             item["name"], item.get("mime_type") or "application/octet-stream", item.get("size"),
-             item.get("md5_checksum"), item.get("relative_path"), item.get("web_view_link"),
-             item.get("created_time"), item.get("modified_time"), timestamp, timestamp, timestamp),
-        )
-        updates += int(before is None or before["status"] == "MISSING")
-    if present:
-        marks = ",".join("?" for _ in present)
-        cursor = conn.execute(
-            f"""UPDATE publisher_media_assets SET status='MISSING',updated_at=?
-                WHERE provider=? AND source_account=? AND status='AVAILABLE'
-                  AND remote_file_id NOT IN ({marks})""",
-            (timestamp, PROVIDER, account_identity, *sorted(present)),
-        )
-    else:
-        cursor = conn.execute(
-            """UPDATE publisher_media_assets SET status='MISSING',updated_at=?
-               WHERE provider=? AND source_account=? AND status='AVAILABLE'""",
-            (timestamp, PROVIDER, account_identity),
-        )
-    return updates + max(0, cursor.rowcount)
+        derived = {
+            "remote_folder_id": item["drive_folder_id"], "filename": item["name"],
+            "mime_type": item.get("mime_type") or "application/octet-stream",
+            "size_bytes": item.get("size"), "checksum": item.get("md5_checksum"),
+            "folder_path": item.get("relative_path"), "web_view_link": item.get("web_view_link"),
+            "remote_created_at": item.get("created_time"), "remote_modified_at": item.get("modified_time"),
+        }
+        observation = item.get("last_seen_at")
+        if before is None:
+            values = {"provider": PROVIDER, "source_account": account_identity,
+                      "remote_file_id": item["drive_file_id"], **derived,
+                      "last_seen_at": observation, "created_at": timestamp, "updated_at": timestamp}
+            conn.execute(f"INSERT INTO publisher_media_assets ({','.join(values)}) "
+                         f"VALUES ({','.join('?' for _ in values)})", tuple(values.values()))
+            updates += 1
+            continue
+        before = dict(before)
+        draft_link = conn.execute(
+            "SELECT 1 FROM publisher_drafts WHERE media_asset_id=? AND status<>'ARCHIVED' LIMIT 1",
+            (before["id"],),
+        ).fetchone()
+        if before["status"] not in {"AVAILABLE", "MISSING"} or draft_link or before.get("consumed_by_draft_id"):
+            for field in ("filename", "size_bytes", "checksum"):
+                derived.pop(field)
+        if before.get("remote_deleted_at"):
+            if before["status"] == "AVAILABLE":
+                derived["status"] = "MISSING"
+        elif before["status"] == "MISSING" and not draft_link and not before.get("consumed_by_draft_id"):
+            derived["status"] = "AVAILABLE"
+        changed = {key: value for key, value in derived.items() if before.get(key) != value}
+        semantic_change = bool(changed)
+        if observation != before.get("last_seen_at"):
+            changed["last_seen_at"] = observation
+        if semantic_change:
+            changed["updated_at"] = timestamp
+            updates += 1
+        if changed:
+            conn.execute(f"UPDATE publisher_media_assets SET {','.join(key+'=?' for key in changed)} WHERE id=?",
+                         (*changed.values(), before["id"]))
+    for asset in conn.execute(
+        "SELECT id,remote_file_id FROM publisher_media_assets WHERE provider=? AND source_account=? AND status='AVAILABLE'",
+        (PROVIDER, account_identity),
+    ).fetchall():
+        if asset["remote_file_id"] not in present:
+            conn.execute("UPDATE publisher_media_assets SET status='MISSING',updated_at=? WHERE id=?",
+                         (timestamp, asset["id"]))
+            updates += 1
+    return updates
 
 
 class IncrementalDriveSync:

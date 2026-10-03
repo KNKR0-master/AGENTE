@@ -349,6 +349,8 @@ class VideoPublicationEligibilityService:
         folder: dict[str, Any],
         duplicate_reason: str | None = None,
         canonical_drive_file_id: str | None = None,
+        *,
+        link_content: bool = True,
     ) -> dict[str, Any]:
         if duplicate_reason:
             return _eligibility("DUPLICATE", duplicate_reason, duplicate_reason, canonical_drive_file_id)
@@ -381,7 +383,7 @@ class VideoPublicationEligibilityService:
             )
 
         content_id = int(content["id"])
-        if match_method != "DRIVE_FILE_ID" and not content.get("google_drive_file_id"):
+        if link_content and match_method != "DRIVE_FILE_ID" and not content.get("google_drive_file_id"):
             conn.execute(
                 "UPDATE content_items SET google_drive_file_id = ?, google_drive_url = ?, updated_at = ? WHERE id = ?",
                 (entry.file_id, entry.web_view_link, now_iso(), content_id),
@@ -455,6 +457,14 @@ class DriveInventoryScanner:
         self.eligibility = eligibility or VideoPublicationEligibilityService()
 
     def scan(self, conn, force: bool = False) -> dict[str, Any]:
+        """Legacy scan including catalog, prompt and content-supply synchronization."""
+        return self._scan(conn, force=force, synchronize_catalog=True)
+
+    def scan_inventory(self, conn, force: bool = False) -> dict[str, Any]:
+        """Reconcile only canonical Drive inventory and account topology metadata."""
+        return self._scan(conn, force=force, synchronize_catalog=False)
+
+    def _scan(self, conn, *, force: bool, synchronize_catalog: bool) -> dict[str, Any]:
         if not self.config.root_folder_id:
             return record_scan_error(conn, self.config, "GOOGLE_DRIVE_TIKTOK_ROOT_FOLDER_ID nao configurado")
         cached = _fresh_scan(conn, self.config) if not force else None
@@ -503,15 +513,17 @@ class DriveInventoryScanner:
         except Exception as exc:
             return _finish_scan_error(conn, scan_id, str(exc))
 
-        sync_affiliate_product_catalog(conn)
-        products = _product_candidates(conn)
+        if synchronize_catalog:
+            sync_affiliate_product_catalog(conn)
+        products = _product_candidates(conn) if synchronize_catalog else []
         operational_root = root
         creator_profile_id: int | None = None
         if self.config.active_profile_folder_id:
             try:
                 root_children = self.provider.list_children(root.file_id)
                 operational_root, creator_profile_id = _sync_creator_drive_profiles(
-                    conn, self.config, root, root_children, scan_id
+                    conn, self.config, root, root_children, scan_id,
+                    preserve_mappings=not synchronize_catalog,
                 )
             except Exception as exc:
                 return _finish_scan_error(conn, scan_id, str(exc))
@@ -565,6 +577,7 @@ class DriveInventoryScanner:
                     products=products,
                     creator_profile_id=profile_id,
                     operational_status="ACTIVE",
+                    inventory_only=not synchronize_catalog,
                 )
                 counters["folders_succeeded"] += 1
                 successful_folders.add(folder_entry.file_id)
@@ -602,9 +615,14 @@ class DriveInventoryScanner:
                             duplicate_reason = "SAME_CONTENT"
                         else:
                             signature_canonical[signature] = entry.file_id
-                    classification = self.eligibility.classify(
-                        conn, entry, folder, duplicate_reason, canonical
-                    )
+                    if synchronize_catalog:
+                        classification = self.eligibility.classify(
+                            conn, entry, folder, duplicate_reason, canonical
+                        )
+                    else:
+                        classification = self.eligibility.classify(
+                            conn, entry, folder, duplicate_reason, canonical, link_content=False
+                        )
                     text_content = None
                     text_error = None
                     file_kind = _file_kind(entry)
@@ -628,7 +646,8 @@ class DriveInventoryScanner:
                     )
                     if classification["classification"] == "AVAILABLE":
                         counters["available_videos"] += 1
-                sync_folder_prompts(conn, folder_entry.file_id)
+                if synchronize_catalog:
+                    sync_folder_prompts(conn, folder_entry.file_id)
                 conn.commit()
             except Exception as exc:
                 counters["folders_failed"] += 1
@@ -695,7 +714,8 @@ class DriveInventoryScanner:
                 """,
                 (now_iso(), now_iso(), folder_id, scan_id),
             )
-            sync_folder_prompts(conn, folder_id)
+            if synchronize_catalog:
+                sync_folder_prompts(conn, folder_id)
         status = "PARTIAL" if counters["folders_failed"] else "COMPLETE"
         finished = now_iso()
         conn.execute(
@@ -722,8 +742,9 @@ class DriveInventoryScanner:
             ),
         )
         conn.commit()
-        inventories = product_content_inventory(conn, self.config)
-        refresh_content_supply_alerts(conn, inventories, self.config)
+        if synchronize_catalog:
+            inventories = product_content_inventory(conn, self.config)
+            refresh_content_supply_alerts(conn, inventories, self.config)
         result = dict(conn.execute("SELECT * FROM drive_scan_runs WHERE id = ?", (scan_id,)).fetchone())
         result["cached"] = False
         return result
@@ -1230,6 +1251,8 @@ def _sync_creator_drive_profiles(
     root: DriveEntry,
     root_children: list[DriveEntry],
     scan_id: int,
+    *,
+    preserve_mappings: bool = False,
 ) -> tuple[DriveEntry, int]:
     """Persist the account topology while returning only the active operational root."""
     timestamp = now_iso()
@@ -1293,13 +1316,13 @@ def _sync_creator_drive_profiles(
                 depth = 0, folder_type = CASE
                     WHEN drive_folders.role_source IN ('MANUAL', 'MIGRATION_HIGH_CONFIDENCE')
                     THEN drive_folders.folder_type ELSE excluded.folder_type END,
-                mapping_status = excluded.mapping_status,
+                mapping_status = CASE WHEN ? THEN drive_folders.mapping_status ELSE excluded.mapping_status END,
                 mapping_source = CASE
-                    WHEN drive_folders.mapping_source IN ('MANUAL', 'MANUAL_MAPPING', 'MIGRATION_HIGH_CONFIDENCE')
+                    WHEN ? OR drive_folders.mapping_source IN ('MANUAL', 'MANUAL_MAPPING', 'MIGRATION_HIGH_CONFIDENCE')
                          AND excluded.operational_status = 'ACTIVE'
                     THEN drive_folders.mapping_source ELSE excluded.mapping_source END,
                 product_id = CASE
-                    WHEN drive_folders.mapping_source IN ('MANUAL', 'MANUAL_MAPPING', 'MIGRATION_HIGH_CONFIDENCE')
+                    WHEN ? OR drive_folders.mapping_source IN ('MANUAL', 'MANUAL_MAPPING', 'MIGRATION_HIGH_CONFIDENCE')
                          AND excluded.operational_status = 'ACTIVE'
                     THEN drive_folders.product_id ELSE NULL END,
                 creator_profile_id = excluded.creator_profile_id,
@@ -1322,6 +1345,9 @@ def _sync_creator_drive_profiles(
                 timestamp,
                 timestamp,
                 timestamp,
+                int(preserve_mappings),
+                int(preserve_mappings),
+                int(preserve_mappings),
             ),
         )
 
@@ -1399,6 +1425,7 @@ def _upsert_scanned_folder(
     products: list[dict[str, Any]],
     creator_profile_id: int | None = None,
     operational_status: str = "ACTIVE",
+    inventory_only: bool = False,
 ) -> dict[str, Any]:
     existing_row = conn.execute(
         "SELECT * FROM drive_folders WHERE drive_folder_id = ?", (entry.file_id,)
@@ -1418,9 +1445,17 @@ def _upsert_scanned_folder(
         subfolder_count,
         parent_row,
     )
-    mapping = _resolve_folder_mapping(
-        conn, config, existing, parent_row, entry, relative_path, folder_type, products
-    )
+    if inventory_only:
+        if existing:
+            folder_type = existing["folder_type"]
+        mapping = {key: existing.get(key) for key in (
+            "mapping_status", "product_id", "mapping_source", "mapping_confidence",
+            "suggested_product_id", "suggestion_confidence", "suggestion_reason",
+        )} if existing else {"mapping_status": "NEEDS_REVIEW", "mapping_source": "DETERMINISTIC"}
+    else:
+        mapping = _resolve_folder_mapping(
+            conn, config, existing, parent_row, entry, relative_path, folder_type, products
+        )
     timestamp = now_iso()
     conn.execute(
         """
@@ -1481,7 +1516,8 @@ def _upsert_scanned_folder(
             timestamp,
         ),
     )
-    sync_drive_product_name(conn, entry.file_id, entry.name)
+    if not inventory_only:
+        sync_drive_product_name(conn, entry.file_id, entry.name)
     return dict(conn.execute(
         "SELECT * FROM drive_folders WHERE drive_folder_id = ?", (entry.file_id,)
     ).fetchone())
