@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from src.google_drive_auth import CECILIA, DRIVE_SCOPE, DriveAuthError, save_authorized_user
+from src.google_drive_auth import CECILIA, DRIVE_SCOPE, DriveAuthError, save_authorized_user, user_drive_service
 from src.publisher.drive_reauth import DriveReauthManager
 
 
@@ -88,6 +88,83 @@ class DriveReauthTests(unittest.TestCase):
         return DriveReauthManager(self.root, self.poller, flow_factory=lambda *_: object(),
                                   runner=self.runner, saver=self.saver,
                                   store_factory=lambda _: self.store, timeout_seconds=1)
+
+    def hydrate(self, manager):
+        self.credentials.valid = True
+        self.credentials.refresh_token = self.store.value.get('refresh_token')
+        return manager.hydrate(service_loader=lambda path, expected, **kw: user_drive_service(
+            path, expected, credential_factory=lambda info: self.credentials,
+            builder=lambda *_a, **_k: self.service, **kw))
+
+    def test_hydration_valid_credential_ready_without_oauth_or_writes(self):
+        manager = self.manager()
+        with patch.object(self.store, 'save', wraps=self.store.save) as save:
+            result = self.hydrate(manager)
+        self.assertEqual(result['state'], 'READY')
+        save.assert_not_called()
+        self.assertEqual(self.runner_calls, 0)
+        self.assertIsNone(manager._thread)
+        self.assertEqual(self.poller.calls, 0)
+        self.assertNotIn('SECRET', json.dumps(result))
+
+    def test_hydration_missing_refresh_token_requires_auth(self):
+        self.store.value = {'scopes': [DRIVE_SCOPE]}
+        self.assertEqual(self.hydrate(self.manager())['state'], 'AUTH_REQUIRED')
+        self.assertEqual(self.runner_calls, 0)
+
+    def test_hydration_corrupt_or_missing_store_requires_auth(self):
+        for error in (FileNotFoundError('SECRET'), ValueError('CORRUPT_SECRET')):
+            with self.subTest(error=type(error).__name__), patch.object(self.store, 'load', side_effect=error):
+                result = self.hydrate(self.manager())
+                self.assertEqual(result['state'], 'AUTH_REQUIRED')
+                self.assertNotIn('SECRET', json.dumps(result))
+
+    def test_hydration_wrong_account_not_ready(self):
+        self.service.about.return_value.get.return_value.execute.return_value = {
+            'user': {'emailAddress': 'wrong@example.com', 'me': True}}
+        self.assertEqual(self.hydrate(self.manager())['state'], 'AUTH_REQUIRED')
+
+    def test_hydration_unusable_credential_requires_auth(self):
+        self.service.about.return_value.get.return_value.execute.side_effect = RuntimeError('TOKEN_SECRET')
+        self.assertEqual(self.hydrate(self.manager())['state'], 'AUTH_REQUIRED')
+
+    def test_hydration_does_not_replace_active_reauth_job(self):
+        manager = self.manager()
+        self.barrier = threading.Event()
+        manager.start(polling=PAUSED)
+        loader = MagicMock()
+        self.assertEqual(manager.hydrate(service_loader=loader)['state'], 'REAUTHORIZING')
+        loader.assert_not_called()
+        self.barrier.set()
+        self.finish(manager)
+
+    def test_official_dashboard_route_returns_hydrated_ready(self):
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        import dashboard_server
+        from src.publisher.http import PublisherAPI
+        from src.publisher.service import init_publisher
+        from src.store import connect, init_db
+        db = self.root / 'hydration.db'
+        with closing(connect(db)) as conn:
+            init_db(conn)
+            init_publisher(conn)
+        api = PublisherAPI(self.root, db)
+        api.drive_reauth = self.manager()
+        self.hydrate(api.drive_reauth)
+        with patch.object(dashboard_server, 'PUBLISHER', api), patch.object(dashboard_server, 'DB_PATH', db):
+            server = ThreadingHTTPServer(('127.0.0.1', 0), dashboard_server.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with urllib.request.urlopen(f'http://127.0.0.1:{server.server_port}/api/publisher/drive-auth/status', timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    result = json.load(response)
+                    self.assertEqual(result['state'], 'READY')
+                    self.assertNotIn('SECRET', json.dumps(result))
+            finally:
+                server.shutdown()
+                server.server_close()
 
     def finish(self, manager):
         manager._thread.join(3)

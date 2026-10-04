@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from src.google_drive_auth import (CECILIA, DRIVE_SCOPE, DriveAuthError,
-                                   DriveCredentialStore, save_authorized_user)
+                                   DriveCredentialStore, save_authorized_user, user_drive_service)
 from src.google_drive_oauth_diagnostics import run_instrumented_local_server
 
 
@@ -39,6 +39,31 @@ class DriveReauthManager:
         with self._guard:
             return {'state': self._state, 'error_code': self._error_code,
                     'error_stage': self._error_stage, 'last_stage': self._last_stage}
+
+    def hydrate(self, *, service_loader=None):
+        """Validate persisted authentication without initiating interactive consent."""
+        with self._guard:
+            if self._thread and self._thread.is_alive():
+                return self._snapshot_locked()
+            try:
+                settings = json.loads((self.root / 'config/cecilia_drive_auth.json').read_text(encoding='utf-8'))
+                if (settings.get('auth_mode') != 'user_oauth' or
+                        settings.get('expected_google_account') != CECILIA or
+                        settings.get('scopes') != [DRIVE_SCOPE]):
+                    raise ValueError('Invalid authentication configuration')
+                store_path = (self.root / settings['credential_store']).resolve()
+                if not store_path.is_relative_to(self.root.resolve()):
+                    raise ValueError('Invalid credential path')
+                (service_loader or user_drive_service)(
+                    store_path, CECILIA, store=self.store_factory(store_path))
+            except Exception:
+                self._state = 'AUTH_REQUIRED'
+                self._error_code = 'PERSISTED_CREDENTIAL_UNUSABLE'
+                self._error_stage = 'STARTUP_CREDENTIAL_VALIDATION'
+            else:
+                self._state = 'READY'
+                self._error_code = self._error_stage = None
+            return self._snapshot_locked()
 
     def start(self, *, polling):
         if not (polling.get('enabled') and polling.get('status') == 'PAUSED'

@@ -57,6 +57,7 @@ class PublisherAPI:
             init_publisher(conn)
             recover_sessions(conn)
         self.worker.cache.clean_orphans()
+        self.drive_reauth.hydrate()
 
     def _ffprobe_health(self):
         result = {
