@@ -9,7 +9,11 @@ const maxBatchDrafts=()=>Number(state.worker_config?.max_drafts_per_batch)||0;
 const batchLimitMessage=actual=>maxBatchDrafts()?`Limite de ${maxBatchDrafts()} rascunhos por lote atingido. ${actual} seriam selecionados.`:'Limite do lote indisponível. Atualize o Publisher.';
 let historyState = {executions:[],totalCount:0,nextBeforeId:null,hasMore:false,initialized:false,loadedMore:false,loading:false};
 let historyExpanded = false, renamingBatchId = null, renamingBatchValue = '', configuringBatchId = null, queueRenderDeferred = false;
+let queueView = 'ACTIVE';
+const presentationBusy = new Set();
+const queueFilterIds = ['queueSearch','filter-status','filter-product','filter-readiness','filter-account','filter-batch','filter-attention'];
 const expandedHistoryExecutions = new Set(), expandedQueueDraftDetails = new Set();
+const expandedHiddenDetails = new Set();
 const expandedLibraryGroups = new Set(), libraryGroupPages = new Map();
 const productPickerStates = new Map(), productPickerComponents = new Map();
 let activeProductPickerKey = null, libraryRenderDeferred = false;
@@ -173,15 +177,14 @@ function render(){
  fillSelect($('#filter-product'),state.products,'Todos os produtos');
  fillSelect($('#libraryProduct'),[...state.products.filter(p=>p.active),{id:'UNASSIGNED',name:'Sem produto'}],'Todos os produtos');
  mountProductCombobox($('#libraryProductCombobox'),{input:$('#libraryAssignProductSearch'),results:$('#libraryProductResults'),hidden:$('#libraryAssignProduct')});
- const status=$('#filter-status').value;$('#filter-status').innerHTML='<option value="">Todos ativos</option>'+state.statuses.map(s=>`<option value="${esc(s)}">${esc(state.queue_status_labels?.[s]||'Estado a verificar')}</option>`).join('');$('#filter-status').value=status;
  renderQueue();
  renderExecutionHistory();
  renderAccounts();
  $('#presetList').innerHTML=state.presets.map(p=>`<div class="record"><div>${esc(p.name)}<small>${esc(p.visibility)} · Comentários ${p.comments?'ON':'OFF'}</small></div><button data-preset-edit="${p.id}">Editar</button></div>`).join('');
  $('#logList').innerHTML=state.logs.map(l=>`<div class="log"><small>${esc(new Date(l.created_at).toLocaleString())} · Draft ${l.draft_id??'—'} · ${esc(l.step)} / ${esc(l.status)}</small><p>${esc(l.message)}</p>${l.screenshot_path?`<a target="_blank" href="/api/publisher?evidence=${l.id}">Ver evidência</a>`:''}</div>`).join('')||'<p>Nenhuma execução.</p>';
 }
-function queueFilters(){return {search:$('#queueSearch').value,status:$('#filter-status').value,product:$('#filter-product').value,account:$('#filter-account').value,batch:$('#filter-batch').value,readiness:$('#filter-readiness').value};}
-function queueGroups(){return PublisherUIState.queueGroups(state,queueFilters());}
+function queueFilters(){return {search:$('#queueSearch').value,status:$('#filter-status').value,product:$('#filter-product').value,account:$('#filter-account').value,batch:$('#filter-batch').value,readiness:$('#filter-readiness').value,attention:$('#filter-attention').value};}
+function queueGroups(){return PublisherUIState.queueVisibleGroups(state,queueFilters());}
 function visibleDrafts(){return queueGroups().flatMap(group=>group.drafts);}
 const queueBlockerLabels={DRAFT_NOT_STARTABLE:'Este item ainda não pode ser preparado',CAPTION_MISSING:'Edite a legenda',MEDIA_NOT_AVAILABLE:'Mídia indisponível',BLOCKED_BY_ACCOUNT_PROTECTION:'Conta temporariamente protegida',NEEDS_LOGIN:'Conta precisa de login',STUDIO_CHANGED:'Studio precisa de revisão',MANUAL_ACTION_REQUIRED:'Verificação manual necessária'};
 function queueBlocker(code){return code==='BATCH_LIMIT_EXCEEDED'?`Este lote excede o limite de ${maxBatchDrafts()} rascunhos. Revise antes de iniciar uma nova execução.`:queueBlockerLabels[code]||'Revise os dados deste item';}
@@ -200,14 +203,50 @@ function queueThumbnail(identity){
  const placeholder='<span class="queue-thumbnail queue-placeholder" aria-hidden="true">▶</span>';
  return identity.thumbnailUrl?`<img class="queue-thumbnail" src="${esc(identity.thumbnailUrl)}" alt="Prévia de ${esc(identity.filename)}" loading="lazy" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="queue-thumbnail queue-placeholder" hidden aria-hidden="true">▶</span>`:placeholder;
 }
+function presentationButton(action,targetType,targetId){
+ const key=`${targetType}:${targetId}`;
+ return `<button type="button" data-queue-presentation="${action}" data-target-type="${targetType}" data-target-id="${targetId}" ${presentationBusy.has(key)?'disabled':''}>${action==='hide'?'Ocultar da Fila':'Restaurar visibilidade'}</button>`;
+}
+function renderQueueViews(){
+ const active=PublisherUIState.queueVisibleGroups(state).reduce((count,group)=>count+group.drafts.length,0);
+ const hidden=PublisherUIState.queueHiddenGroups(state,historyState.executions);
+ const hiddenItems=hidden.flatMap(group=>group.items),attention=hiddenItems.filter(item=>PublisherUIState.queueIdentity(item).display.kind==='attention'||item.item_status==='FAILED').length;
+ const history=state.history?.presentation_counts?.visible_items??historyState.executions.reduce((count,execution)=>count+(execution.items||[]).filter(item=>!PublisherUIState.queueHiddenReasons(state,item,execution.id).length).length,0);
+ const labels={ACTIVE:`Ativos (${active})`,HISTORY:`Histórico (${history})`,HIDDEN:`Ocultos (${hiddenItems.length})${attention?` · ${attention} requerem atenção`:''}`};
+ document.querySelectorAll('[data-queue-view]').forEach(button=>{button.textContent=labels[button.dataset.queueView];button.setAttribute('aria-selected',String(queueView===button.dataset.queueView));});
+ $('#queueBatches').hidden=queueView!=='ACTIVE';
+ $('#queueHistorySection').hidden=queueView!=='HISTORY';$('#queueHiddenSection').hidden=queueView!=='HIDDEN';
+ $('#executionProgress').hidden=queueView!=='ACTIVE';$('.queue-selection-actions').hidden=queueView!=='ACTIVE';
+ if(queueView!=='ACTIVE')$('#count').textContent=`(${queueView==='HISTORY'?history:hiddenItems.length} itens)`;
+ renderHiddenQueue();
+}
+function renderHiddenQueue(){
+ for(const detail of $('#queueHiddenEntries').querySelectorAll('[data-hidden-details]'))detail.open?expandedHiddenDetails.add(detail.dataset.hiddenDetails):expandedHiddenDetails.delete(detail.dataset.hiddenDetails);
+ const groups=PublisherUIState.queueHiddenGroups(state,historyState.executions,queueFilters());
+ $('#queueHiddenEntries').innerHTML=groups.map(group=>{
+  const first=group.items[0],identity=PublisherUIState.queueIdentity(first),title=group.source==='history'?`Execução #${group.execution.id} · ${identity.batch}`:identity.batch;
+  return `<section class="queue-hidden-group"><h3>${esc(title)}</h3>${group.items.map(item=>{
+   const identity=PublisherUIState.queueIdentity(item),display=identity.display,id=item.id??item.draft_id;
+   const reasons=item.hidden_reasons,when=reasons.map(reason=>reason.hidden_at).sort().at(-1);
+return `<article class="queue-hidden-item ${display.kind==='attention'||item.item_status==='FAILED'?'queue-attention':''}" data-hidden-draft="${id}" data-hidden-execution="${group.execution?.id||''}"><div class="queue-media">${queueThumbnail(identity)}<div><strong>${esc(identity.filename)}</strong><small>${esc(identity.product)} · ${esc(identity.batch)}</small><small>${esc(identity.folder)}</small></div></div><div class="queue-status"><span class="queue-state ${esc(display.kind)}">${esc(display.label)}</span>${display.kind==='attention'||item.item_status==='FAILED'?'<strong>Requer atenção</strong>':''}<small>${esc(display.persistence_label||'')}</small><small>${esc(display.message||'')}</small><small>Oculto em ${esc(when?new Date(when).toLocaleString():'data não informada')}</small></div><div class="queue-item-actions">${reasons.map(reason=>`<div><small>${esc({DRAFT:'Vídeo',BATCH:'Lote',EXECUTION:'Execução'}[reason.target_type])} #${reason.target_id}</small>${presentationButton('restore',reason.target_type,reason.target_id)}</div>`).join('')}</div><details class="queue-hidden-details" data-hidden-details="${esc(`${group.key}:${id}`)}" ${expandedHiddenDetails.has(`${group.key}:${id}`)?'open':''}><summary>Detalhes</summary><small>Draft ${id} · ${esc(item.status??item.draft_status)} · ${esc(item.item_status||'')} · ${esc(item.persistence_status||'')}</small></details></article>`;
+  }).join('')}</section>`;
+ }).join('')||'<p class="empty">Nenhum item oculto corresponde aos filtros.</p>';
+ const represented=new Set(groups.flatMap(group=>group.items.flatMap(item=>item.hidden_reasons.map(reason=>`${reason.target_type}:${reason.target_id}`))));
+ if(!Object.values(queueFilters()).some(Boolean))for(const target of state.queue_presentation?.targets||[])if(!represented.has(`${target.target_type}:${target.target_id}`)){
+  const label=target.target_type==='BATCH'?state.batches.find(batch=>batch.id===target.target_id)?.name:target.target_type==='DRAFT'?state.drafts.find(draft=>draft.id===target.target_id)?.filename:null;
+  $('#queueHiddenEntries').insertAdjacentHTML('beforeend',`<div class="record"><div><strong>${esc(label||{DRAFT:'Vídeo',BATCH:'Lote',EXECUTION:'Execução'}[target.target_type])}</strong><small>#${target.target_id} · Oculto em ${esc(new Date(target.hidden_at).toLocaleString())}</small></div>${presentationButton('restore',target.target_type,target.target_id)}</div>`);
+ }
+ $('#queueHiddenEntries').querySelectorAll('[data-hidden-details]').forEach(detail=>detail.addEventListener('toggle',()=>detail.open?expandedHiddenDetails.add(detail.dataset.hiddenDetails):expandedHiddenDetails.delete(detail.dataset.hiddenDetails)));
+}
 function renderQueue(){
  const container=$('#queueBatches'),activeElement=document.activeElement;
  if(activeElement?.matches('[data-batch-rename-input]')&&container.contains(activeElement)){queueRenderDeferred=true;return;}
  for(const detail of container.querySelectorAll('[data-queue-details]'))detail.open?expandedQueueDraftDetails.add(detail.dataset.queueDetails):expandedQueueDraftDetails.delete(detail.dataset.queueDetails);
- const allGroups=PublisherUIState.queueGroups(state),activeIds=new Set(allGroups.flatMap(group=>group.all.map(d=>d.id)));
+ const allGroups=PublisherUIState.queueVisibleGroups(state),activeIds=new Set(allGroups.flatMap(group=>group.drafts.map(d=>d.id)));
  selected=new Set([...selected].filter(id=>activeIds.has(id)));
  const groups=queueGroups(),rows=groups.flatMap(group=>group.drafts),chosen=selectedDrafts();
- $('#count').textContent=`(${rows.length} vídeos · ${groups.length} grupos)`;$('#selectedCount').textContent=`${selected.size} selecionados`;$('#selectAll').checked=rows.length>0&&rows.every(d=>selected.has(d.id));
+ renderQueueViews();
+ if(queueView==='ACTIVE')$('#count').textContent=`(${rows.length} vídeos · ${groups.length} grupos)`;$('#selectedCount').textContent=`${selected.size} selecionados`;$('#selectAll').checked=rows.length>0&&rows.every(d=>selected.has(d.id));
  const blockedAccount=(state.account_protection||[]).some(item=>item.blocked),runtimeBlocked=state.worker_config?.persistence_workflow_version!==1||!!state.worker_config?.tiktok_actions_paused;
  $('#bulkEdit').disabled=!queueActionState('can_edit').ok;$('#useProductCaption').disabled=!queueActionState('can_edit').ok;$('#archive').disabled=!queueActionState('can_remove').ok;
  $('#prepare').disabled=blockedAccount||runtimeBlocked||!queueActionState('can_start').ok||chosen.some(d=>!state.queue_preflights?.[d.batch_id]?.items?.find(item=>item.draft_id===d.id)?.ready);
@@ -230,7 +269,7 @@ function renderQueue(){
   const pauseCode=paused?state.execution_items?.find(item=>item.execution_id===execution.id&&item.error_code)?.error_code:null;
   const batchTitle=group.source==='execution'&&group.batchId==null?`Execução #${execution.id} · múltiplos lotes`:batch?.name||`Lote ${group.batchId??'sem lote'}`;
   const renameTitle=renamingBatchId===group.batchId?`<form class="queue-rename-form" data-batch-rename-form="${group.batchId}"><input data-batch-rename-input data-batch-id="${group.batchId}" aria-label="Nome do lote" maxlength="160" required value="${esc(renamingBatchValue||batch?.name||'')}"><button type="submit" class="primary">Salvar</button><button type="button" data-batch-rename-cancel>Cancelar</button></form>`:`<div class="queue-batch-title"><h3>${esc(batchTitle)}</h3>${group.source==='pending'&&caps.can_rename?`<button type="button" data-batch-rename="${group.batchId}" title="Renomear lote" aria-label="Renomear ${esc(batchTitle)}">Renomear</button>`:''}</div>`;
-  const batchControls=group.source==='pending'?`<div class="queue-batch-controls">${caps.can_edit_configuration?`<button type="button" data-batch-configure="${group.batchId}">Editar conta/preset</button>`:''}${caps.can_cancel?`<button type="button" data-batch-cancel="${group.batchId}">Cancelar lote</button>`:''}</div>`:'';
+  const batchControls=`<div class="queue-batch-controls">${group.source==='pending'&&caps.can_edit_configuration?`<button type="button" data-batch-configure="${group.batchId}">Editar conta/preset</button>`:''}${group.source==='pending'&&caps.can_cancel?`<button type="button" data-batch-cancel="${group.batchId}">Cancelar lote</button>`:''}${group.batchId!=null?presentationButton('hide','BATCH',group.batchId):''}</div>`;
   const summary=group.source==='pending'?`${pre.total_items} Draft(s) · ${pre.ready_items} pronto(s) · ${pre.blocked_items} precisam de correção${pre.warning_items?` · ${pre.warning_items} com aviso`:''}`:
     `${group.all.length} Draft(s) · ${group.source==='execution'?'ordem congelada da execução':'revisão pendente'}`;
   const startButton=group.source==='pending'?`<button type="button" data-start-batch="${group.batchId}" class="primary" ${startBlocked?'disabled':''} title="${startBlocked&&pre.blocked_items?`${pre.blocked_items} itens precisam ser corrigidos antes de continuar`:''}">Preparar lote</button>`:'';
@@ -242,7 +281,7 @@ function renderQueue(){
    const thumbnail=queueThumbnail(identity);
    const blockers=item?.blockers||[],warnings=item?.warnings||[];
    const readiness=item?(item.ready?(warnings.length?`${warnings.length} aviso(s)`:'Pronto'):`${blockers.length} bloqueio(s)`):'';
-   const actions=[draftCaps.can_edit?`<button data-edit="${d.id}">Editar</button>`:'',draftCaps.can_verify?`<button data-verify-draft="${d.id}" ${verifyingDrafts.has(d.id)?'disabled aria-busy="true"':''}>${verifyingDrafts.has(d.id)?'Verificando no TikTok...':'Verificar no TikTok'}</button>`:'',d.persistence_status==='PERSISTED'?`<button data-review="${d.id}">Revisar</button>`:'',draftCaps.can_remove?`<button data-remove-draft="${d.id}">Remover da fila</button>`:'',d.persistence_status==='PERSISTED'&&['RESERVED','CONSUMED_PENDING_DELETE'].includes(d.media_status)?`<button data-cleanup="${d.id}" ${runtimeBlocked?'disabled':''}>Finalizar consumo da mídia</button>`:''].filter(Boolean).join('')||'<span>Ação manual necessária</span>';
+   const actions=[draftCaps.can_edit?`<button data-edit="${d.id}">Editar</button>`:'',draftCaps.can_verify?`<button data-verify-draft="${d.id}" ${verifyingDrafts.has(d.id)?'disabled aria-busy="true"':''}>${verifyingDrafts.has(d.id)?'Verificando no TikTok...':'Verificar no TikTok'}</button>`:'',d.persistence_status==='PERSISTED'?`<button data-review="${d.id}">Revisar</button>`:'',draftCaps.can_remove?`<button data-remove-draft="${d.id}">Remover da fila</button>`:'',d.persistence_status==='PERSISTED'&&['RESERVED','CONSUMED_PENDING_DELETE'].includes(d.media_status)?`<button data-cleanup="${d.id}" ${runtimeBlocked?'disabled':''}>Finalizar consumo da mídia</button>`:'',presentationButton('hide','DRAFT',d.id)].filter(Boolean).join('')||'<span>Ação manual necessária</span>';
    const detailKey=execution?`${execution.id}:${d.id}`:`draft:${d.id}`;
    return `<article class="queue-item ${display.kind==='running'?'queue-current':display.kind==='attention'?'queue-attention':''}" data-queue-draft="${d.id}" data-execution-id="${execution?.id||''}" ${reordering?'draggable="true"':''}><div class="queue-order"><strong>${esc(position??'?')}</strong>${reordering?`<div class="queue-move"><button type="button" data-move="up" data-draft="${d.id}" ${index===0?'disabled':''} title="Mover para cima" aria-label="Mover ${esc(d.filename)} para cima">↑</button><button type="button" data-move="down" data-draft="${d.id}" ${index===group.drafts.length-1?'disabled':''} title="Mover para baixo" aria-label="Mover ${esc(d.filename)} para baixo">↓</button><span class="queue-drag" title="Arrastar para reordenar" aria-hidden="true">⋮⋮</span></div>`:''}</div><input type="checkbox" data-select="${d.id}" ${selected.has(d.id)?'checked':''} aria-label="Selecionar ${esc(d.filename)}"><div class="queue-media">${thumbnail}<div><strong>${esc(identity.filename)}</strong><small>${esc(identity.folder)}</small><small>${esc(d.account_name)}</small></div></div><div class="queue-product"><strong>${esc(identity.product)}</strong><small>Lote: ${esc(identity.batch)}</small><small>${esc(d.caption||'Legenda não definida')}</small></div><div class="queue-status"><span class="queue-state ${esc(display.kind)}">${esc(display.label)}</span>${readiness?`<span>${esc(readiness)}</span>`:''}${display.persistence_label?`<small>${esc(display.persistence_label)}</small>`:''}${display.message?`<small>${esc(display.message)}</small>`:''}${d.reconciliation_evidence?`<small>${esc(reconciliationEvidenceMessage(d.reconciliation_evidence))}</small>`:''}</div><div class="queue-item-actions">${actions}</div><details class="queue-details" data-queue-details="${esc(detailKey)}" ${expandedQueueDraftDetails.has(detailKey)?'open':''}><summary>Detalhes</summary>${blockers.length?`<p>${blockers.map(code=>esc(queueBlocker(code))).join(' · ')}</p>`:''}${warnings.length?`<p>${warnings.map(code=>esc(queueBlocker(code))).join(' · ')}</p>`:''}<details><summary>Detalhes técnicos</summary><small>Draft ${d.id} · Lote ${d.batch_id??'—'} · Execução ${execution?.id||'—'} · ${esc(d.status)} · ${esc(d.error_code||'sem erro')} · ${esc(JSON.stringify({blockers,warnings,checkpoints:d.checklist||{}}))}</small></details></details></article>`;
   }).join('')}</div></section>`;
@@ -261,19 +300,20 @@ function renderExecutionHistory(){
  }
  for(const detail of $('#queueHistoryEntries').querySelectorAll('[data-history-execution]'))detail.open?expandedHistoryExecutions.add(Number(detail.dataset.historyExecution)):expandedHistoryExecutions.delete(Number(detail.dataset.historyExecution));
  const section=$('#queueHistorySection'),outer=$('#queueHistory');
- section.hidden=historyState.totalCount===0;
+ section.hidden=queueView!=='HISTORY';
  $('#queueHistoryLabel').textContent=`Histórico (${historyState.totalCount})`;
  outer.open=historyExpanded;
  $('#queueHistoryLoadMore').hidden=!historyState.hasMore;
  $('#queueHistoryLoadMore').disabled=historyState.loading;
  $('#queueHistoryLoadMore').textContent=historyState.loading?'Carregando…':'Carregar mais histórico';
- $('#queueHistoryEntries').innerHTML=historyState.executions.map(execution=>{
+ $('#queueHistoryEntries').innerHTML=PublisherUIState.queueHistoryExecutions(state,historyState.executions,queueFilters()).map(execution=>{
   const name=execution.batch_names?.length===1?execution.batch_names[0]:execution.batch_names?.length?`${execution.batch_names.length} lotes`:execution.batch_id==null?'múltiplos lotes':`Lote ${execution.batch_id}`;
   const when=execution.finished_at||execution.started_at;
   const items=execution.items||[];
-  return `<details class="queue-history-execution" data-history-execution="${execution.id}" ${expandedHistoryExecutions.has(execution.id)?'open':''}><summary>Execução #${execution.id} · ${esc(name)} · ${esc(when?new Date(when).toLocaleString():'data não informada')} · ${Number(execution.total||items.length)} Draft(s)</summary><p>${Number(execution.succeeded||0)} concluídos · ${Number(execution.failed||0)} falharam · ${Number(execution.waiting_manual||0)} aguardaram ação</p><ul>${items.map(item=>{const identity=PublisherUIState.queueIdentity(item);const display=identity.display;return `<li class="queue-history-item ${display.kind==='attention'?'queue-attention':''}" data-history-item-key="${execution.id}:${item.draft_id}"><div class="queue-media">${queueThumbnail(identity)}<div><strong>${esc(identity.filename)}</strong><small>${esc(identity.product)} · Lote: ${esc(identity.batch)}</small><small>${esc(identity.folder)}</small></div></div><div class="queue-status"><span class="queue-state ${esc(display.kind)}">${esc(display.label)}</span>${display.persistence_label?`<small>${esc(display.persistence_label)}</small>`:''}${display.message?`<small>${esc(display.message)}</small>`:''}</div><details><summary>Detalhes técnicos</summary><small>Draft ${item.draft_id} · posição ${item.execution_position??'—'} · ${esc(item.item_status)} · ${esc(item.draft_status)} · ${esc(item.persistence_status)}${item.item_error_code?` · ${esc(item.item_error_code)}`:''}</small></details></li>`;}).join('')||'<li>Nenhum Draft vinculado a esta execução.</li>'}</ul></details>`;
+  return `<details class="queue-history-execution" data-history-execution="${execution.id}" ${expandedHistoryExecutions.has(execution.id)?'open':''}><summary>${presentationButton('hide','EXECUTION',execution.id)} Execução #${execution.id} · ${esc(name)} · ${esc(when?new Date(when).toLocaleString():'data não informada')} · ${Number(execution.total||items.length)} Draft(s)</summary><p>${Number(execution.succeeded||0)} concluídos · ${Number(execution.failed||0)} falharam · ${Number(execution.waiting_manual||0)} aguardaram ação</p><ul>${items.map(item=>{const identity=PublisherUIState.queueIdentity(item);const display=identity.display;return `<li class="queue-history-item ${display.kind==='attention'?'queue-attention':''}" data-history-item-key="${execution.id}:${item.draft_id}"><div class="queue-media">${queueThumbnail(identity)}<div><strong>${esc(identity.filename)}</strong><small>${esc(identity.product)} · Lote: ${esc(identity.batch)}</small><small>${esc(identity.folder)}</small></div></div><div class="queue-status"><span class="queue-state ${esc(display.kind)}">${esc(display.label)}</span>${display.persistence_label?`<small>${esc(display.persistence_label)}</small>`:''}${display.message?`<small>${esc(display.message)}</small>`:''}</div><details><summary>Detalhes técnicos</summary><small>Draft ${item.draft_id} · posição ${item.execution_position??'—'} · ${esc(item.item_status)} · ${esc(item.draft_status)} · ${esc(item.persistence_status)}${item.item_error_code?` · ${esc(item.item_error_code)}`:''}</small></details></li>`;}).join('')||'<li>Nenhum Draft vinculado a esta execução.</li>'}</ul></details>`;
  }).join('')||'<p class="empty-mini">Nenhuma execução concluída.</p>';
  $('#queueHistoryEntries').querySelectorAll('[data-history-execution]').forEach(detail=>detail.addEventListener('toggle',()=>detail.open?expandedHistoryExecutions.add(Number(detail.dataset.historyExecution)):expandedHistoryExecutions.delete(Number(detail.dataset.historyExecution))));
+ renderQueueViews();
 }
 async function loadMoreExecutionHistory(){
  if(historyState.loading||!historyState.hasMore||!historyState.nextBeforeId)return;
@@ -302,7 +342,17 @@ $('#refresh').onclick=()=>task(refresh);
 $('#refreshAuthDiagnostic').onclick=()=>task(()=>showAuthDiagnostics(diagnosticAccount));
 document.addEventListener('click',e=>{const button=e.target.closest('[data-auth-diagnostic]');if(button)task(()=>showAuthDiagnostics(Number(button.dataset.authDiagnostic)));});
 document.addEventListener('click',e=>{const button=e.target.closest('[data-verify-manual]');if(button&&!button.disabled)task(async()=>{await api('/verify-manual-profile',{id:Number(button.dataset.verifyManual)});await refresh();});});
-['queueSearch','filter-status','filter-product','filter-readiness','filter-account','filter-batch'].forEach(id=>$('#'+id).oninput=renderQueue);
+queueFilterIds.forEach(id=>$('#'+id).oninput=()=>{renderQueue();renderExecutionHistory();});
+function clearQueueFilters(){for(const id of queueFilterIds)$('#'+id).value='';}
+$('#resetQueueFilters').onclick=()=>{clearQueueFilters();renderQueue();renderExecutionHistory();};
+document.querySelectorAll('[data-queue-view]').forEach(button=>button.onclick=()=>{queueView=button.dataset.queueView;if(queueView==='HISTORY')historyExpanded=true;renderQueue();renderExecutionHistory();});
+document.addEventListener('click',event=>{
+ const button=event.target.closest('[data-queue-presentation]');if(!button)return;
+ event.preventDefault();event.stopPropagation();
+ const target_type=button.dataset.targetType,target_id=Number(button.dataset.targetId),key=`${target_type}:${target_id}`;
+ if(presentationBusy.has(key))return;presentationBusy.add(key);button.disabled=true;
+ task(async()=>{try{await api('/queue/presentation',{action:button.dataset.queuePresentation,target_type,target_id});await refresh();notice(button.dataset.queuePresentation==='hide'?'Item oculto da Fila; estado operacional preservado.':'Visibilidade restaurada; estado operacional preservado.');}finally{presentationBusy.delete(key);renderQueue();renderExecutionHistory();}},'queue');
+});
 $('#queueHistory').addEventListener('toggle',event=>{historyExpanded=event.currentTarget.open;});
 $('#queueHistoryLoadMore').onclick=()=>task(loadMoreExecutionHistory,'queue');
 $('#queueBatches').addEventListener('toggle',event=>{const detail=event.target.closest('[data-queue-details]');if(detail)detail.open?expandedQueueDraftDetails.add(detail.dataset.queueDetails):expandedQueueDraftDetails.delete(detail.dataset.queueDetails);});
@@ -718,12 +768,26 @@ document.addEventListener('click',event=>{
  const batchId=link.dataset.reservationBatchId?Number(link.dataset.reservationBatchId):null;
  const draft=state.drafts.find(item=>item.id===draftId&&item.media_asset_id===mediaId&&item.batch_id===batchId);
  if(!draft){notice('Rascunho não encontrado na Fila. Atualize a página antes de continuar.',true,'library');return;}
- for(const id of ['queueSearch','filter-status','filter-product','filter-readiness','filter-account','filter-batch'])$('#'+id).value='';
- view('queue');renderQueue();
- const row=[...$('#queueBatches').querySelectorAll('[data-queue-draft]')].find(item=>Number(item.dataset.queueDraft)===draftId);
- if(!row){notice('Rascunho não está na Fila ativa; consulte o histórico.',true,'queue');return;}
- row.querySelector('.queue-details').open=true;
- row.classList.add('queue-target');row.scrollIntoView({block:'center',behavior:'smooth'});
+ task(async()=>{
+  clearQueueFilters();view('queue');renderExecutionHistory();
+  let location=PublisherUIState.queueDeepLinkLocation(state,historyState.executions,draftId,mediaId,batchId);
+  while(!location&&historyState.hasMore){
+   const cursor=historyState.nextBeforeId;await loadMoreExecutionHistory();
+   location=PublisherUIState.queueDeepLinkLocation(state,historyState.executions,draftId,mediaId,batchId);
+   if(historyState.nextBeforeId===cursor)break;
+  }
+  if(!location){notice('Rascunho não encontrado nas visões da Fila.',true,'queue');return;}
+  queueView=location.view;
+  if(location.view==='HISTORY'){historyExpanded=true;expandedHistoryExecutions.add(location.executionId);}
+  renderQueue();renderExecutionHistory();
+  const row=location.view==='ACTIVE'?[...$('#queueBatches').querySelectorAll('[data-queue-draft]')].find(item=>Number(item.dataset.queueDraft)===draftId):
+    location.view==='HISTORY'?$('#queueHistoryEntries').querySelector(`[data-history-item-key="${location.executionId}:${draftId}"]`):
+    [...$('#queueHiddenEntries').querySelectorAll('[data-hidden-draft]')].find(item=>Number(item.dataset.hiddenDraft)===draftId&&Number(item.dataset.hiddenExecution||0)===Number(location.executionId||0));
+  if(!row){notice('Atualize a Fila para localizar este item.',true,'queue');return;}
+  const executionDetails=row.closest('[data-history-execution]');if(executionDetails){executionDetails.open=true;expandedHistoryExecutions.add(Number(executionDetails.dataset.historyExecution));}
+  const details=row.querySelector('details');if(details)details.open=true;
+  row.classList.add('queue-target');row.tabIndex=-1;row.focus({preventScroll:true});row.scrollIntoView({block:'center',behavior:'smooth'});
+ },'queue');
 });
 document.addEventListener('click',event=>{const button=event.target.closest('[data-remove-library-selection]');if(!button)return;uiState.setLibrarySelection(button.dataset.removeLibrarySelection,false);librarySelectionChanged();});
 async function decideSelected(decision){if(!librarySelected.size)throw Error('Selecione mídias');for(const drive_file_id of librarySelected)await api('/media-decision',{drive_file_id,decision});await refresh();notice(decision==='VALID'?'Mídias marcadas como válidas':'Mídias ignoradas');}

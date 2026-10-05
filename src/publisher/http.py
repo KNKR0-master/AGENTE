@@ -418,7 +418,9 @@ class PublisherAPI:
                     service = PublisherService(conn, self.root)
                     action = path.rsplit("/", 1)[-1]
                     batch_action_match = re.fullmatch(r'/api/publisher/batches/(\d+)/(reorder|rename|configuration|cancel)', path)
-                    if batch_action_match and batch_action_match[2] == 'reorder':
+                    if path == '/api/publisher/queue/presentation':
+                        result = service.set_queue_visibility(data)
+                    elif batch_action_match and batch_action_match[2] == 'reorder':
                         result = service.reorder_batch(int(batch_action_match[1]), data.get('ordered_draft_ids') or [])
                     elif batch_action_match and batch_action_match[2] == 'rename':
                         result = service.rename_batch(int(batch_action_match[1]), data.get('name'))

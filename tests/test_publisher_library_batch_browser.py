@@ -408,6 +408,7 @@ class LibraryBatchPanelBrowserTests(unittest.TestCase):
         page.locator("#libraryBatchSubmit").click()
 
         page.wait_for_function("document.querySelector('#libraryBatchSuccess')?.hidden === false")
+        page.wait_for_function("document.querySelector('#notice')?.textContent.includes('Lote criado, mas a tela não pôde ser atualizada')")
         self.assertEqual(len(BatchPanelFixtureHandler.create_requests), 1)
         self.assertEqual(page.locator("#libraryBatchSuccessCount").inner_text(),
                          "2 Draft(s) adicionados à Fila. Nenhum worker foi iniciado.")

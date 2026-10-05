@@ -108,7 +108,16 @@ class QueueFixtureHandler(SimpleHTTPRequestHandler):
         rename = re.fullmatch(r'/api/publisher/batches/(\d+)/rename', path)
         config = re.fullmatch(r'/api/publisher/batches/(\d+)/configuration', path)
         cancel = re.fullmatch(r'/api/publisher/batches/(\d+)/cancel', path)
-        if reorder:
+        if path == '/api/publisher/queue/presentation':
+            presentation = self.snapshot.setdefault('queue_presentation', {'targets': [], 'history': []})
+            targets = presentation['targets']
+            existing = next((row for row in targets if row['target_type'] == body['target_type'] and row['target_id'] == body['target_id']), None)
+            if body['action'] == 'hide' and existing is None:
+                targets.append({'target_type': body['target_type'], 'target_id': body['target_id'], 'hidden_at': '2026-10-05T10:00:00Z'})
+            elif body['action'] == 'restore' and existing is not None:
+                targets.remove(existing)
+            result, status = ({'hidden': body['action'] == 'hide'}, 200)
+        elif reorder:
             ids = body['ordered_draft_ids']
             type(self).last_reorder = ids
             members = [d['id'] for d in self.snapshot['drafts'] if d['batch_id'] == int(reorder[1])]
@@ -218,7 +227,7 @@ class QueueBrowserTests(unittest.TestCase):
                     self.assertTrue(row.locator('.queue-placeholder').is_visible())
                     self.assertIn('Produto não informado', page.locator('[data-queue-draft="2"]').inner_text())
                     self.assertIn('Vídeo do Draft 2', page.locator('[data-queue-draft="2"]').inner_text())
-                    page.locator('#queueHistory > summary').click()
+                    page.locator('[data-queue-view="HISTORY"]').click()
                     page.locator('[data-history-execution="80"] > summary').click()
                     history = page.locator('[data-history-item-key="80:1"]')
                     self.assertTrue(history.is_visible())
@@ -259,6 +268,119 @@ class QueueBrowserTests(unittest.TestCase):
                     page.locator('[data-draft="3"][data-move="down"]').click()
                     page.wait_for_function("document.querySelector('#notice')?.textContent.includes('BATCH_ALREADY_EXECUTED')")
                     self.assertEqual(page.locator('#queueBatches .queue-item').first.get_attribute('data-queue-draft'), '3')
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_hide_restore_attention_filters_and_refresh_are_presentation_only(self):
+        from playwright.sync_api import sync_playwright
+
+        snapshot = QueueFixtureHandler.snapshot
+        snapshot['drafts'][1].update({'status': 'MANUAL_ACTION_REQUIRED', 'upload_status': 'TRANSFER_UNKNOWN',
+            'queue_display': {'label': 'Envio a verificar', 'kind': 'attention', 'message': 'Não envie novamente.'}})
+        original = json.dumps({key: snapshot[key] for key in ('drafts', 'batches', 'media_assets')}, sort_keys=True)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0]
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('[data-queue-draft="1"]').wait_for()
+                    page.locator('[data-queue-draft="1"] [data-queue-presentation][data-target-type="DRAFT"]').click()
+                    page.wait_for_function("!document.querySelector('#queueBatches [data-queue-draft=\"1\"]')")
+                    page.locator('[data-queue-presentation="hide"][data-target-type="BATCH"]').click()
+                    page.wait_for_function("document.querySelectorAll('#queueBatches [data-queue-draft]').length===0")
+                    page.locator('[data-queue-view="HIDDEN"]').click()
+                    self.assertIn('1 requerem atenção', page.locator('[data-queue-view="HIDDEN"]').inner_text())
+                    self.assertIn('Requer atenção', page.locator('[data-hidden-draft="2"]').inner_text())
+                    page.locator('[data-hidden-draft="2"] [data-queue-presentation="restore"][data-target-type="BATCH"]').click()
+                    page.wait_for_function("document.querySelectorAll('[data-hidden-draft]').length===1")
+                    self.assertEqual(QueueFixtureHandler.snapshot['queue_presentation']['targets'][0]['target_type'], 'DRAFT')
+                    page.locator('[data-queue-view="ACTIVE"]').click()
+                    page.locator('[data-queue-draft="2"] [data-queue-presentation][data-target-type="DRAFT"]').click()
+                    page.wait_for_function("!document.querySelector('#queueBatches [data-queue-draft=\"2\"]')")
+                    page.locator('[data-queue-view="HIDDEN"]').click()
+                    page.locator('#queueSearch').fill('G1C4A1')
+                    page.locator('#filter-attention').select_option('REQUIRED')
+                    page.locator('[data-hidden-draft="2"] details').evaluate('(node)=>{node.open=true;}')
+                    page.wait_for_timeout(11200)
+                    self.assertEqual(page.locator('[data-queue-view="HIDDEN"]').get_attribute('aria-selected'), 'true')
+                    self.assertEqual(page.locator('#queueSearch').input_value(), 'G1C4A1')
+                    self.assertEqual(page.locator('#filter-attention').input_value(), 'REQUIRED')
+                    self.assertEqual(page.locator('[data-hidden-draft]').count(), 1)
+                    self.assertIn('Requer atenção', page.locator('[data-hidden-draft="2"]').inner_text())
+                    self.assertTrue(page.locator('[data-hidden-draft="2"] details').evaluate('(node)=>node.open'))
+                    page.locator('#resetQueueFilters').click()
+                    self.assertEqual(page.locator('[data-hidden-draft]').count(), 2)
+                    for draft_id in (1, 2):
+                        page.locator(f'[data-hidden-draft="{draft_id}"] [data-queue-presentation="restore"]').click()
+                        page.wait_for_function(f"!document.querySelector('[data-hidden-draft=\"{draft_id}\"]')")
+                    self.assertEqual(QueueFixtureHandler.snapshot['queue_presentation']['targets'], [])
+                    self.assertEqual(original, json.dumps({key: snapshot[key] for key in ('drafts', 'batches', 'media_assets')}, sort_keys=True))
+                    self.assertTrue(all(path == '/api/publisher/queue/presentation' for method, path, _ in QueueFixtureHandler.requests if method == 'POST'))
+                    self.assertFalse(errors, errors)
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_reservation_deep_link_opens_exact_active_history_or_hidden_without_restore(self):
+        from playwright.sync_api import sync_playwright
+
+        snapshot = QueueFixtureHandler.snapshot
+        for index, draft in enumerate(snapshot['drafts'], 1):
+            draft['media_asset_id'] = 500 + index
+        snapshot['drafts'][2]['status'] = 'PUBLISHED'
+        history_item = {**snapshot['drafts'][2], 'id': None, 'draft_id': 3, 'draft_batch_id': 24,
+                        'item_status': 'SUCCEEDED', 'draft_status': 'PUBLISHED'}
+        snapshot['history'] = {'executions': [{'id': execution_id, 'batch_id': 24, 'items': [history_item], 'total': 1}
+                                               for execution_id in (61, 60)],
+                               'total_count': 2, 'has_more': False, 'next_before_id': None}
+        snapshot['queue_presentation'] = {'targets': [], 'history': []}
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0]
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('[data-queue-draft="1"]').wait_for()
+                    scenarios = [(1, [], 'ACTIVE'), (3, [], 'HISTORY'),
+                        (1, [{'target_type': 'DRAFT', 'target_id': 1}], 'HIDDEN'),
+                        (1, [{'target_type': 'BATCH', 'target_id': 24}], 'HIDDEN'),
+                        (3, [{'target_type': 'EXECUTION', 'target_id': 61}], 'HIDDEN')]
+                    for draft_id, targets, expected_view in scenarios:
+                        with self.subTest(view=expected_view, targets=targets):
+                            for target in targets:
+                                target['hidden_at'] = '2026-10-05T10:00:00Z'
+                            snapshot['queue_presentation']['targets'] = targets
+                            page.evaluate("""({targets,draftId})=>{
+                              state.queue_presentation={targets,history:[]};render();view('library');
+                              document.querySelector('#fixtureReservation')?.remove();
+                              const button=document.createElement('button');button.id='fixtureReservation';
+                              button.dataset.reservationDraftId=String(draftId);button.dataset.reservationMediaId=String(500+draftId);
+                              button.dataset.reservationBatchId='24';button.textContent='Em uso';document.querySelector('#library').prepend(button);
+                            }""", {'targets': targets, 'draftId': draft_id})
+                            page.locator('#fixtureReservation').click()
+                            page.wait_for_function("expected=>document.querySelector(`[data-queue-view=\"${expected}\"]`)?.getAttribute('aria-selected')==='true'", arg=expected_view)
+                            selector = f'[data-queue-draft="{draft_id}"]' if expected_view == 'ACTIVE' else f'[data-history-item-key="61:{draft_id}"]' if expected_view == 'HISTORY' else f'[data-hidden-draft="{draft_id}"]'
+                            row = page.locator(selector).first
+                            self.assertTrue(row.is_visible())
+                            self.assertIn('queue-target', row.get_attribute('class'))
+                            self.assertTrue(row.evaluate('(node)=>node===document.activeElement'))
+                            self.assertEqual(page.evaluate('state.queue_presentation.targets'), targets)
+                    self.assertFalse([request for request in QueueFixtureHandler.requests if request[0] == 'POST'])
+                    self.assertFalse(errors, errors)
                 finally:
                     context.close()
         finally:
@@ -428,12 +550,13 @@ class QueueBrowserTests(unittest.TestCase):
                     page.locator('#queueBatches [data-queue-draft="1"]').wait_for(timeout=10000)
                     self.assertFalse(page.locator('#queueHistory').evaluate('(node) => node.open'))
                     self.assertIn('Histórico (2)', page.locator('#queueHistoryLabel').inner_text())
-                    page.locator('#queueHistory > summary').click()
+                    page.locator('[data-queue-view="HISTORY"]').click()
                     self.assertEqual(page.locator('#queueHistoryEntries [data-history-item-key="501:1"]').count(), 1)
                     self.assertEqual(page.locator('#queueHistoryEntries [data-history-item-key="500:1"]').count(), 1)
-                    self.assertEqual(page.locator('#queueHistoryEntries button').count(), 0)
+                    self.assertEqual(page.locator('#queueHistoryEntries button:not([data-queue-presentation])').count(), 0)
                     page.locator('#queueHistoryEntries [data-history-execution="501"] > summary').click()
 
+                    page.locator('[data-queue-view="ACTIVE"]').click()
                     page.locator('#queueBatches [data-batch-rename="24"]').click()
                     editor = page.locator('#queueBatches [data-batch-rename-input]')
                     editor.fill('Nome digitado durante atualização')
@@ -589,10 +712,11 @@ class QueueBrowserTests(unittest.TestCase):
                 try:
                     page = context.pages[0] if context.pages else context.new_page()
                     page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('[data-queue-view="HISTORY"]').click()
                     page.locator('#queueHistoryLabel').wait_for(timeout=10000)
-                    self.assertFalse(page.locator('#queueHistory').evaluate('(node) => node.open'))
+                    self.assertTrue(page.locator('#queueHistory').evaluate('(node) => node.open'))
                     self.assertEqual(page.locator('#queueHistoryEntries [data-history-execution]').count(), 30)
-                    page.locator('#queueHistory > summary').click()
+                    self.assertTrue(page.locator('#queueHistory').evaluate('(node) => node.open'))
                     page.locator('#queueHistoryEntries [data-history-execution="1035"] > summary').click()
                     page.locator('#queueHistoryLoadMore').click()
                     page.wait_for_function("document.querySelectorAll('#queueHistoryEntries [data-history-execution]').length === 35")

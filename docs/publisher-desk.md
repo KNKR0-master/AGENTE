@@ -391,6 +391,33 @@ sem download do video. Cache negativo curto fica adiado para 2D.3d; esta etapa
 nao altera o servico compartilhado da Biblioteca nem o refresh de cinco segundos.
 Nenhuma regra de lifecycle, capability, Active/History ou acao remota muda.
 
+## Visibilidade da Fila (2D.3b)
+
+`publisher_queue_presentation_state` guarda somente `target_type`, `target_id`
+e timestamps de ocultacao. Ausencia de registro significa visivel. Os alvos
+aceitos sao DRAFT, BATCH e EXECUTION; nao existe copia de status operacional.
+`POST /api/publisher/queue/presentation` aceita `action=hide|restore` e valida
+o alvo nas tabelas Publisher. Repetir a mesma acao e idempotente.
+
+A classificacao operacional e calculada antes da visibilidade. Um pai oculto
+ou um Draft explicitamente oculto retira o item de Ativos/Historico. Restaurar
+o pai nao restaura automaticamente o Draft. A visao Ocultos preserva identidade,
+status e pendencias, permitindo inspecao e restauracao local. Hide nunca usa
+ARCHIVED, libera reserva, cancela execucao ou chama Drive/TikTok.
+
+Contagens das abas representam itens de Draft, nao lotes: ocorrencias historicas
+distintas continuam identificadas por `(execution_id,draft_id)`. Um Draft pode
+aparecer em Ativos e em uma execucao historica conforme as regras ja existentes.
+Historico paginado conserva o total global de itens visiveis; Ocultos inclui
+execucoes ocultas mesmo fora da primeira pagina. Filtros e aba selecionada sao
+efemeros e sobrevivem ao refresh; ocultacao persiste no SQLite.
+
+A migracao `queue_presentation_v1` e aditiva e nao cria registros para itens
+existentes. Versoes anteriores podem ignorar a tabela adicional; rollback de
+codigo nao exige remocao da tabela. Referencias orfas sao reportadas no snapshot,
+sem limpeza destrutiva automatica. Deep-link da Biblioteca valida os mesmos IDs
+exatos e pode abrir Ativos, Historico ou Ocultos, sem restaurar nada automaticamente.
+
 # Sincronizacao periodica do Drive
 
 Na Biblioteca, **Sincronizacao automatica** e opt-in e fica desligada por padrao.

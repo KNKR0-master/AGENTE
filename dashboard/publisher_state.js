@@ -244,14 +244,7 @@
     const draftsById = new Map((snapshot.drafts || []).map(draft => [draft.id, draft]));
     const activeDraftIds = new Set();
     const groups = [];
-    const query = normalizeSearch(filters.search);
-    const matches = (draft, batchId) =>
-      (!filters.status || draft.status === filters.status) &&
-      (!filters.batch || draft.batch_id === Number(filters.batch)) &&
-      (!filters.account || draft.account_id === Number(filters.account)) &&
-      (!filters.product || draft.product_id === Number(filters.product)) &&
-      (!filters.readiness || (filters.readiness === 'READY') === !!snapshot.queue_preflights?.[batchId]?.items?.find(item => item.draft_id === draft.id)?.ready) &&
-      (!query || normalizeSearch([draft.filename, draft.product_short_name, draft.product_name, draft.caption].join(' ')).includes(query));
+    const matches = (draft, batchId) => queueMatches(draft, filters, null, snapshot);
 
     for (const execution of executions.filter(item => !['COMPLETED', 'SUCCESS'].includes(item.status))) {
       const executionItems = items.filter(item => item.execution_id === execution.id)
@@ -312,6 +305,92 @@
     };
   }
 
+  function queueMatches(item, filters = {}, executionItem = null, snapshot = {}) {
+    const display = queueIdentity(item, executionItem).display;
+    const status = item.status ?? item.draft_status, batchId = item.batch_id ?? item.draft_batch_id;
+    const draftId = item.id ?? item.draft_id;
+    const preflight = snapshot.queue_preflights?.[batchId]?.items?.find(row => row.draft_id === draftId);
+    const categories = {
+      READY: ['DRAFT', 'READY_FOR_REVIEW'].includes(status) && display.kind !== 'attention' && item.persistence_status !== 'PERSISTED' && preflight?.ready !== false,
+      RUNNING: status === 'PREPARING' || ['PROCESSING', 'CLEANUP'].includes(executionItem?.status ?? executionItem?.item_status),
+      SAVED: item.persistence_status === 'PERSISTED' || ['PUBLISHED', 'SCHEDULED'].includes(status),
+      ATTENTION: display.kind === 'attention',
+      FAILED: ['FAILED', 'UPLOAD_FAILED'].includes(status) || (executionItem?.status ?? executionItem?.item_status ?? item.item_status) === 'FAILED',
+    };
+    const query = normalizeSearch(filters.search);
+    return (!filters.status || (Object.hasOwn(categories, filters.status) ? categories[filters.status] : status === filters.status)) &&
+      (!filters.attention || (filters.attention === 'REQUIRED') === (display.kind === 'attention')) &&
+      (!filters.batch || batchId === Number(filters.batch)) &&
+      (!filters.account || item.account_id === Number(filters.account)) &&
+      (!filters.product || item.product_id === Number(filters.product)) &&
+      (!filters.readiness || (filters.readiness === 'READY') === !!preflight?.ready) &&
+      (!query || normalizeSearch([item.filename, item.product_short_name, item.product_name, item.caption, item.batch_name, item.folder_name].join(' ')).includes(query));
+  }
+
+  function queueHiddenReasons(snapshot, item, executionId = null) {
+    const draftId = item.id ?? item.draft_id, batchId = item.batch_id ?? item.draft_batch_id;
+    return (snapshot.queue_presentation?.targets || []).filter(target =>
+      (target.target_type === 'DRAFT' && target.target_id === draftId) ||
+      (target.target_type === 'BATCH' && target.target_id === batchId) ||
+      (target.target_type === 'EXECUTION' && target.target_id === executionId));
+  }
+
+  function queueVisibleGroups(snapshot, filters = {}) {
+    return queueGroups(snapshot).map(group => {
+      const drafts = group.all.filter(draft => !queueHiddenReasons(snapshot, draft, group.execution?.id).length)
+        .filter(draft => queueMatches(draft, filters,
+          (snapshot.execution_items || []).find(item => item.execution_id === group.execution?.id && item.draft_id === draft.id), snapshot));
+      return {...group, drafts, fullyVisible: drafts.length === group.all.length};
+    }).filter(group => group.drafts.length);
+  }
+
+  function queueHiddenGroups(snapshot, history = [], filters = {}) {
+    const groups = [], represented = new Set();
+    const add = (group, candidates) => {
+      const hidden = candidates.map(item => ({...item,
+        queue_display: queueIdentity(item, group.source === 'history' ? item :
+          (snapshot.execution_items || []).find(row => row.execution_id === group.execution?.id && row.draft_id === item.id)).display,
+        hidden_reasons: queueHiddenReasons(snapshot, item, group.execution?.id)}))
+        .filter(item => item.hidden_reasons.length);
+      hidden.forEach(item => represented.add(item.id ?? item.draft_id));
+      const items = hidden.filter(item => queueMatches(item, filters,
+        group.source === 'history' ? item : (snapshot.execution_items || []).find(row => row.execution_id === group.execution?.id && row.draft_id === item.id), snapshot));
+      if (items.length) groups.push({...group, items});
+    };
+    for (const group of queueGroups(snapshot)) add(group, group.all);
+    const executions = new Map([...history, ...(snapshot.queue_presentation?.history || [])].map(execution => [execution.id, execution]));
+    for (const execution of executions.values()) add({key: `history:${execution.id}`, source: 'history', execution}, execution.items || []);
+    for (const target of snapshot.queue_presentation?.targets || []) {
+      if (target.target_type === 'EXECUTION') continue;
+      const candidates = (snapshot.drafts || []).filter(draft => !represented.has(draft.id) &&
+        (target.target_type === 'DRAFT' ? draft.id === target.target_id : draft.batch_id === target.target_id));
+      add({key: `hidden:${target.target_type}:${target.target_id}`, source: 'standalone', target}, candidates);
+    }
+    return groups;
+  }
+
+  function queueHistoryExecutions(snapshot, history = [], filters = {}) {
+    return history.map(execution => ({...execution, items: (execution.items || []).filter(item =>
+      !queueHiddenReasons(snapshot, item, execution.id).length && queueMatches(item, filters, item, snapshot))}))
+      .filter(execution => execution.items.length || (!(history.find(row => row.id === execution.id)?.items || []).length &&
+        !(snapshot.queue_presentation?.targets || []).some(target => target.target_type === 'EXECUTION' && target.target_id === execution.id) &&
+        !Object.values(filters).some(Boolean)));
+  }
+
+  function queueDeepLinkLocation(snapshot, history, draftId, mediaId, batchId) {
+    const draft = (snapshot.drafts || []).find(item => item.id === draftId && item.media_asset_id === mediaId && item.batch_id === batchId);
+    if (!draft) return null;
+    const active = queueGroups(snapshot).find(group => group.all.some(item => item.id === draftId));
+    if (active) return {view: queueHiddenReasons(snapshot, draft, active.execution?.id).length ? 'HIDDEN' : 'ACTIVE',
+      draftId, executionId: active.execution?.id ?? null, key: active.key};
+    const executions = [...new Map([...history, ...(snapshot.queue_presentation?.history || [])].map(item => [item.id, item])).values()].sort((a, b) => b.id - a.id);
+    for (const execution of executions) {
+      const item = (execution.items || []).find(row => row.draft_id === draftId && row.media_asset_id === mediaId && (row.draft_batch_id ?? row.batch_id) === batchId);
+      if (item) return {view: queueHiddenReasons(snapshot, item, execution.id).length ? 'HIDDEN' : 'HISTORY', draftId, executionId: execution.id};
+    }
+    return queueHiddenReasons(snapshot, draft).length ? {view: 'HIDDEN', draftId, executionId: null} : null;
+  }
+
   function reorderedIds(group, draftId, targetId) {
     if (group.frozen || !group.fullyVisible || group.all.some(d => !d.queue_capabilities?.can_reorder)) return null;
     const ids = group.all.map(d => d.id);
@@ -326,5 +405,6 @@
   }
 
   return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation, driveSyncPresentation, drivePollingPresentation,
-    queueGroups, queueIdentity, reorderedIds, bulkAllowed};
+    queueGroups, queueIdentity, queueMatches, queueHiddenReasons, queueVisibleGroups, queueHiddenGroups,
+    queueHistoryExecutions, queueDeepLinkLocation, reorderedIds, bulkAllowed};
 });

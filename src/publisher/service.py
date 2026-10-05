@@ -19,6 +19,10 @@ from src.publisher.folder_catalog import (
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
 from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation
+from src.publisher.queue_presentation import (
+    HIDDEN_ITEM_SQL, change_visibility, history_visibility_counts,
+    init_queue_presentation, presentation_targets,
+)
 from src.publisher.reconciliation_evidence import (
     evaluate_reconciliation_evidence_validity, get_latest_reconciliation_evidence,
 )
@@ -231,6 +235,8 @@ def init_publisher(conn):
         if name not in columns:
             conn.execute(f'ALTER TABLE publisher_products ADD COLUMN {name} {definition}')
     conn.execute('CREATE TABLE IF NOT EXISTS publisher_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
+    init_queue_presentation(conn)
+    conn.execute("INSERT OR IGNORE INTO publisher_migrations(name,applied_at) VALUES ('queue_presentation_v1',?)", (now_iso(),))
     init_account_safety(conn)
     if not conn.execute("SELECT 1 FROM publisher_migrations WHERE name='internal_catalog_v2'").fetchone():
         # Snapshot once: later Analytics imports must not change the editorial catalog.
@@ -568,20 +574,27 @@ class PublisherService:
             params = (*params, int(limit))
         return [dict(row) for row in self.conn.execute(sql, params)]
 
-    def execution_history(self, *, before_id=None, limit=30):
+    def set_queue_visibility(self, data):
+        if not isinstance(data, dict):
+            raise ValueError('INVALID_QUEUE_PRESENTATION_REQUEST')
+        return change_visibility(self.conn, data.get('action'), data.get('target_type'), data.get('target_id'))
+
+    def execution_history(self, *, before_id=None, limit=30, hidden_only=False):
         limit = max(1, min(int(limit), 30))
         statuses = ('COMPLETED', 'SUCCESS')
         where = "e.status IN (?,?)"
         params = list(statuses)
+        if hidden_only:
+            where += f' AND EXISTS (SELECT 1 FROM publisher_execution_items i JOIN publisher_drafts d ON d.id=i.draft_id WHERE i.execution_id=e.id AND {HIDDEN_ITEM_SQL})'
         if before_id is not None:
             where += ' AND e.id<?'
             params.append(int(before_id))
         total = self.conn.execute(
             "SELECT COUNT(*) FROM publisher_batch_executions WHERE status IN (?,?)", statuses,
         ).fetchone()[0]
-        executions = self._execution_summaries(where, params, limit + 1)
-        has_more = len(executions) > limit
-        executions = executions[:limit]
+        executions = self._execution_summaries(where, params, None if hidden_only else limit + 1)
+        has_more = not hidden_only and len(executions) > limit
+        executions = executions if hidden_only else executions[:limit]
         for execution in executions:
             execution['batch_names'] = [row['name'] for row in self.conn.execute(
                 "SELECT DISTINCT b.name FROM publisher_execution_items i "
@@ -592,7 +605,7 @@ class PublisherService:
             execution['items'] = [dict(row) for row in self.conn.execute("""SELECT i.execution_id,i.draft_id,
               i.execution_position,i.status item_status,i.error_code item_error_code,
               d.batch_id draft_batch_id,b.name batch_name,d.filename,d.status draft_status,
-              d.persistence_status,d.upload_status,d.product_id,p.name product_name,
+              d.persistence_status,d.upload_status,d.product_id,d.account_id,d.caption,p.name product_name,
               p.short_name product_short_name,a.name account_name,m.status media_status,
               d.media_asset_id,m.remote_file_id,f.drive_folder_id folder_id,folder.name folder_name
               FROM publisher_execution_items i JOIN publisher_drafts d ON d.id=i.draft_id
@@ -614,6 +627,7 @@ class PublisherService:
             'page_size': limit,
             'has_more': has_more,
             'next_before_id': executions[-1]['id'] if has_more and executions else None,
+            'presentation_counts': history_visibility_counts(self.conn),
         }
 
     def snapshot(self):
@@ -671,7 +685,10 @@ class PublisherService:
             batch['queue_capabilities'] = batch_queue_capabilities(self.conn, batch['id'])
         active_executions = self._execution_summaries("e.status NOT IN ('COMPLETED','SUCCESS')")
         history = self.execution_history(limit=30)
+        queue_presentation = {**presentation_targets(self.conn),
+                              'history': self.execution_history(hidden_only=True)['executions']}
         return {"products": self.catalog(include_archived=True), "preferences": self.get_preferences(),
+                "queue_presentation": queue_presentation,
                 "drive_folders": self.list_drive_folders(), "drafts": drafts, "statuses": STATUSES,
                 "queue_status_labels": {status: draft_queue_presentation({'status': status})['label'] for status in STATUSES},
                 "queue_preflights": queue_preflights,
