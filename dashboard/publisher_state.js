@@ -294,6 +294,24 @@
     });
   }
 
+  function queueIdentity(item, executionItem = null) {
+    const id = item.id ?? item.draft_id;
+    const display = {...(item.queue_display || {label: 'Estado a verificar', kind: 'attention', message: ''})};
+    if (executionItem?.item_status === 'FAILED' || executionItem?.status === 'FAILED') {
+      display.label = 'Falhou nesta execução';
+      display.kind = 'attention';
+      display.message ||= 'Confira os detalhes antes de qualquer nova ação.';
+    }
+    return {
+      filename: item.filename || `Vídeo do Draft ${id ?? 'sem identificação'}`,
+      product: item.product_short_name || item.product_name || 'Produto não informado',
+      batch: item.batch_name || `Lote ${item.batch_id ?? item.draft_batch_id ?? 'sem nome'}`,
+      folder: item.folder_name || 'Pasta não disponível no inventário local',
+      thumbnailUrl: item.remote_file_id ? `/api/publisher/library/thumbnail/${encodeURIComponent(item.remote_file_id)}` : null,
+      display,
+    };
+  }
+
   function reorderedIds(group, draftId, targetId) {
     if (group.frozen || !group.fullyVisible || group.all.some(d => !d.queue_capabilities?.can_reorder)) return null;
     const ids = group.all.map(d => d.id);
@@ -308,5 +326,5 @@
   }
 
   return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation, driveSyncPresentation, drivePollingPresentation,
-    queueGroups, reorderedIds, bulkAllowed};
+    queueGroups, queueIdentity, reorderedIds, bulkAllowed};
 });

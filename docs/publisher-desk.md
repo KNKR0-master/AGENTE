@@ -376,6 +376,21 @@ correcao contextual cria lote automaticamente. Nenhuma migration e necessaria.
 - `docs/cecilia-drive-delete-permission-diagnosis.md`: diagnostico inicial da
   conta de servico, mantido como evidencia da causa original.
 
+## Identidade operacional da Fila (2D.3a)
+
+A Fila e o historico exibem filename, Product do Draft, nome do Batch e pasta
+do inventario local. `snapshot()` e `execution_history()` fornecem `batch_name`,
+`folder_id`, `folder_name`, `media_asset_id`, `remote_file_id` e `queue_display`;
+o historico continua identificado por `(execution_id, draft_id)`.
+`queue_display.persistence_label` resume a persistencia sem inferir upload a
+partir de logs antigos. Uma falha pertence ao item da execucao correspondente.
+
+Miniaturas usam exclusivamente `/api/publisher/library/thumbnail/{remote_file_id}`,
+com validacao, limites e cache existentes. Ausencia ou falha mostra placeholder,
+sem download do video. Cache negativo curto fica adiado para 2D.3d; esta etapa
+nao altera o servico compartilhado da Biblioteca nem o refresh de cinco segundos.
+Nenhuma regra de lifecycle, capability, Active/History ou acao remota muda.
+
 # Sincronizacao periodica do Drive
 
 Na Biblioteca, **Sincronizacao automatica** e opt-in e fica desligada por padrao.

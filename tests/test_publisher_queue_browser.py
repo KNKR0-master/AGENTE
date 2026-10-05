@@ -177,6 +177,62 @@ class QueueBrowserTests(unittest.TestCase):
         QueueFixtureHandler.requests = []
         QueueFixtureHandler.history_pages = None
 
+    def test_operational_identity_safe_thumbnail_and_history_rendering(self):
+        from playwright.sync_api import sync_playwright
+
+        snapshot = QueueFixtureHandler.snapshot
+        draft = snapshot['drafts'][0]
+        draft.update({'filename': 'Long video ' * 35 + '.mp4', 'batch_name': 'Perfumes 05/10',
+                      'folder_name': 'Perfumes', 'remote_file_id': 'safe_file',
+                      'thumbnail_link': 'https://untrusted.example/image',
+                      'queue_display': {'label': 'Ação manual necessária', 'kind': 'attention',
+                                        'message': '', 'persistence_label': 'Persistência não confirmada'}})
+        snapshot['drafts'][1].update({'filename': None, 'product_name': None, 'product_short_name': None})
+        snapshot['history'] = {'executions': [{'id': 80, 'batch_id': 24, 'batch_names': ['Perfumes 05/10'],
+            'total': 1, 'succeeded': 1, 'items': [{**draft, 'draft_id': 1, 'execution_id': 80,
+                'item_status': 'FAILED', 'draft_status': 'MANUAL_ACTION_REQUIRED'}]},
+            {'id': 79, 'batch_id': 24, 'total': 1, 'items': [{**draft, 'draft_id': 1, 'execution_id': 79}]}],
+            'total_count': 2, 'has_more': False, 'next_before_id': None}
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0]
+                    errors, thumbnail_requests, remote_requests = [], [], []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.on('request', lambda request: remote_requests.append(request.url) if 'untrusted.example' in request.url else None)
+                    def missing_thumbnail(route):
+                        thumbnail_requests.append(route.request.url)
+                        route.fulfill(status=404, body='')
+                    page.route('**/api/publisher/library/thumbnail/**', missing_thumbnail)
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    row = page.locator('[data-queue-draft="1"]')
+                    row.wait_for()
+                    self.assertIn('Perfumes 05/10', row.inner_text())
+                    self.assertIn('Perfumes', row.inner_text())
+                    self.assertIn('Persistência não confirmada', row.inner_text())
+                    self.assertIn('queue-attention', row.get_attribute('class'))
+                    page.wait_for_function("document.querySelector('[data-queue-draft=\"1\"] img')?.hidden === true")
+                    self.assertTrue(row.locator('.queue-placeholder').is_visible())
+                    self.assertIn('Produto não informado', page.locator('[data-queue-draft="2"]').inner_text())
+                    self.assertIn('Vídeo do Draft 2', page.locator('[data-queue-draft="2"]').inner_text())
+                    page.locator('#queueHistory > summary').click()
+                    page.locator('[data-history-execution="80"] > summary').click()
+                    history = page.locator('[data-history-item-key="80:1"]')
+                    self.assertTrue(history.is_visible())
+                    self.assertEqual(page.locator('[data-history-item-key="79:1"]').count(), 1)
+                    self.assertIn('Perfumes 05/10', history.inner_text())
+                    self.assertTrue(thumbnail_requests)
+                    self.assertFalse(remote_requests)
+                    self.assertFalse(errors, errors)
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_reorder_backend_confirmation_and_rejection(self):
         from playwright.sync_api import sync_playwright
 

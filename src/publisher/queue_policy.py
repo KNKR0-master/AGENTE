@@ -5,13 +5,20 @@ REMOTE_STEPS = ('UPLOAD_STARTED', 'SAVE_DRAFT', 'TIKTOK_DRAFT_CONFIRMED')
 ACTIVE_ITEM_STATES = ('QUEUED', 'PROCESSING', 'CLEANUP', 'WAITING_MANUAL')
 
 
-def draft_queue_presentation(draft, media=None):
+def draft_queue_presentation(draft, media=None, *, item_status=None):
+    persistence = {'PERSISTED': 'Persistência confirmada',
+                   'UNCONFIRMED': 'Persistência não confirmada',
+                   'DRAFT_ALREADY_PERSISTED': 'Rascunho já salvo'}.get(draft.get('persistence_status'), '')
+    summary = {'persistence_label': persistence}
     if draft.get('upload_status') == 'TRANSFER_UNKNOWN':
-        return {'label': 'Envio a verificar', 'kind': 'attention',
+        return {**summary, 'label': 'Envio a verificar', 'kind': 'attention',
                 'message': 'O TikTok pode já ter recebido este vídeo. Não envie novamente enquanto a verificação estiver pendente.'}
     if media and media.get('status') == 'NEEDS_RECONCILIATION':
-        return {'label': 'Requer verificação', 'kind': 'attention',
+        return {**summary, 'label': 'Requer verificação', 'kind': 'attention',
                 'message': 'Ainda não foi possível confirmar o resultado no TikTok. Verifique o status antes de qualquer nova ação.'}
+    if item_status == 'FAILED':
+        return {**summary, 'label': 'Falhou nesta execução', 'kind': 'attention',
+                'message': 'Confira os detalhes antes de qualquer nova ação.'}
     labels = {
         'DRAFT': ('Pendente', 'neutral'),
         'CAPTION_MISSING': ('Legenda necessária', 'attention'),
@@ -29,7 +36,11 @@ def draft_queue_presentation(draft, media=None):
         'PRODUCT_NOT_CONFIRMED': ('Produto a confirmar', 'attention'),
     }
     label, kind = labels.get(draft.get('status'), ('Estado a verificar', 'attention'))
-    return {'label': label, 'kind': kind, 'message': ''}
+    if draft.get('persistence_status') == 'PERSISTED' and draft.get('status') == 'READY_FOR_REVIEW':
+        label = 'Salvo no TikTok'
+    if item_status == 'SUCCEEDED' and kind != 'attention' and draft.get('persistence_status') != 'PERSISTED':
+        label = 'Concluído nesta execução'
+    return {**summary, 'label': label, 'kind': kind, 'message': ''}
 
 
 def draft_queue_capabilities(conn, draft, media=None, *, account_blocked=False):

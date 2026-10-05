@@ -593,13 +593,21 @@ class PublisherService:
               i.execution_position,i.status item_status,i.error_code item_error_code,
               d.batch_id draft_batch_id,b.name batch_name,d.filename,d.status draft_status,
               d.persistence_status,d.upload_status,d.product_id,p.name product_name,
-              p.short_name product_short_name,a.name account_name,m.status media_status
+              p.short_name product_short_name,a.name account_name,m.status media_status,
+              d.media_asset_id,m.remote_file_id,f.drive_folder_id folder_id,folder.name folder_name
               FROM publisher_execution_items i JOIN publisher_drafts d ON d.id=i.draft_id
               LEFT JOIN publisher_batches b ON b.id=d.batch_id
               LEFT JOIN publisher_products p ON p.product_id=d.product_id
               LEFT JOIN publisher_accounts a ON a.id=d.account_id
               LEFT JOIN publisher_media_assets m ON m.id=d.media_asset_id
+              LEFT JOIN drive_files f ON f.drive_file_id=m.remote_file_id
+              LEFT JOIN drive_folders folder ON folder.drive_folder_id=f.drive_folder_id
               WHERE i.execution_id=? ORDER BY i.execution_position,i.draft_id""", (execution['id'],))]
+            for item in execution['items']:
+                item['queue_display'] = draft_queue_presentation(
+                    {**item, 'status': item['draft_status']}, {'status': item['media_status']},
+                    item_status=item['item_status'],
+                )
         return {
             'executions': executions,
             'total_count': int(total),
@@ -610,10 +618,13 @@ class PublisherService:
 
     def snapshot(self):
         drafts = [dict(r) for r in self.conn.execute("""SELECT d.*,p.name product_name,p.short_name product_short_name,a.name account_name,
-          m.status media_status,m.remote_file_id,m.cleanup_error,f.thumbnail_link
+          m.status media_status,m.remote_file_id,m.cleanup_error,f.thumbnail_link,
+          b.name batch_name,f.drive_folder_id folder_id,folder.name folder_name
           FROM publisher_drafts d JOIN publisher_products p ON p.product_id=d.product_id
           LEFT JOIN publisher_media_assets m ON m.id=d.media_asset_id
           LEFT JOIN drive_files f ON f.drive_file_id=m.remote_file_id
+          LEFT JOIN drive_folders folder ON folder.drive_folder_id=f.drive_folder_id
+          LEFT JOIN publisher_batches b ON b.id=d.batch_id
           JOIN publisher_accounts a ON a.id=d.account_id
           ORDER BY d.batch_id DESC, COALESCE(d.queue_position,d.id) ASC,d.id ASC""")]
         protections_by_account = {row['id']: AccountSafetyGuard(self.conn).snapshot(row['id'])['state'] != 'NORMAL'
