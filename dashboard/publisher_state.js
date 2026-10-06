@@ -297,8 +297,8 @@
     }
     return {
       filename: item.filename || `Vídeo do Draft ${id ?? 'sem identificação'}`,
-      product: item.product_short_name || item.product_name || 'Produto não informado',
-      batch: item.batch_name || `Lote ${item.batch_id ?? item.draft_batch_id ?? 'sem nome'}`,
+      product: item.product_short_name || item.product_name || 'Produto não atribuído',
+      batch: item.batch_name || 'Lote não informado',
       folder: item.folder_name || 'Pasta não disponível no inventário local',
       thumbnailUrl: item.remote_file_id ? `/api/publisher/library/thumbnail/${encodeURIComponent(item.remote_file_id)}` : null,
       display,
@@ -391,6 +391,12 @@
     return queueHiddenReasons(snapshot, draft).length ? {view: 'HIDDEN', draftId, executionId: null} : null;
   }
 
+  function queueNavigationFilters(snapshot, filters, item, executionItem = null) {
+    const context = executionItem?.item_status ? {...executionItem, status: executionItem.item_status} : executionItem;
+    return Object.fromEntries(Object.entries(filters).map(([key, value]) =>
+      [key, value && !queueMatches(item, {[key]: value}, context, snapshot) ? '' : value]));
+  }
+
   function reorderedIds(group, draftId, targetId) {
     if (group.frozen || !group.fullyVisible || group.all.some(d => !d.queue_capabilities?.can_reorder)) return null;
     const ids = group.all.map(d => d.id);
@@ -406,5 +412,5 @@
 
   return {create, normalizeSearch, searchProducts, localDateTime, protectionPresentation, ambiguousDraftPresentation, driveSyncPresentation, drivePollingPresentation,
     queueGroups, queueIdentity, queueMatches, queueHiddenReasons, queueVisibleGroups, queueHiddenGroups,
-    queueHistoryExecutions, queueDeepLinkLocation, reorderedIds, bulkAllowed};
+    queueHistoryExecutions, queueDeepLinkLocation, queueNavigationFilters, reorderedIds, bulkAllowed};
 });

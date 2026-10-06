@@ -343,6 +343,7 @@ class LibraryBatchPanelBrowserTests(unittest.TestCase):
         self.assertIn("G1C1A1.mp4", batch.inner_text())
         self.assertIn("G1C2A1.mp4", batch.inner_text())
         self.assertIn("Body Splash", batch.inner_text())
+        batch.locator('[data-queue-details] > summary').first.click()
         self.assertIn("Legenda de teste", batch.inner_text())
         self.assertEqual(BatchPanelFixtureHandler.prepare_requests, [])
         self.assertFalse(errors, errors)

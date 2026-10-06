@@ -225,7 +225,7 @@ class QueueBrowserTests(unittest.TestCase):
                     self.assertIn('queue-attention', row.get_attribute('class'))
                     page.wait_for_function("document.querySelector('[data-queue-draft=\"1\"] img')?.hidden === true")
                     self.assertTrue(row.locator('.queue-placeholder').is_visible())
-                    self.assertIn('Produto não informado', page.locator('[data-queue-draft="2"]').inner_text())
+                    self.assertIn('Produto não atribuído', page.locator('[data-queue-draft="2"]').inner_text())
                     self.assertIn('Vídeo do Draft 2', page.locator('[data-queue-draft="2"]').inner_text())
                     page.locator('[data-queue-view="HISTORY"]').click()
                     page.locator('[data-history-execution="80"] > summary').click()
@@ -387,8 +387,76 @@ class QueueBrowserTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_refined_cards_action_hierarchy_and_temporary_navigation_highlight(self):
+        from playwright.sync_api import sync_playwright
+
+        snapshot = QueueFixtureHandler.snapshot
+        long_name = 'Video longo ' * 40 + '.mp4'
+        first = snapshot['drafts'][0]
+        first.update(filename=long_name, remote_file_id='safe_file', media_asset_id=501,
+                     batch_name='Perfumes', folder_name='Body Splash', persistence_status='PERSISTED',
+                     media_status='CONSUMED_PENDING_DELETE', queue_display={
+                         'label': 'Envio a verificar', 'kind': 'attention',
+                         'message': 'Não envie novamente.', 'persistence_label': 'Salvo no TikTok'})
+        first['queue_capabilities'] = {**first['queue_capabilities'], 'can_verify': True}
+        snapshot['drafts'][1].update(product_id=None, product_name=None, product_short_name=None)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.pages[0]
+                    errors = []
+                    page.on('pageerror', lambda error: errors.append(str(error)))
+                    page.route('**/api/publisher/library/thumbnail/**', lambda route: route.fulfill(status=404))
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    row = page.locator('[data-queue-draft="1"]')
+                    row.wait_for()
+                    self.assertEqual(row.locator('.queue-filename').get_attribute('title'), long_name)
+                    self.assertEqual(row.locator('.queue-product-name').inner_text(), 'Body Splash')
+                    self.assertEqual(row.locator('.queue-folder').inner_text(), 'Body Splash')
+                    self.assertEqual(row.locator('.queue-product > strong').inner_text(), 'Perfumes')
+                    self.assertEqual(row.locator('.queue-status > .queue-state').count(), 1)
+                    self.assertTrue(row.locator('[data-verify-draft].primary').is_visible())
+                    self.assertEqual(row.locator('.queue-danger-actions .primary').count(), 0)
+                    self.assertEqual(row.locator('.queue-presentation-actions [data-queue-presentation]').count(), 1)
+                    self.assertEqual(row.locator('.queue-danger-actions [data-remove-draft]').get_attribute('data-remove-draft'), '1')
+                    self.assertEqual(row.locator('.queue-danger-actions [data-cleanup]').get_attribute('data-cleanup'), '1')
+                    self.assertIn('Produto não atribuído', page.locator('[data-queue-draft="2"]').inner_text())
+                    self.assertIn('Lote não informado', page.locator('[data-queue-draft="3"]').inner_text())
+                    page.locator('#queueSearch').fill('Video longo')
+                    page.locator('#filter-product').select_option('1')
+                    page.locator('#filter-status').select_option('READY')
+                    page.evaluate("""() => {
+                      window.queueScrollCalls=0;Element.prototype.scrollIntoView=function(){window.queueScrollCalls++;};
+                      view('library');const button=document.createElement('button');button.id='cardNavigation';
+                      button.dataset.reservationDraftId='1';button.dataset.reservationMediaId='501';button.dataset.reservationBatchId='24';
+                      button.textContent='Em uso';document.querySelector('#library').prepend(button);
+                    }""")
+                    page.locator('#cardNavigation').click()
+                    page.wait_for_function("document.querySelector('[data-queue-draft=\"1\"]')?.classList.contains('queue-target')")
+                    self.assertEqual(page.locator('#queueSearch').input_value(), 'Video longo')
+                    self.assertEqual(page.locator('#filter-product').input_value(), '1')
+                    self.assertEqual(page.locator('#filter-status').input_value(), '')
+                    self.assertTrue(row.locator('[data-queue-details]').evaluate('(node)=>node.open'))
+                    page.wait_for_timeout(11200)
+                    self.assertEqual(page.evaluate('window.queueScrollCalls'), 1)
+                    self.assertFalse(row.evaluate('(node)=>node.classList.contains("queue-target")'))
+                    self.assertTrue(row.locator('[data-queue-details]').evaluate('(node)=>node.open'))
+                    self.assertEqual(page.locator('#queueSearch').input_value(), 'Video longo')
+                    page.set_viewport_size({'width': 390, 'height': 844})
+                    self.assertLessEqual(page.evaluate('document.documentElement.scrollWidth'), 410)
+                    self.assertFalse([request for request in QueueFixtureHandler.requests if request[0] == 'POST'])
+                    self.assertFalse(errors, errors)
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
     @unittest.skipUnless(os.environ.get('PUBLISHER_QUEUE_OPERATIONAL_SMOKE') == '1',
-                         'operational SQLite snapshot is opt-in')
+        'operational SQLite snapshot is opt-in')
     def test_operational_snapshot_read_only(self):
         from playwright.sync_api import sync_playwright
         from src.publisher.service import PublisherService
@@ -446,6 +514,7 @@ class QueueBrowserTests(unittest.TestCase):
                     self.assertEqual(page.locator('#queueBatches .queue-batch').count(), 1)
                     self.assertEqual(page.locator('#queueBatches .queue-item').count(), 3)
                     self.assertTrue(page.locator('[data-start-batch="24"]').is_disabled())
+                    page.locator('[data-queue-draft="2"] > details > summary').click()
                     self.assertIn('Legenda específica do segundo vídeo', page.locator('#queueBatches').inner_text())
                     page.evaluate("""() => {
                       const preflight=state.queue_preflights[24];
@@ -611,6 +680,7 @@ class QueueBrowserTests(unittest.TestCase):
                     self.assertEqual({draft['caption'] for draft in QueueFixtureHandler.snapshot['drafts']}, {
                         'Legenda do primeiro vídeo', 'Legenda específica do segundo vídeo', 'Legenda do terceiro vídeo'})
                     self.assertEqual({draft['product_id'] for draft in QueueFixtureHandler.snapshot['drafts']}, {1, 2})
+                    page.locator('[data-queue-draft="1"] > details > summary').click()
                     self.assertIn('Conta alternativa', page.locator('#queueBatches').inner_text())
                     self.assertFalse(dialog.is_visible())
                 finally:

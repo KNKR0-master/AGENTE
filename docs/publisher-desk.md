@@ -418,6 +418,25 @@ codigo nao exige remocao da tabela. Referencias orfas sao reportadas no snapshot
 sem limpeza destrutiva automatica. Deep-link da Biblioteca valida os mesmos IDs
 exatos e pode abrir Ativos, Historico ou Ocultos, sem restaurar nada automaticamente.
 
+## Queue: hierarquia e navegacao (2D.3c)
+
+Ativos, Historico e Ocultos usam a mesma identidade visual: filename completo
+no tooltip, produto (short_name ou name), pasta imediata e nome do lote.
+IDs, conta, legenda e checkpoints ficam em detalhes secundarios. Pendencias
+continuam dominantes, inclusive nos itens ocultos. As miniaturas continuam
+usando somente o endpoint existente da Biblioteca.
+
+Editar, Verificar e Revisar mantem os mesmos guards e endpoints. Remover e
+Finalizar consumo ficam separados visualmente; Ocultar continua sendo apenas
+apresentacao. Os links de contexto abrem a configuracao do produto ou localizam
+o ID da midia na Biblioteca, sem criar ou alterar registros.
+
+O deep-link preserva filtros que aceitam o alvo e limpa somente os bloqueantes.
+Abre o contexto exato, expande detalhes, move foco/scroll uma vez e destaca o
+card por oito segundos. O refresh pode reaplicar o destaque, mas nao repete
+scroll ou foco. A identidade historica continua (execution_id,draft_id).
+Nao ha schema, lifecycle, classificacao ou arquitetura de refresh nova.
+
 # Sincronizacao periodica do Drive
 
 Na Biblioteca, **Sincronizacao automatica** e opt-in e fica desligada por padrao.

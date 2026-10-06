@@ -136,6 +136,26 @@ console.log(JSON.stringify({display:item.queue_display,original:snapshot.drafts[
         self.assertEqual(result['display']['label'], 'Falhou nesta execução')
         self.assertEqual(result['original'], 'READY_FOR_REVIEW')
 
+    def test_navigation_preserves_matching_filters_and_clears_only_blockers(self):
+        result = self.check("""
+const item=snapshot.drafts[0];
+const filters={search:'G1C1',product:'1',batch:'20',status:'ATTENTION',attention:'REQUIRED',account:'99',readiness:''};
+const before=JSON.stringify(snapshot);
+const retained=ui.queueNavigationFilters(snapshot,filters,item);
+console.log(JSON.stringify({retained,unchanged:before===JSON.stringify(snapshot),original:filters}));
+""")
+        self.assertEqual(result['retained'], {'search': 'G1C1', 'product': '1', 'batch': '20',
+                                             'status': '', 'attention': '', 'account': '', 'readiness': ''})
+        self.assertTrue(result['unchanged'])
+        self.assertEqual(result['original']['status'], 'ATTENTION')
+
+    def test_historical_navigation_uses_execution_attention_context(self):
+        result = self.check("""
+const item=history[0].items[0];item.item_status='FAILED';
+console.log(JSON.stringify(ui.queueNavigationFilters(snapshot,{status:'FAILED',attention:'REQUIRED',product:'1',search:'missing'},item,item)));
+""")
+        self.assertEqual(result, {'status': 'FAILED', 'attention': 'REQUIRED', 'product': '1', 'search': ''})
+
 
 if __name__ == '__main__':
     unittest.main()
