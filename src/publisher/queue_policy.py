@@ -1,5 +1,7 @@
 """Local queue actions; the worker remains the authority for remote mutations."""
 
+from src.publisher import headlines
+
 
 REMOTE_STEPS = ('UPLOAD_STARTED', 'SAVE_DRAFT', 'TIKTOK_DRAFT_CONFIRMED')
 ACTIVE_ITEM_STATES = ('QUEUED', 'PROCESSING', 'CLEANUP', 'WAITING_MANUAL')
@@ -101,7 +103,8 @@ def draft_queue_capabilities(conn, draft, media=None, *, account_blocked=False):
         'can_remove': pending and (media is None or media['status'] in ('RESERVED', 'FAILED')),
         'can_start': (draft['status'] == 'DRAFT' and pending and not account_blocked
                       and media is not None and media['status'] in ('AVAILABLE', 'RESERVED')
-                      and bool(str(draft.get('caption') or '').strip())),
+                      and bool(str(draft.get('caption') or '').strip())
+                      and not headlines.readiness(headlines.read_snapshot(draft))),
         'can_verify': verification_ready,
         'can_resolve': verification_ready,
         'can_reconcile': remote_possible and draft.get('persistence_status') != 'PERSISTED',

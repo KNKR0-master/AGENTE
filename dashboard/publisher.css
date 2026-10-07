@@ -96,3 +96,8 @@
 @media(max-width:700px){.library-primary-actions{position:static}.library-selected-panel li{align-items:flex-start}.library-selected-panel .selected-folder-path{max-width:38ch}}
 /* Local batch review keeps unresolved items visible beside eligible items. */
 .batch-review-item{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid #d8dfe3}.batch-review-item strong{overflow-wrap:anywhere}.batch-review-item small{display:block}.batch-review-item details{font-size:12px}.batch-review-item>div{flex-shrink:0}#batchReviewDialog{width:min(820px,calc(100vw - 32px))}#resolutionDialog{width:min(640px,calc(100vw - 32px))}#resolutionDialog fieldset label{display:flex;margin:12px 0}@media(max-width:600px){.batch-review-item{flex-direction:column}}
+/* Headline configuration shares the existing editors, without a canvas. */
+.headline-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:12px; }
+#headlinePresets { margin-top:24px; border-top:1px solid #d8dde2; padding-top:16px; }
+#headlinePresets input, #productHeadline textarea { max-width:100%; box-sizing:border-box; }
+#draftHeadline pre { white-space:pre-wrap; overflow-wrap:anywhere; }

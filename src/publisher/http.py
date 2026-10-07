@@ -239,6 +239,17 @@ class PublisherAPI:
 
     def get(self, handler, query, path="/api/publisher"):
         with closing(connect(self.db)) as conn:
+            if path == '/api/publisher/headline-presets':
+                from src.publisher.headlines import list_presets
+                handler._json({'presets': list_presets(conn)}, no_store=True)
+                return
+            headline_match = re.fullmatch(r'/api/publisher/drafts/(\d+)/headline', path)
+            if headline_match:
+                from src.publisher.headlines import read_snapshot
+                row = conn.execute('SELECT * FROM publisher_drafts WHERE id=?', (int(headline_match[1]),)).fetchone()
+                handler._json({'headline': read_snapshot(dict(row))} if row else {'error': 'DRAFT_NOT_FOUND'},
+                              status=200 if row else 404, no_store=True)
+                return
             thumbnail_match = re.fullmatch(r"/api/publisher/library/thumbnail/([A-Za-z0-9_-]{1,256})", path)
             if path.startswith("/api/publisher/library/thumbnail/"):
                 try:
@@ -423,7 +434,12 @@ class PublisherAPI:
                     service = PublisherService(conn, self.root)
                     action = path.rsplit("/", 1)[-1]
                     batch_action_match = re.fullmatch(r'/api/publisher/batches/(\d+)/(reorder|rename|configuration|cancel)', path)
-                    if path == '/api/publisher/queue/presentation':
+                    if path == '/api/publisher/headline-presets':
+                        from src.publisher.headlines import save_preset
+                        result = save_preset(conn, data)
+                    elif re.fullmatch(r'/api/publisher/drafts/\d+/headline', path):
+                        result = service.override_headline(int(path.split('/')[-2]), data)
+                    elif path == '/api/publisher/queue/presentation':
                         result = service.set_queue_visibility(data)
                     elif re.fullmatch(r'/api/publisher/batches/(\d+)/register-published', path):
                         from src.publisher.posting_review import register_batch_published

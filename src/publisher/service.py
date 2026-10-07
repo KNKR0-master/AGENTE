@@ -28,6 +28,7 @@ from src.publisher.reconciliation_evidence import (
 )
 from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH, require_batch_size
 from src.publisher.draft_listing import current_listing_summary, resolution_safety_summary
+from src.publisher import headlines
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -236,6 +237,7 @@ def init_publisher(conn):
         if name not in columns:
             conn.execute(f'ALTER TABLE publisher_products ADD COLUMN {name} {definition}')
     conn.execute('CREATE TABLE IF NOT EXISTS publisher_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
+    headlines.init_headlines(conn)
     init_queue_presentation(conn)
     conn.execute("INSERT OR IGNORE INTO publisher_migrations(name,applied_at) VALUES ('queue_presentation_v1',?)", (now_iso(),))
     init_account_safety(conn)
@@ -341,6 +343,7 @@ class PublisherService:
         result = []
         for row in self.conn.execute("""SELECT x.product_id id,x.name,x.short_name,x.default_caption,
           x.flow_prompt,x.active,x.account_id,x.legacy_source,x.legacy_product_id,x.legacy_shop_url,
+          x.default_headline_enabled,x.default_headline_text,x.default_headline_preset_id,x.headline_required,
           x.name_source,x.source_drive_folder_id,x.created_at,x.updated_at
           FROM publisher_products x WHERE (?=1 OR x.active=1) ORDER BY x.name""", (int(include_archived),)):
             item = dict(row)
@@ -645,6 +648,7 @@ class PublisherService:
         protections_by_account = {row['id']: AccountSafetyGuard(self.conn).snapshot(row['id'])['state'] != 'NORMAL'
                                   for row in self.conn.execute('SELECT DISTINCT account_id id FROM publisher_drafts')}
         for draft in drafts:
+            draft['headline'] = headlines.read_snapshot(draft)
             draft["checklist"] = json.loads(draft.pop("checklist_json"))
             media = dict(self.conn.execute('SELECT * FROM publisher_media_assets WHERE id=?', (draft['media_asset_id'],)).fetchone()) if draft['media_asset_id'] else None
             blocked = protections_by_account[draft['account_id']]
@@ -704,6 +708,7 @@ class PublisherService:
         queue_presentation = {**presentation_targets(self.conn),
                               'history': self.execution_history(hidden_only=True)['executions']}
         return {"products": self.catalog(include_archived=True), "preferences": self.get_preferences(),
+                "headline_presets": headlines.list_presets(self.conn),
                 "queue_presentation": queue_presentation,
                 "drive_folders": self.list_drive_folders(), "drafts": drafts, "statuses": STATUSES,
                 "queue_status_labels": {status: draft_queue_presentation({'status': status})['label'] for status in STATUSES},
@@ -788,6 +793,7 @@ class PublisherService:
                   (batch, fields['product_id'],fields['account_id'],fields['preset_id'],asset_id,asset['filename'],
                    fields['caption'],fields['scheduled_at'],timestamp,timestamp)).lastrowid
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, row_id))
+                headlines.capture(self.conn, row_id, product)
                 self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?", (timestamp,asset_id))
                 log(self.conn,row_id,'CREATE','DRAFT','Referencia remota; nenhum download realizado')
                 if not fields['caption'].strip():
@@ -1147,6 +1153,7 @@ class PublisherService:
                   VALUES (?,?,?,?,?,'',?,?,?,?,?)""",
                   (batch_id, item["product_id"], account_id, preset_id, asset_id, item["filename"], item["caption"], None, timestamp, timestamp)).lastrowid
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, draft_id))
+                headlines.capture(self.conn, draft_id, self.get_product(item['product_id']))
                 self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?", (timestamp, asset_id))
                 log(self.conn, draft_id, "CREATE", "DRAFT", "Biblioteca: referência Drive reservada; nenhum download realizado")
                 draft_ids.append(draft_id)
@@ -1325,6 +1332,7 @@ class PublisherService:
         if len(flow_prompt) > 100000:
             raise ValueError('Prompt do Flow excede 100000 caracteres')
         account_id = data.get("account_id") or None
+        headline_config = headlines.product_config(self.conn, data)
         if account_id:
             get_row(self.conn, "publisher_accounts", account_id)
         timestamp = now_iso()
@@ -1360,6 +1368,8 @@ class PublisherService:
               source_drive_folder_id=COALESCE(publisher_products.source_drive_folder_id,excluded.source_drive_folder_id)""",
               (product_id,name,str(data.get('short_name') or '').strip(),caption,flow_prompt,account_id,int(data.get('active',True)),timestamp,timestamp,
                str(data.get('name_source') or 'MANUAL'),data.get('source_drive_folder_id')))
+            self.conn.execute('UPDATE publisher_products SET default_headline_enabled=?,default_headline_text=?,default_headline_preset_id=?,headline_required=? WHERE product_id=?',
+                              (*headline_config, product_id))
             if folder_ids:
                 from src.drive_inventory import set_folder_mapping
                 for folder_id in folder_ids:
@@ -1410,6 +1420,29 @@ class PublisherService:
                 return int(data["id"])
             return self.conn.execute("INSERT INTO publisher_presets(name,account_id,visibility,comments,product_required,updated_at,created_at) VALUES (?,?,?,?,?,?,?)", (*values, now_iso())).lastrowid
 
+    def override_headline(self, draft_id, data):
+        with self.conn:
+            self.conn.execute('BEGIN IMMEDIATE')
+            draft = get_row(self.conn, 'publisher_drafts', draft_id)
+            media = get_row(self.conn, 'publisher_media_assets', draft['media_asset_id']) if draft['media_asset_id'] else None
+            if not draft_queue_capabilities(self.conn, draft, media)['can_edit']:
+                raise ValueError('QUEUE_EDIT_BLOCKED')
+            previous = headlines.read_snapshot(draft)
+            # Policy and effective text belong to the Draft, never re-read current defaults.
+            product = dict(default_headline_enabled=previous['enabled'], default_headline_text=previous['text'],
+                           default_headline_preset_id=None, headline_required=previous['required'])
+            snapshot = headlines.make_snapshot(self.conn, product, data)
+            if 'preset_id' not in data and snapshot['enabled']:
+                snapshot['preset'] = previous['preset']
+                snapshot['render_spec_hash'] = headlines.render_hash(snapshot)
+            blockers = headlines.readiness(snapshot)
+            if blockers:
+                raise ValueError(blockers[0])
+            self.conn.execute('UPDATE publisher_drafts SET headline_snapshot_json=?,updated_at=? WHERE id=?',
+                              (headlines.canonical(snapshot), now_iso(), draft_id))
+            log(self.conn, draft_id, 'HEADLINE_OVERRIDE', draft['status'], 'Configuracao local de headline atualizada')
+            return snapshot
+
     def assert_config_editable(self, key, row_id):
         if key not in {"product_id", "account_id", "preset_id"}:
             raise ValueError("Campo invalido")
@@ -1417,6 +1450,10 @@ class PublisherService:
             raise ValueError("Configuracao em uso por uma preparacao ou revisao aberta")
 
     def validate_fields(self, fields):
+        if 'headline_snapshot_json' in fields:
+            blockers = headlines.readiness(headlines.read_snapshot(fields))
+            if blockers:
+                raise ValueError(blockers[0])
         product = self.get_product(fields['product_id'])
         account = get_row(self.conn, "publisher_accounts", fields["account_id"])
         active = self.conn.execute("SELECT active,account_id FROM publisher_products WHERE product_id=?", (product["id"],)).fetchone()
@@ -1459,6 +1496,7 @@ class PublisherService:
                 draft = self.conn.execute("INSERT INTO publisher_drafts(batch_id,product_id,account_id,preset_id,video_path,filename,caption,scheduled_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                                           (batch, fields["product_id"], fields["account_id"], fields["preset_id"], path, filename, fields["caption"], fields["scheduled_at"], timestamp, timestamp)).lastrowid
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, draft))
+                headlines.capture(self.conn, draft, product)
                 log(self.conn, draft, "CREATE", "DRAFT", f"Entrada: {source}")
                 ids.append(draft)
         return {"batch_id": batch, "draft_ids": ids}
@@ -1508,8 +1546,8 @@ class PublisherService:
                             self.conn.execute("UPDATE publisher_drafts SET status='CAPTION_MISSING',error_code='CAPTION_MISSING' WHERE id=?",(row_id,))
                     else:
                         position = self.conn.execute('SELECT COALESCE(MAX(queue_position),0)+1 FROM publisher_drafts WHERE batch_id=?', (merged['batch_id'],)).fetchone()[0]
-                        self.conn.execute("INSERT INTO publisher_drafts(batch_id,product_id,account_id,preset_id,video_path,filename,caption,scheduled_at,queue_position,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                                          (*[merged[k] for k in ("batch_id", "product_id", "account_id", "preset_id", "video_path", "filename", "caption", "scheduled_at")], position, now_iso(), now_iso()))
+                        self.conn.execute("INSERT INTO publisher_drafts(batch_id,product_id,account_id,preset_id,video_path,filename,caption,scheduled_at,queue_position,created_at,updated_at,headline_snapshot_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                                          (*[merged[k] for k in ("batch_id", "product_id", "account_id", "preset_id", "video_path", "filename", "caption", "scheduled_at")], position, now_iso(), now_iso(), row.get('headline_snapshot_json')))
                 else:
                     target = {"archive": "ARCHIVED", "reset": "DRAFT", "published": "PUBLISHED", "scheduled": "SCHEDULED"}[action]
                     transition(self.conn, row_id, target, explicit_reset=action=='reset',
