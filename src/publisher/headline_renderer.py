@@ -13,9 +13,11 @@ from src.store import now_iso
 from src.publisher.headlines import canonical, readiness
 from src.publisher.headline_layout import layout, filters
 from src.publisher.headline_tools import RenderError, capabilities, probe, resolve_ffmpeg, run, sha256
+from src.publisher.headline_timing import frame_timeline, validate_frame_timeline
 
 POLICY = dict(version='headline-renderer-1', codec='libx264', preset='medium', crf=18,
-              pixel_format='yuv420p', audio='copy-aac-otherwise-aac-192k', cadence='passthrough',
+              pixel_format='yuv420p', audio='copy-aac-otherwise-aac-192k',
+              cadence='decoded-presentation-frames-v2', encoder_time_base='source',
               preview='quarter-duration-capped-at-one-second-v1', fonttools=fontTools.__version__)
 
 
@@ -66,7 +68,7 @@ def validate_output(source, output, kind):
                 rendered['sample_rate'] != original['sample_rate']):
             raise RenderError('HEADLINE_OUTPUT_AUDIO_INVALID')
     # One video tick/frame plus one AAC access unit accounts for muxer rounding
-    # and priming. Cadence itself is additionally validated with packet timestamps.
+    # and priming. Cadence itself is validated with decoded presentation frames.
     audio_tick = max([1024 / int(a['sample_rate']) for a in source['audio']] or [0])
     tolerance = max(frame_period(source), frame_period(output)) + audio_tick
     if abs(output['duration'] - source['duration']) > tolerance:
@@ -94,14 +96,17 @@ class HeadlineRenderer:
         self.identity = {**POLICY, **capabilities(self.ffmpeg), 'ffprobe_sha256': sha256(self.ffprobe)}
         self.version = hashlib.sha256(canonical(self.identity).encode()).hexdigest()
 
-    def timestamps(self, path):
+    def presentation_timeline(self, path, time_base=None):
+        if time_base is None:
+            time_base = probe(self.ffprobe, path, cancel_event=self.cancel_event)['video']['time_base']
         data = json.loads(run([self.ffprobe, '-v', 'error', '-select_streams', 'v:0',
-                               '-show_packets', '-show_entries', 'packet=pts_time', '-of', 'json', path],
+                               '-show_frames', '-show_entries',
+                               'frame=best_effort_timestamp,pkt_duration', '-of', 'json', path],
                               timeout=self.timeout, limit=8 * 1024 * 1024, cancel_event=self.cancel_event))
-        values = sorted(float(p['pts_time']) for p in data['packets'])
-        if not values:
-            raise RenderError('HEADLINE_TIMING_UNSUPPORTED')
-        return [v - values[0] for v in values]
+        return frame_timeline(data.get('frames'), time_base)
+
+    def timestamps(self, path):
+        return [float(value) for value in self.presentation_timeline(path).times]
 
     def validate_file(self, source, source_path, output_path, kind):
         if not output_path.is_file() or not output_path.stat().st_size:
@@ -110,10 +115,9 @@ class HeadlineRenderer:
         validate_output(source, output, kind)
         run([self.ffmpeg, '-v', 'error', '-xerror', '-i', output_path, '-f', 'null', '-'], timeout=self.timeout, cancel_event=self.cancel_event)
         if kind == 'video':
-            before, after = self.timestamps(source_path), self.timestamps(output_path)
-            tick = max(float(Fraction(source['video']['time_base'])), float(Fraction(output['video']['time_base'])))
-            if len(before) != len(after) or any(abs(a-b) > tick * 2 for a, b in zip(before, after)):
-                raise RenderError('HEADLINE_OUTPUT_CADENCE_INVALID')
+            validate_frame_timeline(
+                self.presentation_timeline(source_path, source['video']['time_base']),
+                self.presentation_timeline(output_path, output['video']['time_base']))
         return output
 
     def render(self, conn, draft_id, snapshot, source_path, *, kind='video', force=False):
@@ -168,7 +172,8 @@ class HeadlineRenderer:
                 timestamp = min(self.timestamps(source_path), key=lambda value: (abs(value-desired), value))
                 args += ['-ss', str(timestamp), '-frames:v', '1', '-an', '-c:v', 'png', '-f', 'image2']
             else:
-                args += ['-map', '0:a?', '-c:v', 'libx264', '-preset', POLICY['preset'], '-crf', str(POLICY['crf']), '-pix_fmt', 'yuv420p']
+                args += ['-map', '0:a?', '-c:v', 'libx264', '-preset', POLICY['preset'], '-crf', str(POLICY['crf']), '-pix_fmt', 'yuv420p',
+                         '-enc_time_base:v', source['video']['time_base']]
                 for index, audio in enumerate(source['audio']):
                     args += [f'-c:a:{index}', 'copy' if audio['codec_name'] == 'aac' else 'aac']
                     if audio['codec_name'] != 'aac':

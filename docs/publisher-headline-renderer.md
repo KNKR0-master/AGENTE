@@ -23,7 +23,7 @@ Tests validated FFmpeg 4.4.1-Jellyfin's installed drawtext options, including
 `textfile`, `expansion=none` and `text_shaping=0`.
 
 All processes use argv, `shell=False`, stdin disabled and finite timeouts. Output
-is drained concurrently, bounded to 1 MiB normally / 8 MiB for packet metadata,
+is drained concurrently, bounded to 1 MiB normally / 8 MiB for decoded-frame metadata,
 and 8 KiB stderr. Overflow of structured stdout fails closed. Errors expose a
 stable code, never raw FFmpeg stderr (which can contain paths or text). A timeout
 kills only the directly owned renderer child, not browser or Publisher processes.
@@ -64,14 +64,23 @@ to silent sources. Unsupported conversion fails output validation.
 
 FFmpeg autorotation normalizes orthogonal display rotation. Output rotation must
 be zero and display dimensions must match the input's oriented frame. No fitting
-crop, padding, resizing or arbitrary 30 fps is performed. `-vsync 0` preserves
-cadence. Packet PTS sequences (normalized to first PTS) must have equal counts and
-match within twice the larger source/output time-base tick. This covers CFR/VFR
-without treating average FPS as proof of cadence.
+crop, padding, resizing or arbitrary 30 fps is performed. `-vsync 0` and an explicit
+source `-enc_time_base:v` preserve small VFR discontinuities rather than rounding
+them to the encoder's default frame-rate grid. This policy changes renderer/cache
+identity, not the frozen Draft render-spec hash.
+
+Decoded presentation frames from `ffprobe -show_frames` are the cadence authority.
+Integer `best_effort_timestamp` values are converted with each stream's time base
+and normalized to the first frame using exact fractions. Counts must match and
+every presentation instant must agree within the sum of the two time-base ticks,
+capped at half the smallest frame interval. Packet boundaries and DTS order are
+not frame evidence. Final presentation extent additionally permits at most one
+terminal frame interval for MP4 edit-list trimming; frame count and all instants
+remain strict. Lost/added frames, duplicate instants and timing drift fail closed.
 
 Duration tolerance is one frame interval (larger input/output average period)
 plus one AAC access unit (1024/sample_rate), allowing muxing/priming rounding.
-This is additional to packet-cadence validation. Output must have one H.264 video
+This is additional to decoded-frame cadence validation. Output must have one H.264 video
 stream, yuv420p, correct display dimensions, expected audio tracks and duration.
 Full FFmpeg decode with `-xerror` rejects unreadable/truncated artifacts.
 
@@ -107,7 +116,8 @@ selection, upload, runtime/auth, Drive and operational database remain untouched
 ## Verification
 
 Run `python -m unittest tests.test_publisher_headline_renderer
-tests.test_publisher_headline_preview_browser -v` (one command line). Tests include
+tests.test_publisher_headline_timing tests.test_publisher_headline_preview_browser -v`
+(one command line). Tests include
 real 9:16 audio/silent/short/rotation/VFR fixtures, Portuguese/special text, blurred
 shadow, cache corruption, timeouts/nonzero exit, disabled/fail-closed behavior and
 Chrome Stable UI with isolated SQLite. Full Publisher, Queue and complementary
