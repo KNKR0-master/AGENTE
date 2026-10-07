@@ -115,7 +115,9 @@ class ReadOnlyVerificationTests(unittest.TestCase):
         worker = PublisherWorker(self.root, self.root / 'test.db')
         page = SimpleNamespace(url='https://www.tiktok.com/tiktokstudio/upload', is_closed=lambda: False)
         context = SimpleNamespace(pages=[page])
-        with patch.object(worker, 'context', return_value=context):
+        worker.contexts[self.account] = context
+        with patch.object(worker, 'assert_actions_allowed'), patch.object(worker, 'account_profile', return_value=self.root), \
+                patch.object(worker.browser_runtime, 'session', return_value=SimpleNamespace(context=context)):
             result = worker._inspect_draft_list_read_only(None, {'id': self.account})
         self.assertEqual(result['blocker_code'], 'UNSAVED_EDITOR')
         self.assertEqual(result['source_surface'], 'TIKTOK_STUDIO_EDITOR')

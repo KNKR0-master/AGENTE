@@ -1334,44 +1334,51 @@ class PublisherWorker:
         result = {'source_surface': 'TIKTOK_STUDIO_AUTH', 'observed_account': None,
                   'rows': [], 'listing_complete': False, 'blocker_code': None,
                   'listing_bounds': {}}
-        context = self.context(playwright, account)
-        live = [page for page in context.pages if not page.is_closed()]
-        if len(live) != 1:
+        self.assert_actions_allowed()
+        context = self.contexts.get(account['id'])
+        runtime = self.browser_runtime.session(self.account_profile(account))
+        if context is None or runtime is None or runtime.context is not context:
             result['blocker_code'] = 'LISTING_ERROR'
             return result
-        page = live[0]
-        if page.url != 'about:blank' and not is_tiktok_url(page.url):
-            result['blocker_code'] = 'LISTING_ERROR'
+        from src.publisher.verification_authority import select_verification_authority
+        authority, owned, auth = select_verification_authority(
+            context, lambda page: self._inspect_verification_auth(account, context, page))
+        try:
+            return self._verify_draft_list_authority(context, account, authority, owned, auth, result)
+        finally:
+            if owned and authority is not None and not authority.is_closed():
+                authority.close()
+
+    def _inspect_verification_auth(self, account, context, page):
+        from src.publisher.verification_authority import classify_verification_auth
+        snapshot = self.auth_diagnostics.collect(account['id'], context, page)
+        auth = evaluate_studio_snapshot(
+            snapshot, account.get('tiktok_username', ''),
+            profile=account.get('browser_profile', ''),
+            confirmed_profile=account.get('identity_confirmed_profile', ''),
+            confirmed_handle=account.get('identity_confirmed_handle', ''))
+        auth['blocker_code'] = classify_verification_auth(snapshot, auth, page)
+        body = page.locator('body').inner_text(timeout=5000)
+        folded = ''.join(c for c in unicodedata.normalize('NFD', body.casefold()) if not unicodedata.combining(c))
+        if 'continuar editando' in folded and ('nao salv' in folded or 'rascunho' in folded):
+            auth['blocker_code'] = 'UNSAVED_EDITOR'
+        elif 'captcha' in folded or 'verifique se voce e humano' in folded:
+            auth['blocker_code'] = 'CAPTCHA'
+        elif any(x in folded for x in ('codigo de verificacao', 'two-factor authentication', 'verificacao em duas etapas')):
+            auth['blocker_code'] = 'TWO_FACTOR'
+        self.auth_diagnostics.record(account['id'], 'DRAFT_VERIFY_AUTH_OBSERVATION',
+            page_id=self.auth_diagnostics.page_id(page),
+            host=urlsplit(page.url).hostname, category='STUDIO' if is_studio_url(page.url) else 'NON_STUDIO',
+            auth_result=auth['auth_result'], account_identity=auth['account_identity'],
+            blocker_code=auth['blocker_code'])
+        return auth
+
+    def _verify_draft_list_authority(self, context, account, authority, owned, auth, result):
+        if auth.get('blocker_code'):
+            result['blocker_code'] = auth['blocker_code']
+            if auth['blocker_code'] == 'UNSAVED_EDITOR':
+                result['source_surface'] = 'TIKTOK_STUDIO_EDITOR'
             return result
-        path = urlsplit(page.url).path.rstrip('/')
-        if path.startswith('/tiktokstudio/upload') or path.startswith('/tiktokstudio/edit'):
-            result.update(source_surface='TIKTOK_STUDIO_EDITOR', blocker_code='UNSAVED_EDITOR')
-            return result
-        body = page.locator('body').inner_text(timeout=5000) if page.url != 'about:blank' else ''
-        folded = ''.join(char for char in unicodedata.normalize('NFD', body.casefold())
-                         if not unicodedata.combining(char))
-        if ('continuar editando' in folded and ('nao salv' in folded or 'rascunho' in folded)):
-            result.update(source_surface='TIKTOK_STUDIO_EDITOR', blocker_code='UNSAVED_EDITOR')
-            return result
-        if is_login_url(page.url) or 'entrar no tiktok' in folded:
-            result['blocker_code'] = 'AUTH_REQUIRED'
-            return result
-        if 'captcha' in folded:
-            result['blocker_code'] = 'CAPTCHA'
-            return result
-        if any(marker in folded for marker in ('verifique se voce e humano', 'security challenge', 'verificacao de seguranca')):
-            result['blocker_code'] = 'SECURITY_CHALLENGE'
-            return result
-        if any(marker in folded for marker in ('codigo de verificacao', 'two-factor authentication', 'verificacao em duas etapas')):
-            result['blocker_code'] = 'TWO_FACTOR'
-            return result
-        if page.url == 'about:blank' or path in ('/tiktokstudio', '/tiktokstudio/content'):
-            if path != '/tiktokstudio':
-                page.goto('https://www.tiktok.com/tiktokstudio', wait_until='domcontentloaded', timeout=30000)
-        else:
-            result['blocker_code'] = 'LISTING_ERROR'
-            return result
-        auth = self._verify_runtime_session(account, context)
         expected = str(account.get('tiktok_username') or '').strip().lstrip('@').casefold()
         handles = auth.get('observed_handles') or []
         if len(handles) == 1:
@@ -1382,11 +1389,20 @@ class PublisherWorker:
             result['blocker_code'] = 'WRONG_ACCOUNT'
             return result
         if auth.get('auth_result') != AUTHENTICATED:
-            result['blocker_code'] = 'AUTH_REQUIRED'
+            result['blocker_code'] = 'LISTING_ERROR'
             return result
         if result['observed_account'] is None or auth.get('account_identity') != 'ACCOUNT_CONFIRMED':
             result['blocker_code'] = 'WRONG_ACCOUNT'
             return result
+        # Preserve the user's Studio tab, and use only this official context.
+        page = authority if owned else context.new_page()
+        try:
+            return self._read_verified_draft_list(page, result)
+        finally:
+            if not owned and not page.is_closed():
+                page.close()
+
+    def _read_verified_draft_list(self, page, result):
         page.goto('https://www.tiktok.com/tiktokstudio/content', wait_until='domcontentloaded', timeout=30000)
         if urlsplit(page.url).path.rstrip('/') != '/tiktokstudio/content':
             result['blocker_code'] = 'AUTH_REQUIRED' if is_login_url(page.url) else 'LISTING_ERROR'
