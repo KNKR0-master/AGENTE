@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from src.publisher.draft_listing import LISTING_SNAPSHOT, classify_listing, resolution_safety_summary
+from src.publisher.draft_listing import LISTING_SNAPSHOT, classify_listing, resolution_safety_summary, read_hydrated_listing
 from src.publisher.worker import PublisherWorker, assess_remote_draft_rows
 
 
@@ -78,6 +78,55 @@ class EmptyDraftListingTests(unittest.TestCase):
             self.assertFalse(summary['automatic_release_allowed'])
             self.assertFalse(summary['automatic_retry_allowed'])
 
+    def test_live_hydration_sequence_waits_for_tab_then_stable_empty(self):
+        page = Mock(url='https://www.tiktok.com/tiktokstudio/content')
+        tab = page.locator.return_value.filter.return_value
+        tab.count.return_value, tab.is_visible.return_value = 1, True
+        initial = self.listing()
+        initial.update(total=None, draft_tab_present=False, list_surface=False, empty_state=False)
+        tab_only = {**initial, 'total': 0, 'draft_tab_present': True}
+        page.evaluate.side_effect = [initial, tab_only, self.listing(), self.listing()]
+        result = read_hydrated_listing(page)
+        self.assertTrue(result['listing_complete'])
+        self.assertFalse(result['hydration_samples'][0]['complete'])
+        self.assertTrue(result['hydration_samples'][-1]['empty_state'])
+        tab.click.assert_called_once()
+        page.goto.assert_called_once()
+        self.assertEqual(page.wait_for_timeout.call_count, 3)
+
+    def test_bounded_loading_never_becomes_empty(self):
+        page = Mock(url='https://www.tiktok.com/tiktokstudio/content')
+        page.evaluate.return_value = {**self.listing(), 'loading': True}
+        result = read_hydrated_listing(page, max_samples=3)
+        self.assertEqual(len(result['hydration_samples']), 3)
+        self.assertFalse(result['listing_complete'])
+        self.assertEqual(page.wait_for_timeout.call_count, 2)
+        page.locator.assert_not_called()
+
+    def test_challenge_and_error_stop_without_tab_click(self):
+        for changes, blocker in [({'challenge': 'CAPTCHA'}, 'CAPTCHA'), ({'error': True}, 'LISTING_ERROR')]:
+            page = Mock(url='https://www.tiktok.com/tiktokstudio/content')
+            page.evaluate.return_value = {**self.listing(), **changes}
+            result = read_hydrated_listing(page)
+            self.assertFalse(result['listing_complete'])
+            self.assertEqual(result['blocker_code'], blocker)
+            page.wait_for_timeout.assert_not_called()
+            page.locator.assert_not_called()
+
+    def test_single_transient_complete_and_header_only_are_not_coverage(self):
+        page = Mock(url='https://www.tiktok.com/tiktokstudio/content')
+        page.evaluate.return_value = self.listing()
+        self.assertFalse(read_hydrated_listing(page, max_samples=1)['listing_complete'])
+        page.evaluate.return_value = {**self.listing(), 'empty_state': False, 'list_surface': False}
+        self.assertFalse(read_hydrated_listing(page, max_samples=1)['listing_complete'])
+
+    def test_login_redirect_stops_without_parsing_or_login_actions(self):
+        page = Mock(url='https://www.tiktok.com/login?redirect_url=hidden')
+        result = read_hydrated_listing(page)
+        self.assertEqual(result['blocker_code'], 'AUTH_REQUIRED')
+        self.assertEqual(result['page_identity']['path'], '/login')
+        page.evaluate.assert_not_called()
+
 
 class DraftListingDOMTests(unittest.TestCase):
     def test_real_empty_structure_and_header_are_not_media_rows(self):
@@ -102,6 +151,9 @@ class DraftListingDOMTests(unittest.TestCase):
                     self.assertEqual(result['listing_complete'], expected is None)
                 page.set_content(header + '<p>Ainda n\u00e3o h\u00e1 rascunhos</p><p>Seus rascunhos aparecer\u00e3o aqui</p>')
                 self.assertFalse(classify_listing(page.evaluate(LISTING_SNAPSHOT))['listing_complete'])
+                page.set_content(header + empty.replace('Ainda n\u00e3o h\u00e1 rascunhos', 'No hay borradores').replace(
+                    'Seus rascunhos aparecer\u00e3o aqui e s\u00f3 poder\u00e3o ser vistos por voc\u00ea.', 'Tus borradores apareceran aqui.'))
+                self.assertTrue(classify_listing(page.evaluate(LISTING_SNAPSHOT))['listing_complete'])
                 page.set_content(header.replace('Rascunhos 0', 'Rascunhos 1') + '''<p>Todos os computadores</p>
                 <div data-tt="components_DraftRowLayout_FlexRow">
                 <div data-tt="components_DraftRowLayout_FlexRow_2"><div>00:23</div><div>Caption</div></div>
@@ -110,5 +162,8 @@ class DraftListingDOMTests(unittest.TestCase):
                 self.assertTrue(result['listing_complete'])
                 self.assertEqual(len(result['rows']), 1)
                 self.assertEqual(result['rows'][0]['caption_text'], 'Caption')
+                self.assertEqual(page.evaluate(LISTING_SNAPSHOT)['header_row_count'], 1)
+                page.set_content(header + empty + '<p>Verifique se voc\u00ea \u00e9 humano</p>')
+                self.assertEqual(classify_listing(page.evaluate(LISTING_SNAPSHOT))['blocker_code'], 'CAPTCHA')
             finally:
                 browser.close()

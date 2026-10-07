@@ -32,7 +32,7 @@ from src.publisher.login_trace import LoginTrace
 from src.publisher.auth_test_lock import AuthTestLock
 from src.publisher.manual_profile import ProfileOwnership
 from src.publisher.browser_runtime import BrowserRuntimeManager
-from src.publisher.draft_listing import LISTING_SNAPSHOT, classify_listing
+from src.publisher.draft_listing import read_hydrated_listing, sanitized_listing_probe
 from src.publisher.reconciliation_evidence import (
     record_reconciliation_evidence,
 )
@@ -883,6 +883,26 @@ class PublisherWorker:
         with self.lock:
             return self.account_locks.setdefault(account_id, threading.RLock())
 
+    def request_current_draft_listing(self, account_id, timeout=60):
+        """Explicit diagnostic on the existing owner thread; never starts a runtime."""
+        account_id = int(account_id)
+        with self.lock:
+            if not self.thread or not self.thread.is_alive() or account_id not in self.contexts:
+                raise ValueError('OFFICIAL_RUNTIME_REQUIRED')
+            future = Future()
+            self.commands.put(('inspect-draft-list', (account_id, future)))
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeout:
+            future.cancel()
+            raise
+
+    def inspect_current_tiktok_draft_listing(self, playwright, conn, account_id):
+        if conn.execute("SELECT 1 FROM publisher_batch_executions WHERE status IN ('RUNNING','QUEUED') LIMIT 1").fetchone():
+            raise ValueError('RUNTIME_BUSY_WITH_EXECUTION')
+        account = get_row(conn, 'publisher_accounts', account_id)
+        return sanitized_listing_probe(self._inspect_draft_list_read_only(playwright, account))
+
     def request_login(self, account_id):
         raise ValueError('EXPLICIT_ONE_SHOT_AUTHORIZATION_REQUIRED')
         # Reserve before queueing, including the interval before Playwright starts.
@@ -1378,6 +1398,8 @@ class PublisherWorker:
         return auth
 
     def _verify_draft_list_authority(self, context, account, authority, owned, auth, result):
+        result.update(auth_result=auth.get('auth_result', 'UNKNOWN'),
+                      account_identity=auth.get('account_identity', 'ACCOUNT_IDENTITY_UNKNOWN'))
         if auth.get('blocker_code'):
             result['blocker_code'] = auth['blocker_code']
             if auth['blocker_code'] == 'UNSAVED_EDITOR':
@@ -1407,35 +1429,8 @@ class PublisherWorker:
                 page.close()
 
     def _read_verified_draft_list(self, page, result):
-        page.goto('https://www.tiktok.com/tiktokstudio/content', wait_until='domcontentloaded', timeout=30000)
-        if urlsplit(page.url).path.rstrip('/') != '/tiktokstudio/content':
-            result['blocker_code'] = 'AUTH_REQUIRED' if is_login_url(page.url) else 'LISTING_ERROR'
-            return result
         result['source_surface'] = 'TIKTOK_STUDIO_DRAFT_LIST'
-        text = page.locator('body').inner_text(timeout=5000)
-        folded = ''.join(char for char in unicodedata.normalize('NFD', text.casefold())
-                         if not unicodedata.combining(char))
-        if 'captcha' in folded:
-            result['blocker_code'] = 'CAPTCHA'
-            return result
-        if any(marker in folded for marker in ('codigo de verificacao', 'verificacao em duas etapas')):
-            result['blocker_code'] = 'TWO_FACTOR'
-            return result
-        if any(marker in folded for marker in ('security challenge', 'verificacao de seguranca')):
-            result['blocker_code'] = 'SECURITY_CHALLENGE'
-            return result
-        if 'rascunhos' in folded and 'todos os computadores' not in folded:
-            drafts_tab = page.locator('[data-tt="Header_HeaderTabBar_Container"]').filter(
-                has_text=re.compile(r'^Rascunhos\s+\d+$', re.I))
-            if drafts_tab.count() != 1 or not drafts_tab.is_visible():
-                result['blocker_code'] = 'PARTIAL_LISTING'
-                return result
-            drafts_tab.click(timeout=10000)
-            text = page.locator('body').inner_text(timeout=5000)
-            folded = text.casefold()
-        result.update(classify_listing(page.evaluate(LISTING_SNAPSHOT)))
-        result['page_identity'] = {'host': urlsplit(page.url).hostname,
-                                   'path': urlsplit(page.url).path}
+        result.update(read_hydrated_listing(page))
         return result
 
     def _verify_remote_draft_record(self, playwright, conn, draft_id, execution_id):
@@ -1534,6 +1529,14 @@ class PublisherWorker:
                                 pass
                         continue
                     with closing(connect(self.db)) as conn:
+                        if command == 'inspect-draft-list':
+                            account_id, future = row_id
+                            try:
+                                if future.set_running_or_notify_cancel():
+                                    future.set_result(self.inspect_current_tiktok_draft_listing(playwright, conn, account_id))
+                            except Exception as exc:
+                                future.set_exception(exc)
+                            continue
                         if command == 'verify-draft':
                             draft_id, verify_execution_id, future = row_id
                             try:

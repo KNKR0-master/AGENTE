@@ -508,6 +508,10 @@ class PublisherAPI:
                     elif path == '/api/publisher/verify-reconciliation':
                         # REMOTE_READ_ONLY: only local append-only evidence is written.
                         result = self.worker.request_draft_verification(data['id'])
+                    elif path == '/api/publisher/inspect-current-draft-listing':
+                        if data.get('human_confirmed') is not True:
+                            raise ValueError('EXPLICIT_READ_ONLY_INSPECTION_REQUIRED')
+                        result = self.worker.request_current_draft_listing(data['account_id'])
                     elif path == '/api/publisher/resolve-draft':
                         from src.publisher.manual_resolution import resolve_draft
                         result = resolve_draft(conn, data['id'], data)
