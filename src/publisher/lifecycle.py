@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import nullcontext
 import json
 from src.publisher.service import get_row, log, transition
 from src.publisher.diagnostics import safe_error
@@ -33,7 +34,7 @@ def confirm_received(conn, draft_id, checks):
     return True
 
 
-def reconcile_received(conn, draft_id, checks):
+def reconcile_received(conn, draft_id, checks, *, evidence_id=None, caller_transaction=False):
     """Persist a draft already visible in Studio without another upload."""
     draft = get_row(conn, 'publisher_drafts', draft_id)
     if draft.get('persistence_status') == 'PERSISTED':
@@ -51,10 +52,18 @@ def reconcile_received(conn, draft_id, checks):
         "AND step='TIKTOK_DRAFT_RECONCILED' AND screenshot_path IS NOT NULL",
         (draft_id,),
     ).fetchone()
+    if evidence_id is not None:
+        from src.publisher.reconciliation_evidence import evaluate_reconciliation_evidence_validity
+        record = conn.execute('SELECT * FROM publisher_reconciliation_evidence WHERE id=?', (evidence_id,)).fetchone()
+        validity = evaluate_reconciliation_evidence_validity(
+            conn, evidence_id, draft_id=draft_id, media_asset_id=draft['media_asset_id'],
+            account_id=draft['account_id'], execution_id=record['execution_id'] if record else None,
+        )
+        evidence = record and record['outcome'] == 'REMOTE_EXISTS_CONFIRMED' and validity['valid']
     if not evidence:
         raise ValueError('RECONCILIATION_EVIDENCE_REQUIRED')
     timestamp = now_iso()
-    with conn:
+    with nullcontext() if caller_transaction else conn:
         conn.execute(
             """UPDATE publisher_drafts SET confirmed_at=COALESCE(confirmed_at,?),
               tiktok_draft_id=COALESCE(tiktok_draft_id,?),

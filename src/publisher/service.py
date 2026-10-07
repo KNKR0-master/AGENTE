@@ -649,6 +649,12 @@ class PublisherService:
             blocked = protections_by_account[draft['account_id']]
             draft['queue_capabilities'] = draft_queue_capabilities(self.conn, draft, media, account_blocked=blocked)
             draft['queue_display'] = draft_queue_presentation(draft, media)
+            checkpoint = self.conn.execute(
+                "SELECT id FROM publisher_execution_logs WHERE draft_id=? AND step IN "
+                "('UPLOAD_STARTED','SAVE_DRAFT','TIKTOK_DRAFT_CONFIRMED') ORDER BY id DESC LIMIT 1",
+                (draft['id'],),
+            ).fetchone()
+            draft['resolution_checkpoint_id'] = checkpoint['id'] if checkpoint else None
             evidence = get_latest_reconciliation_evidence(self.conn, draft_id=draft['id'])
             if evidence:
                 validity = evaluate_reconciliation_evidence_validity(
@@ -657,6 +663,7 @@ class PublisherService:
                     execution_id=evidence['execution_id'],
                 )
                 draft['reconciliation_evidence'] = {
+                    'id': evidence['id'],
                     'outcome': evidence['outcome'],
                     'coverage_status': evidence['coverage_status'],
                     'blocker_code': evidence['blocker_code'],
@@ -683,6 +690,9 @@ class PublisherService:
         batch_rows = [dict(row) for row in self.conn.execute('SELECT * FROM publisher_batches ORDER BY id DESC')]
         for batch in batch_rows:
             batch['queue_capabilities'] = batch_queue_capabilities(self.conn, batch['id'])
+            from src.publisher.posting_review import batch_review
+            batch['review_summary'] = {key: value for key, value in batch_review(self.conn, batch['id']).items()
+                                       if key not in ('items', 'eligible_ids')}
         active_executions = self._execution_summaries("e.status NOT IN ('COMPLETED','SUCCESS')")
         history = self.execution_history(limit=30)
         queue_presentation = {**presentation_targets(self.conn),
@@ -1462,6 +1472,11 @@ class PublisherService:
                 row = get_row(self.conn, "publisher_drafts", row_id)
                 media = get_row(self.conn, 'publisher_media_assets', row['media_asset_id']) if row['media_asset_id'] else None
                 capabilities = draft_queue_capabilities(self.conn, row, media)
+                if action in {'published', 'scheduled'}:
+                    from src.publisher.posting_review import posting_eligibility
+                    eligible, reason = posting_eligibility(self.conn, row, media)
+                    if not eligible:
+                        raise ValueError(reason)
                 if action == 'archive' and not capabilities['can_remove']:
                     raise ValueError('QUEUE_REMOVE_BLOCKED')
                 if action in {'edit', 'use_product_caption', 'duplicate'} and not capabilities['can_edit']:
@@ -1491,7 +1506,13 @@ class PublisherService:
                                           (*[merged[k] for k in ("batch_id", "product_id", "account_id", "preset_id", "video_path", "filename", "caption", "scheduled_at")], position, now_iso(), now_iso()))
                 else:
                     target = {"archive": "ARCHIVED", "reset": "DRAFT", "published": "PUBLISHED", "scheduled": "SCHEDULED"}[action]
-                    transition(self.conn, row_id, target, explicit_reset=action=='reset')
+                    transition(self.conn, row_id, target, explicit_reset=action=='reset',
+                               checklist=json.loads(row['checklist_json'] or '{}') if action in {'published', 'scheduled'} else None)
+                    if action in {'published', 'scheduled'}:
+                        log(self.conn, row_id, 'MANUAL_POSTING_REVIEW', target,
+                            json.dumps({'human_confirmed': True, 'draft_id': row_id,
+                                        'media_asset_id': row.get('media_asset_id'),
+                                        'previous_state': row['status'], 'resulting_state': target, 'remote_actions': 0}))
                     if action == 'archive' and row.get('media_asset_id'):
                         self.conn.execute("UPDATE publisher_media_assets SET status='AVAILABLE',updated_at=? WHERE id=? AND status IN ('RESERVED','FAILED')", (now_iso(),row['media_asset_id']))
                     if action == 'reset' and row.get('media_asset_id'):

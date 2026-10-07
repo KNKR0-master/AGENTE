@@ -860,13 +860,9 @@ class PublisherWorker:
             asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
             if draft['persistence_status'] != 'UNCONFIRMED' or asset['status'] != 'NEEDS_RECONCILIATION':
                 raise ValueError('DRAFT_NOT_VERIFY_ELIGIBLE')
-            item = conn.execute(
-                'SELECT i.execution_id,i.status,e.status execution_status '
-                'FROM publisher_execution_items i JOIN publisher_batch_executions e '
-                'ON e.id=i.execution_id WHERE i.draft_id=? ORDER BY i.execution_id DESC LIMIT 1',
-                (draft_id,),
-            ).fetchone()
-            if not item or item['status'] != 'WAITING_MANUAL' or item['execution_status'] != 'PAUSED':
+            from src.publisher.queue_policy import reconciliation_context
+            item = reconciliation_context(conn, draft, asset)
+            if not item:
                 raise ValueError('EXECUTION_ITEM_NOT_PAUSED_FOR_VERIFICATION')
             execution_id = item['execution_id']
         key = (execution_id, draft_id)
@@ -1457,6 +1453,10 @@ class PublisherWorker:
         draft = get_row(conn, 'publisher_drafts', draft_id)
         asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
         account = get_row(conn, 'publisher_accounts', draft['account_id'])
+        from src.publisher.queue_policy import reconciliation_context
+        context = reconciliation_context(conn, draft, asset)
+        if not context or context['execution_id'] != execution_id:
+            raise ValueError('EXECUTION_ITEM_NOT_PAUSED_FOR_VERIFICATION')
         if draft['persistence_status'] != 'UNCONFIRMED' or asset['status'] != 'NEEDS_RECONCILIATION':
             raise ValueError('DRAFT_NOT_VERIFY_ELIGIBLE')
         if not str(account.get('tiktok_username') or '').strip():

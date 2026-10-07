@@ -5,6 +5,30 @@ REMOTE_STEPS = ('UPLOAD_STARTED', 'SAVE_DRAFT', 'TIKTOK_DRAFT_CONFIRMED')
 ACTIVE_ITEM_STATES = ('QUEUED', 'PROCESSING', 'CLEANUP', 'WAITING_MANUAL')
 
 
+def reconciliation_context(conn, draft, media):
+    """A stopped ambiguous item may be inspected/resolved, never retried here."""
+    if not media or draft.get('status') not in ('MANUAL_ACTION_REQUIRED', 'STUDIO_CHANGED') or (
+        draft.get('persistence_status') != 'UNCONFIRMED' or media['status'] != 'NEEDS_RECONCILIATION'
+    ):
+        return None
+    item = conn.execute(
+        'SELECT i.execution_id,i.status,e.status execution_status FROM publisher_execution_items i '
+        'JOIN publisher_batch_executions e ON e.id=i.execution_id WHERE i.draft_id=? '
+        'ORDER BY i.execution_id DESC LIMIT 1', (draft['id'],),
+    ).fetchone()
+    if not item or item['status'] not in ('WAITING_MANUAL', 'FAILED') or (
+        item['execution_status'] not in ('PAUSED', 'COMPLETED', 'SUCCESS')
+    ):
+        return None
+    busy = conn.execute(
+        "SELECT 1 FROM publisher_execution_items i JOIN publisher_drafts d ON d.id=i.draft_id "
+        "JOIN publisher_batch_executions e ON e.id=i.execution_id WHERE d.media_asset_id=? "
+        "AND (i.status IN ('PROCESSING','CLEANUP','QUEUED') OR e.status IN ('RUNNING','QUEUED')) LIMIT 1",
+        (media['id'],),
+    ).fetchone()
+    return None if busy else dict(item)
+
+
 def draft_queue_presentation(draft, media=None, *, item_status=None):
     persistence = {'PERSISTED': 'Persistência confirmada',
                    'UNCONFIRMED': 'Persistência não confirmada',
@@ -16,6 +40,9 @@ def draft_queue_presentation(draft, media=None, *, item_status=None):
     if media and media.get('status') == 'NEEDS_RECONCILIATION':
         return {**summary, 'label': 'Requer verificação', 'kind': 'attention',
                 'message': 'Ainda não foi possível confirmar o resultado no TikTok. Verifique o status antes de qualquer nova ação.'}
+    if draft.get('persistence_status') == 'PERSISTED' and draft.get('status') in ('READY_FOR_REVIEW', 'PUBLISHED', 'SCHEDULED'):
+        label = {'READY_FOR_REVIEW': 'Salvo no TikTok', 'PUBLISHED': 'Publicado no Studio', 'SCHEDULED': 'Agendado no Studio'}[draft['status']]
+        return {**summary, 'label': label, 'kind': 'ready', 'message': ''}
     if item_status == 'FAILED':
         return {**summary, 'label': 'Falhou nesta execução', 'kind': 'attention',
                 'message': 'Confira os detalhes antes de qualquer nova ação.'}
@@ -62,11 +89,7 @@ def draft_queue_capabilities(conn, draft, media=None, *, account_blocked=False):
     )
     active = bool(execution and execution['item_status'] in ACTIVE_ITEM_STATES)
     pending = draft['status'] in ('DRAFT', 'CAPTION_MISSING') and not execution and not remote_possible
-    verification_ready = bool(
-        execution and execution['status'] == 'PAUSED' and execution['item_status'] == 'WAITING_MANUAL'
-        and media and media['status'] == 'NEEDS_RECONCILIATION'
-        and draft.get('persistence_status') != 'PERSISTED'
-    )
+    verification_ready = reconciliation_context(conn, draft, media) is not None
     batch_executed = bool(conn.execute(
         'SELECT 1 FROM publisher_execution_items i '
         'JOIN publisher_drafts d ON d.id=i.draft_id WHERE d.batch_id=? LIMIT 1',
@@ -80,6 +103,7 @@ def draft_queue_capabilities(conn, draft, media=None, *, account_blocked=False):
                       and media is not None and media['status'] in ('AVAILABLE', 'RESERVED')
                       and bool(str(draft.get('caption') or '').strip())),
         'can_verify': verification_ready,
+        'can_resolve': verification_ready,
         'can_reconcile': remote_possible and draft.get('persistence_status') != 'PERSISTED',
         'remote_effect_possible': remote_possible,
         'execution_active': active,

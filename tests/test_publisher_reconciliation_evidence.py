@@ -21,7 +21,7 @@ class ReconciliationEvidenceTests(unittest.TestCase):
         now = datetime.now(timezone.utc)
         with self.conn:
             execution = self.conn.execute(
-                'INSERT INTO publisher_batch_executions(batch_id,total,started_at) VALUES (?,?,?)',
+                "INSERT INTO publisher_batch_executions(batch_id,total,started_at,status) VALUES (?,?,?,'PAUSED')",
                 (None, 2, (now - timedelta(minutes=2)).isoformat()),
             ).lastrowid
             for draft_id in (first, second):

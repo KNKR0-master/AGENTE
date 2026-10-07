@@ -281,6 +281,11 @@ class PublisherAPI:
                 })
                 handler._json(result, no_store=True)
                 return
+            batch_review_match = re.fullmatch(r'/api/publisher/batches/(\d+)/review', path)
+            if batch_review_match:
+                from src.publisher.posting_review import batch_review
+                handler._json(batch_review(conn, int(batch_review_match[1])), no_store=True)
+                return
             if path == "/api/publisher/library/groups":
                 handler._json(PublisherService(conn, self.root).media_library_groups({
                     key: values[0] for key, values in query.items() if values
@@ -420,6 +425,9 @@ class PublisherAPI:
                     batch_action_match = re.fullmatch(r'/api/publisher/batches/(\d+)/(reorder|rename|configuration|cancel)', path)
                     if path == '/api/publisher/queue/presentation':
                         result = service.set_queue_visibility(data)
+                    elif re.fullmatch(r'/api/publisher/batches/(\d+)/register-published', path):
+                        from src.publisher.posting_review import register_batch_published
+                        result = register_batch_published(conn, int(path.split('/')[-2]), data)
                     elif batch_action_match and batch_action_match[2] == 'reorder':
                         result = service.reorder_batch(int(batch_action_match[1]), data.get('ordered_draft_ids') or [])
                     elif batch_action_match and batch_action_match[2] == 'rename':
@@ -500,6 +508,9 @@ class PublisherAPI:
                     elif path == '/api/publisher/verify-reconciliation':
                         # REMOTE_READ_ONLY: only local append-only evidence is written.
                         result = self.worker.request_draft_verification(data['id'])
+                    elif path == '/api/publisher/resolve-draft':
+                        from src.publisher.manual_resolution import resolve_draft
+                        result = resolve_draft(conn, data['id'], data)
                     elif action == 'inspect-existing-session':
                         if not isinstance(data.get('navigate', False), bool):
                             raise ValueError('navigate deve ser booleano')
