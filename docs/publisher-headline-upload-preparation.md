@@ -24,7 +24,7 @@ SHA-256, snapshot render hash, artifact ID, output SHA-256 and output probe.
 The Draft points to its validated preparation record. Paths are not durable
 identity. Product edits never affect the frozen Draft snapshot.
 
-Containment, hashes, probe, decode and packet cadence are revalidated before
+Containment, hashes, probe, decode and decoded presentation-frame cadence are revalidated before
 handoff and again immediately before the existing AccountSafetyGuard mutation
 reservation. `UPLOAD_STARTED` remains immediately before file selection, never
 before rendering. Local preparation does not consume mutation budget.
@@ -33,6 +33,30 @@ Preparation failure uses the existing manual-action blocker. Before upload,
 the existing restoration path leaves the Draft retryable and pauses the
 sequential execution; unstarted tail items are not silently skipped. Once upload
 has possibly started, the existing idempotency guard forbids rerender/reupload.
+
+## Local preparation failures and paused execution resume
+
+Queue `UNCONFIRMED` before any upload effect is the initial persistence state,
+not an ambiguous remote result. A current `HEADLINE_PREPARATION_FAILED` checkpoint
+is shown as a local headline preparation failure, with its stable error code in
+technical details. Upload/save checkpoints or mutation-ledger evidence always
+take precedence over the local warning. A validated later artifact supersedes
+the active render-failure presentation without erasing its audit row.
+
+The historical `auto_cleanup=true` resume requirement remains in place for remote
+reconciliation/cleanup. The sole exception is a paused, wholly pre-upload execution:
+all items WAITING_MANUAL, all Drafts pristine DRAFT/NOT_STARTED, all media AVAILABLE
+and unconsumed, no remote checkpoint or mutation-ledger reservation, and an audited
+headline preparation failure at or after this execution's start. Existing caption,
+media eligibility and upload-idempotency checks still apply. No cleanup preference
+is changed and no execution is automatically resumed. An explicit future resume
+queues normal preparation; it is not a preparation-only command and may reach the
+upload boundary, so preview-only diagnostics must not call it.
+
+Local-only QA calls the existing `prepare_upload_source` with the retained source,
+then the explicit preview endpoint. It never enqueues the worker, downloads again
+or calls file selection. FAILED artifacts, error evidence and frozen snapshots
+remain intact; post-upload ambiguity never authorizes this path.
 
 ## Cancellation and retention
 

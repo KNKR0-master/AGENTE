@@ -728,15 +728,16 @@ class PublisherWorker:
                 raise ValueError('EXECUTION_NOT_FOUND')
             if execution['status'] != 'PAUSED':
                 raise ValueError('EXECUTION_NOT_RESUMABLE')
-            if not execution['auto_cleanup']:
-                raise ValueError('AUTO_CLEANUP_REQUIRED')
-
             items = conn.execute(
                 "SELECT * FROM publisher_execution_items WHERE execution_id=? ORDER BY execution_position",
                 (execution_id,),
             ).fetchall()
             if len(items) != execution['total']:
                 raise ValueError('EXECUTION_ITEM_COUNT_MISMATCH')
+            if not execution['auto_cleanup']:
+                from src.publisher.queue_policy import preupload_preparation_resume_allowed
+                if not preupload_preparation_resume_allowed(conn, execution, items):
+                    raise ValueError('AUTO_CLEANUP_REQUIRED')
 
             queued = []
             reconcile_ids = []

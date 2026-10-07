@@ -74,7 +74,7 @@ class QueueIdentityContractTests(unittest.TestCase):
         for draft_id in (13, 25):
             display = draft_queue_presentation({'id': draft_id, 'status': 'MANUAL_ACTION_REQUIRED',
                 'persistence_status': 'UNCONFIRMED', 'upload_status': 'NOT_STARTED', 'processing_status': 'NOT_STARTED'})
-            self.assertEqual(display['persistence_label'], 'Persistência não confirmada')
+            self.assertEqual(display['persistence_label'], '')
             self.assertNotIn('upload', json.dumps(display).lower())
             self.assertNotIn('iniciado', json.dumps(display).lower())
 

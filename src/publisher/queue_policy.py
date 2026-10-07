@@ -31,11 +31,63 @@ def reconciliation_context(conn, draft, media):
     return None if busy else dict(item)
 
 
-def draft_queue_presentation(draft, media=None, *, item_status=None):
+def queue_preparation_context(conn, draft_id):
+    remote_checkpoint = bool(conn.execute(
+        "SELECT 1 FROM publisher_execution_logs WHERE draft_id=? AND step IN "
+        "('UPLOAD_STARTED','SAVE_DRAFT','TIKTOK_DRAFT_CONFIRMED','TEST_FINAL_RESULT') LIMIT 1",
+        (draft_id,),
+    ).fetchone())
+    remote_checkpoint = remote_checkpoint or bool(conn.execute(
+        'SELECT 1 FROM account_mutation_ledger WHERE draft_id=? LIMIT 1', (draft_id,),
+    ).fetchone())
+    latest = conn.execute(
+        "SELECT step,message FROM publisher_execution_logs WHERE draft_id=? AND step IN "
+        "('HEADLINE_PREPARATION_FAILED','HEADLINE_ARTIFACT_READY','UPLOAD_SOURCE_ORIGINAL') "
+        "ORDER BY id DESC LIMIT 1", (draft_id,),
+    ).fetchone()
+    code = str(latest['message']) if latest and latest['step'] == 'HEADLINE_PREPARATION_FAILED' else ''
+    return {'remote_checkpoint': remote_checkpoint,
+            'local_preparation_error': code if code.startswith('HEADLINE_') and code.replace('_', '').isalnum() else ''}
+
+
+def preupload_preparation_resume_allowed(conn, execution, items):
+    """Only an audited local headline failure may bypass cleanup-on-resume."""
+    failure_found = False
+    for item in items:
+        row = conn.execute('SELECT * FROM publisher_drafts WHERE id=?', (item['draft_id'],)).fetchone()
+        if not row:
+            return False
+        draft = dict(row)
+        media = conn.execute('SELECT * FROM publisher_media_assets WHERE id=?', (draft['media_asset_id'],)).fetchone()
+        if (item['status'] != 'WAITING_MANUAL' or draft['status'] != 'DRAFT'
+                or draft['upload_status'] != 'NOT_STARTED' or draft['processing_status'] != 'NOT_STARTED'
+                or draft['persistence_status'] == 'PERSISTED' or draft.get('confirmed_at')
+                or not media or media['status'] != 'AVAILABLE' or media['consumed_by_draft_id'] is not None
+                or media['remote_deleted_at'] or queue_preparation_context(conn, draft['id'])['remote_checkpoint']):
+            return False
+        if conn.execute('SELECT 1 FROM account_mutation_ledger WHERE draft_id=? LIMIT 1', (draft['id'],)).fetchone():
+            return False
+        failure = conn.execute(
+            "SELECT message FROM publisher_execution_logs WHERE draft_id=? AND step='HEADLINE_PREPARATION_FAILED' "
+            "AND created_at>=? ORDER BY id DESC LIMIT 1", (draft['id'], execution['started_at']),
+        ).fetchone()
+        failure_found = failure_found or bool(failure and str(failure['message']).startswith('HEADLINE_'))
+    return bool(items) and failure_found
+
+
+def draft_queue_presentation(draft, media=None, *, item_status=None, remote_checkpoint=False,
+                             local_preparation_error=''):
+    remote_possible = bool(remote_checkpoint or draft.get('upload_status') not in (None, 'NOT_STARTED')
+                           or draft.get('confirmed_at') or draft.get('persistence_status') == 'PERSISTED'
+                           or (media and media.get('status') in ('NEEDS_RECONCILIATION', 'CONSUMED_PENDING_DELETE', 'CONSUMED')))
     persistence = {'PERSISTED': 'Persistência confirmada',
-                   'UNCONFIRMED': 'Persistência não confirmada',
+                   'UNCONFIRMED': 'Persistência não confirmada' if remote_possible else '',
                    'DRAFT_ALREADY_PERSISTED': 'Rascunho já salvo'}.get(draft.get('persistence_status'), '')
     summary = {'persistence_label': persistence}
+    if local_preparation_error and not remote_possible:
+        return {**summary, 'label': 'Falha na preparação da headline', 'kind': 'attention',
+                'reason': 'LOCAL_PREPARATION_FAILURE', 'technical_code': local_preparation_error,
+                'message': 'O vídeo ainda não foi enviado ao TikTok. A preparação local precisa ser revisada.'}
     if draft.get('upload_status') == 'TRANSFER_UNKNOWN':
         return {**summary, 'label': 'Envio a verificar', 'kind': 'attention',
                 'message': 'O TikTok pode já ter recebido este vídeo. Não envie novamente enquanto a verificação estiver pendente.'}

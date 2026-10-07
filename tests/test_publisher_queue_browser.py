@@ -174,6 +174,43 @@ class QueueFixtureHandler(SimpleHTTPRequestHandler):
 @unittest.skipUnless(shutil.which('chrome') or Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe').exists(),
                      'Chrome Stable is required for visual queue checks')
 class QueueBrowserTests(unittest.TestCase):
+    def test_local_headline_failure_is_not_remote_uncertainty(self):
+        from playwright.sync_api import sync_playwright
+        from src.publisher.queue_policy import draft_queue_presentation
+
+        snapshot = QueueFixtureHandler.snapshot
+        draft = snapshot['drafts'][0]
+        draft.update(status='DRAFT', media_status='AVAILABLE', persistence_status='UNCONFIRMED')
+        draft['queue_capabilities'] = {'remote_effect_possible': False}
+        draft['queue_display'] = draft_queue_presentation(draft, local_preparation_error='HEADLINE_OUTPUT_CADENCE_INVALID')
+        snapshot['drafts'] = [draft]
+        snapshot['executions'] = [{'id': 11, 'batch_id': 24, 'status': 'PAUSED', 'total': 1}]
+        snapshot['execution_items'] = [{'execution_id': 11, 'draft_id': draft['id'],
+            'execution_position': 1, 'status': 'WAITING_MANUAL', 'error_code': 'MANUAL_ACTION_REQUIRED'}]
+        server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as profile, sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(profile, channel='chrome', headless=True)
+                try:
+                    page = context.new_page()
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    item = page.locator(f'[data-queue-draft="{draft["id"]}"]')
+                    item.wait_for()
+                    self.assertIn('Falha na prepara\u00e7\u00e3o da headline', item.inner_text())
+                    self.assertNotIn('Persist\u00eancia n\u00e3o confirmada', item.inner_text())
+                    self.assertNotIn('Verifica\u00e7\u00e3o manual necess\u00e1ria', page.locator('.queue-batch-warning').inner_text())
+                    details = page.locator('summary', has_text='Detalhes t\u00e9cnicos da prepara\u00e7\u00e3o')
+                    details.click()
+                    self.assertIn('HEADLINE_OUTPUT_CADENCE_INVALID', details.locator('..').inner_text())
+                    self.assertEqual([request for request in QueueFixtureHandler.requests if request[0] == 'POST'], [])
+                    page.screenshot(path=str(ROOT / 'data/publisher/qa/h3b-local-preparation-queue.png'), full_page=True)
+                finally:
+                    context.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def setUp(self):
         QueueFixtureHandler.snapshot = fixture()
         QueueFixtureHandler.reject_reorder = False

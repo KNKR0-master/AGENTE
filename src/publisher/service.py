@@ -18,7 +18,7 @@ from src.publisher.folder_catalog import (
     set_container_auto_create,
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
-from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation
+from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation, queue_preparation_context
 from src.publisher.queue_presentation import (
     HIDDEN_ITEM_SQL, change_visibility, history_visibility_counts,
     init_queue_presentation, presentation_targets,
@@ -627,6 +627,7 @@ class PublisherService:
                 item['queue_display'] = draft_queue_presentation(
                     {**item, 'status': item['draft_status']}, {'status': item['media_status']},
                     item_status=item['item_status'],
+                    **queue_preparation_context(self.conn, item['draft_id']),
                 )
         return {
             'executions': executions,
@@ -656,7 +657,7 @@ class PublisherService:
             media = dict(self.conn.execute('SELECT * FROM publisher_media_assets WHERE id=?', (draft['media_asset_id'],)).fetchone()) if draft['media_asset_id'] else None
             blocked = protections_by_account[draft['account_id']]
             draft['queue_capabilities'] = draft_queue_capabilities(self.conn, draft, media, account_blocked=blocked)
-            draft['queue_display'] = draft_queue_presentation(draft, media)
+            draft['queue_display'] = draft_queue_presentation(draft, media, **queue_preparation_context(self.conn, draft['id']))
             checkpoint = self.conn.execute(
                 "SELECT id FROM publisher_execution_logs WHERE draft_id=? AND step IN "
                 "('UPLOAD_STARTED','SAVE_DRAFT','TIKTOK_DRAFT_CONFIRMED') ORDER BY id DESC LIMIT 1",
