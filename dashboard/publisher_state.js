@@ -290,7 +290,10 @@
   function queueIdentity(item, executionItem = null) {
     const id = item.id ?? item.draft_id;
     const display = {...(item.queue_display || {label: 'Estado a verificar', kind: 'attention', message: ''})};
-    if (executionItem?.item_status === 'FAILED' || executionItem?.status === 'FAILED') {
+    const locallyResolved = item.persistence_status === 'PERSISTED' &&
+      ['READY_FOR_REVIEW', 'PUBLISHED', 'SCHEDULED'].includes(item.status ?? item.draft_status) &&
+      item.upload_status !== 'TRANSFER_UNKNOWN' && item.media_status !== 'NEEDS_RECONCILIATION';
+    if (!locallyResolved && (executionItem?.item_status === 'FAILED' || executionItem?.status === 'FAILED')) {
       display.label = 'Falhou nesta execução';
       display.kind = 'attention';
       display.message ||= 'Confira os detalhes antes de qualquer nova ação.';

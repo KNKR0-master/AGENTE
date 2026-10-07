@@ -94,3 +94,5 @@
 .library-selected-panel .selected-folder-path{display:block;max-width:65ch;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .library-selected-panel li button{flex:0 0 auto}
 @media(max-width:700px){.library-primary-actions{position:static}.library-selected-panel li{align-items:flex-start}.library-selected-panel .selected-folder-path{max-width:38ch}}
+/* Local batch review keeps unresolved items visible beside eligible items. */
+.batch-review-item{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid #d8dfe3}.batch-review-item strong{overflow-wrap:anywhere}.batch-review-item small{display:block}.batch-review-item details{font-size:12px}.batch-review-item>div{flex-shrink:0}#batchReviewDialog{width:min(820px,calc(100vw - 32px))}#resolutionDialog{width:min(640px,calc(100vw - 32px))}#resolutionDialog fieldset label{display:flex;margin:12px 0}@media(max-width:600px){.batch-review-item{flex-direction:column}}

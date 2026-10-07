@@ -152,9 +152,17 @@ console.log(JSON.stringify({retained,unchanged:before===JSON.stringify(snapshot)
     def test_historical_navigation_uses_execution_attention_context(self):
         result = self.check("""
 const item=history[0].items[0];item.item_status='FAILED';
+item.status='MANUAL_ACTION_REQUIRED';item.persistence_status='UNCONFIRMED';
 console.log(JSON.stringify(ui.queueNavigationFilters(snapshot,{status:'FAILED',attention:'REQUIRED',product:'1',search:'missing'},item,item)));
 """)
         self.assertEqual(result, {'status': 'FAILED', 'attention': 'REQUIRED', 'product': '1', 'search': ''})
+
+    def test_resolved_draft_keeps_execution_failure_without_current_attention(self):
+        result = self.check("""
+const item=history[0].items[0];item.item_status='FAILED';
+console.log(JSON.stringify(ui.queueNavigationFilters(snapshot,{status:'FAILED',attention:'REQUIRED',product:'1',search:'missing'},item,item)));
+""")
+        self.assertEqual(result, {'status': 'FAILED', 'attention': '', 'product': '1', 'search': ''})
 
 
 if __name__ == '__main__':
