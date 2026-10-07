@@ -110,7 +110,14 @@ function closeProductPicker(key,{rerender=true}={}){productPickerComponents.get(
 document.addEventListener('click',event=>{if(!activeProductPickerKey)return;const picker=productPickerComponents.get(activeProductPickerKey);if(picker&&!picker.container.contains(event.target))closeProductPicker(activeProductPickerKey);});
 document.addEventListener('focusin',event=>{if(!activeProductPickerKey)return;const picker=productPickerComponents.get(activeProductPickerKey);if(picker&&!picker.container.contains(event.target))closeProductPicker(activeProductPickerKey);});
 function refreshActiveProductPicker(){if(!activeProductPickerKey)return;const picker=productPickerComponents.get(activeProductPickerKey);if(picker?.container.isConnected&&productPickerStates.get(activeProductPickerKey)?.open)picker.draw();}
-async function api(path='',data){const r=await fetch('/api/publisher'+path,data===undefined?{}:{method:'POST',headers:data instanceof FormData?{}:{'Content-Type':'application/json'},body:data instanceof FormData?data:JSON.stringify(data)});const body=await r.json();if(!r.ok)throw Error(body.error||'Erro na operação');return body;}
+async function api(path='',data){
+ const r=await fetch('/api/publisher'+path,data===undefined?{}:{method:'POST',headers:data instanceof FormData?{}:{'Content-Type':'application/json'},body:data instanceof FormData?data:JSON.stringify(data)});
+ const failure=`Não foi possível concluir a operação (HTTP ${r.status}).`;
+ if(!(r.headers.get('Content-Type')||'').toLowerCase().includes('application/json'))throw Error(failure);
+ let body;try{body=await r.json();}catch{throw Error(failure);}
+ if(!r.ok){const error=Error(body?.error||failure);error.httpStatus=r.status;throw error;}
+ return body;
+}
 function libraryFilterParams(includeGroupView=false){const params=new URLSearchParams({search:$('#librarySearch')?.value||'',path:$('#libraryPath')?.value||'',product_id:$('#libraryProduct')?.value||'',type:$('#libraryType')?.value||'VIDEO',status:$('#libraryStatus')?.value||'',decision:$('#libraryDecision')?.value||''});if(includeGroupView)params.set('group_view',$('#libraryGroupView')?.value||'ACTIVE');return params;}
 async function loadLibrary(){
  const request=++libraryRequestSequence,params=libraryFilterParams(true);
