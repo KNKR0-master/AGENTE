@@ -180,7 +180,7 @@ def cleanup_remote(conn, draft_id, provider, root=None):
             asset = get_row(conn, 'publisher_media_assets', current['id'])
 
     if asset['status'] == 'CONSUMED':
-        return _remove_temp(conn, draft_id, draft.get('temp_path'), root) if draft.get('temp_path') else True
+        return _finish_local_cleanup(conn, draft, root)
     if not _has_cleanup_intent(conn, draft_id):
         raise ValueError('MANUAL_ACTION_REQUIRED')
 
@@ -210,4 +210,11 @@ def cleanup_remote(conn, draft_id, provider, root=None):
             log(conn, draft_id, 'REMOTE_DELETE_PENDING', 'PENDING', message)
         return False
 
-    return _remove_temp(conn, draft_id, draft.get('temp_path'), root) if draft.get('temp_path') else True
+    return _finish_local_cleanup(conn, draft, root)
+
+
+def _finish_local_cleanup(conn, draft, root):
+    from src.publisher.upload_preparation import cleanup_derived_after_consumption
+    if draft.get('temp_path'):
+        _remove_temp(conn, draft['id'], draft['temp_path'], root)
+    return cleanup_derived_after_consumption(conn, draft['id'], root)

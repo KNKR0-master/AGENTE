@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
+import time
 
 from src.media_tools import resolve_ffprobe_path
 
@@ -24,10 +25,12 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def run(args, *, cwd=None, timeout=30, limit=1024 * 1024):
+def run(args, *, cwd=None, timeout=30, limit=1024 * 1024, cancel_event=None):
     """Drain both pipes without unbounded communicate() buffers or shell parsing."""
     if not 0 < timeout <= 600 or not 0 < limit <= 8 * 1024 * 1024:
         raise RenderError('HEADLINE_PROCESS_LIMIT_INVALID')
+    if cancel_event is not None and cancel_event.is_set():
+        raise RenderError('HEADLINE_PREPARATION_CANCELLED')
     try:
         process = subprocess.Popen([str(a) for a in args], cwd=cwd, shell=False,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -48,9 +51,22 @@ def run(args, *, cwd=None, timeout=30, limit=1024 * 1024):
                for i, pipe in enumerate((process.stdout, process.stderr))]
     for thread in threads:
         thread.start()
-    timed_out = False
+    timed_out, cancelled = False, False
     try:
-        process.wait(timeout=timeout)
+        deadline = time.monotonic() + timeout
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                process.kill()
+                process.wait(timeout=5)
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(args, timeout)
+            try:
+                process.wait(timeout=min(.1, remaining))
+            except subprocess.TimeoutExpired:
+                continue
     except subprocess.TimeoutExpired:
         timed_out = True
         process.kill()  # Only the renderer child we own; never browser/runtime processes.
@@ -60,6 +76,8 @@ def run(args, *, cwd=None, timeout=30, limit=1024 * 1024):
             thread.join(timeout=5)
     if timed_out:
         raise RenderError('HEADLINE_PROCESS_TIMEOUT')
+    if cancelled:
+        raise RenderError('HEADLINE_PREPARATION_CANCELLED')
     if process.returncode:
         # Raw stderr can echo text/paths. Keep the public and persisted error sanitized.
         raise RenderError('HEADLINE_PROCESS_EXIT_ERROR')
@@ -116,9 +134,9 @@ def capabilities(ffmpeg):
         return result
 
 
-def probe(ffprobe, path):
+def probe(ffprobe, path, *, cancel_event=None):
     try:
-        result = json.loads(run([ffprobe, '-v', 'error', '-show_streams', '-show_format', '-of', 'json', path]))
+        result = json.loads(run([ffprobe, '-v', 'error', '-show_streams', '-show_format', '-of', 'json', path], cancel_event=cancel_event))
         videos = [s for s in result['streams'] if s['codec_type'] == 'video']
         if len(videos) != 1:
             raise ValueError()

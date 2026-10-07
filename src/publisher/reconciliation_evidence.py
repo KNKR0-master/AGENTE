@@ -21,7 +21,7 @@ SOURCES = frozenset({'TIKTOK_STUDIO_DRAFT_LIST', 'TIKTOK_STUDIO_EDITOR', 'TIKTOK
 PAYLOAD_KEYS = frozenset({
     'candidate_summaries', 'observed_duration', 'caption_fingerprint',
     'thumbnail_fingerprint', 'listing_bounds', 'pagination_observations',
-    'current_listing', 'page_identity',
+    'current_listing', 'page_identity', 'upload_source_identity',
 })
 
 

@@ -238,6 +238,8 @@ def init_publisher(conn):
             conn.execute(f'ALTER TABLE publisher_products ADD COLUMN {name} {definition}')
     conn.execute('CREATE TABLE IF NOT EXISTS publisher_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)')
     headlines.init_headlines(conn)
+    from src.publisher.upload_preparation import init_upload_preparation
+    init_upload_preparation(conn)
     init_queue_presentation(conn)
     conn.execute("INSERT OR IGNORE INTO publisher_migrations(name,applied_at) VALUES ('queue_presentation_v1',?)", (now_iso(),))
     init_account_safety(conn)

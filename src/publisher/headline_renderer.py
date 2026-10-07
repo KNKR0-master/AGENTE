@@ -74,7 +74,7 @@ def validate_output(source, output, kind):
 
 
 class HeadlineRenderer:
-    def __init__(self, root, input_root, artifact_root, fonts, *, ffmpeg=None, ffprobe=None, timeout=120):
+    def __init__(self, root, input_root, artifact_root, fonts, *, ffmpeg=None, ffprobe=None, timeout=120, cancel_event=None):
         self.root = Path(root)
         self.input_root = Path(input_root).resolve()
         self.artifact_root = Path(artifact_root).resolve()
@@ -90,13 +90,14 @@ class HeadlineRenderer:
         if not self.ffprobe:
             raise RenderError('HEADLINE_FFPROBE_UNAVAILABLE')
         self.timeout = timeout
+        self.cancel_event = cancel_event
         self.identity = {**POLICY, **capabilities(self.ffmpeg), 'ffprobe_sha256': sha256(self.ffprobe)}
         self.version = hashlib.sha256(canonical(self.identity).encode()).hexdigest()
 
     def timestamps(self, path):
         data = json.loads(run([self.ffprobe, '-v', 'error', '-select_streams', 'v:0',
                                '-show_packets', '-show_entries', 'packet=pts_time', '-of', 'json', path],
-                              timeout=self.timeout, limit=8 * 1024 * 1024))
+                              timeout=self.timeout, limit=8 * 1024 * 1024, cancel_event=self.cancel_event))
         values = sorted(float(p['pts_time']) for p in data['packets'])
         if not values:
             raise RenderError('HEADLINE_TIMING_UNSUPPORTED')
@@ -105,9 +106,9 @@ class HeadlineRenderer:
     def validate_file(self, source, source_path, output_path, kind):
         if not output_path.is_file() or not output_path.stat().st_size:
             raise RenderError('HEADLINE_OUTPUT_INVALID')
-        output = probe(self.ffprobe, output_path)
+        output = probe(self.ffprobe, output_path, cancel_event=self.cancel_event)
         validate_output(source, output, kind)
-        run([self.ffmpeg, '-v', 'error', '-xerror', '-i', output_path, '-f', 'null', '-'], timeout=self.timeout)
+        run([self.ffmpeg, '-v', 'error', '-xerror', '-i', output_path, '-f', 'null', '-'], timeout=self.timeout, cancel_event=self.cancel_event)
         if kind == 'video':
             before, after = self.timestamps(source_path), self.timestamps(output_path)
             tick = max(float(Fraction(source['video']['time_base'])), float(Fraction(output['video']['time_base'])))
@@ -130,7 +131,7 @@ class HeadlineRenderer:
         if not source_path.is_file():
             raise RenderError('HEADLINE_LOCAL_SOURCE_REQUIRED')
         source_hash = sha256(source_path)
-        source = probe(self.ffprobe, source_path)
+        source = probe(self.ffprobe, source_path, cancel_event=self.cancel_event)
         if source['duration'] <= 0 or any(d <= 0 or d % 2 for d in source['display']):
             raise RenderError('HEADLINE_MEDIA_UNSUPPORTED')
         key = hashlib.sha256(canonical([draft_id, source_hash, snapshot['render_spec_hash'], self.version, kind]).encode()).hexdigest()
@@ -173,10 +174,12 @@ class HeadlineRenderer:
                     if audio['codec_name'] != 'aac':
                         args += [f'-b:a:{index}', '192k']
                 args += ['-movflags', '+faststart', '-f', 'mp4']
-            run([*args, partial], cwd=workspace, timeout=self.timeout)
+            run([*args, partial], cwd=workspace, timeout=self.timeout, cancel_event=self.cancel_event)
             output = self.validate_file(source, source_path, partial, kind)
             if sha256(source_path) != source_hash:
                 raise RenderError('HEADLINE_SOURCE_CHANGED')
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise RenderError('HEADLINE_PREPARATION_CANCELLED')
             digest = sha256(partial)
             partial.replace(final)
             with conn:

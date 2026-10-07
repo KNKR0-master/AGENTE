@@ -596,7 +596,7 @@ def prepare_job(adapter, draft, preset, path, evidence, ffprobe_bin=None, media_
 
 class PublisherWorker:
     """One owning thread for Playwright; persistent context per account, tab per draft."""
-    def __init__(self, root, db, provider_factory=media_provider):
+    def __init__(self, root, db, provider_factory=media_provider, *, headline_renderer_factory=None):
         self.root, self.db = Path(root).resolve(), db
         self.commands = queue.Queue()
         self.contexts, self.pages = {}, {}
@@ -622,6 +622,7 @@ class PublisherWorker:
         self.thread = None
         self.cache = TemporaryMediaCache(self.root)
         self.provider_factory = provider_factory
+        self.headline_renderer_factory = headline_renderer_factory
 
     def start(self):
         with self.lock:
@@ -1464,8 +1465,12 @@ class PublisherWorker:
             "AND step='SAVE_DRAFT' AND status='OK' ORDER BY id DESC LIMIT 1", (draft_id,),
         ).fetchone()
         duration = None
+        from src.publisher.upload_preparation import reconciliation_source
+        prepared_identity = reconciliation_source(conn, draft)
+        if prepared_identity:
+            duration = prepared_identity['duration']
         path = Path(draft.get('temp_path') or '')
-        if draft.get('temp_path') and path.resolve().is_relative_to(self.cache.root.resolve()) and path.is_file():
+        if not prepared_identity and draft.get('temp_path') and path.resolve().is_relative_to(self.cache.root.resolve()) and path.is_file():
             try:
                 duration = probe_video(path, str(ensure_ffprobe_available(self.root))).results.get('duration')
             except (OSError, FFProbeError):
@@ -1497,6 +1502,7 @@ class PublisherWorker:
             valid_until=(completed + timedelta(minutes=5)).isoformat(),
             evidence_payload={'listing_bounds': observation.get('listing_bounds') or {},
                               'observed_duration': duration,
+                              **({'upload_source_identity': prepared_identity} if prepared_identity else {}),
                               'current_listing': current_listing,
                               'page_identity': observation.get('page_identity') or {},
                               'pagination_observations': {'complete': observation.get('listing_complete') is True}},
@@ -1929,6 +1935,7 @@ class PublisherWorker:
             conn.commit()
 
         adapter = None
+        prepared = None
         try:
             mapping = json.loads((self.root / "config" / "publisher_studio.json").read_text(encoding="utf-8"))
             safety = AccountSafetyGuard(conn)
@@ -1937,6 +1944,15 @@ class PublisherWorker:
                 'SAVE_DRAFT': f'draft:{row_id}:SAVE_DRAFT',
             }
             def before_mutation(operation):
+                if self.stop_event.is_set():
+                    raise PreparationError('MANUAL_ACTION_REQUIRED', 'Preparacao cancelada; nenhuma nova mutacao autorizada')
+                if operation == 'VIDEO_UPLOAD' and prepared is not None:
+                    # Final local gate precedes mutation-budget reservation and
+                    # the upload checkpoint. No original fallback is permitted.
+                    try:
+                        prepared.validate(conn, get_row(conn, 'publisher_drafts', row_id), self.stop_event)
+                    except ValueError as exc:
+                        raise PreparationError('MANUAL_ACTION_REQUIRED', f'Preparacao local bloqueada: {exc}') from exc
                 safety.start_mutation(account['id'], mutation_keys[operation], operation, draft_id=row_id)
                 log(conn, row_id, 'ACCOUNT_SAFETY_GUARD', 'OK', f'{operation} autorizado e registrado antes do efeito remoto')
                 conn.commit()
@@ -1969,8 +1985,18 @@ class PublisherWorker:
                     path.rename(target)
                 with conn:
                     conn.execute('UPDATE publisher_drafts SET temp_path=? WHERE id=?',(str(target),row_id))
+                from src.publisher.upload_preparation import prepare_upload_source, configured_renderer
+                try:
+                    factory = self.headline_renderer_factory or (
+                        lambda: configured_renderer(self.root, self.cache.root, self.stop_event))
+                    prepared = prepare_upload_source(conn, draft, target, factory, self.stop_event)
+                except Exception as exc:
+                    local_code = getattr(exc, 'code', 'HEADLINE_PREPARATION_FAILED')
+                    log(conn, row_id, 'HEADLINE_PREPARATION_FAILED', 'BLOCKED', str(local_code))
+                    conn.commit()
+                    raise PreparationError('MANUAL_ACTION_REQUIRED', f'Preparacao local bloqueada: {local_code}') from exc
                 checklist = prepare_job(
-                    adapter,draft,preset,target,evidence,ffprobe_bin=ffprobe_bin,
+                    adapter,draft,preset,prepared.path,evidence,ffprobe_bin=ffprobe_bin,
                     media_validator=lambda metadata: safety.validate_media(account['id'], metadata),
                 )
                 conn.execute("UPDATE publisher_drafts SET upload_status=?,processing_status=?,updated_at=? WHERE id=?",
@@ -1991,7 +2017,7 @@ class PublisherWorker:
             # never retry file selection from this branch.
             if upload_started_checkpoint and adapter is not None and not getattr(adapter, 'transfer_confirmed', False):
                 try:
-                    reconciled = adapter.inspect_current_upload(asset['filename'])
+                    reconciled = adapter.inspect_current_upload(prepared.path.name if prepared else asset['filename'])
                     if reconciled['media_ready_for_edit']:
                         draft['_upload_status'] = 'TRANSFER_CONFIRMED'
                         draft['_processing_status'] = 'MEDIA_READY_FOR_EDIT'
