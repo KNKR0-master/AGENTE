@@ -48,7 +48,11 @@ class ReadOnlyVerificationTests(unittest.TestCase):
         with patch.object(worker, '_inspect_draft_list_read_only', return_value=observation):
             result = worker._verify_remote_draft_record(None, self.conn, first, execution)
         self.assertEqual(result['outcome'], 'REMOTE_STATE_UNKNOWN')
-        self.assertEqual(result['blocker_code'], 'MATCH_EVIDENCE_INSUFFICIENT')
+        self.assertIsNone(result['blocker_code'])
+        import json
+        saved = get_latest_reconciliation_evidence(self.conn, draft_id=first)
+        observed = json.loads(saved['evidence_payload_json'])['current_listing']
+        self.assertEqual(observed, {'complete': True, 'count': 0, 'match_result': 'NO_CURRENT_MATCH'})
         self.assertIsNotNone(get_latest_reconciliation_evidence(self.conn, draft_id=first))
         self.assertIsNone(get_latest_reconciliation_evidence(self.conn, draft_id=second))
         self.assertEqual(get_row(self.conn, 'publisher_drafts', first), before)

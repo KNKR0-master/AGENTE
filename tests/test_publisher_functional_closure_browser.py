@@ -41,6 +41,49 @@ class ClosureHandler(fixture_module.QueueFixtureHandler):
 
 @unittest.skipUnless(shutil.which('chrome') or Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe').exists(), 'Chrome required')
 class FunctionalClosureBrowserTests(unittest.TestCase):
+    def test_complete_empty_list_explains_current_state_without_release_or_retry(self):
+        from playwright.sync_api import sync_playwright
+        snapshot = fixture_module.fixture()
+        ClosureHandler.snapshot, ClosureHandler.requests = snapshot, []
+        draft = snapshot['drafts'][1]
+        draft.update(status='MANUAL_ACTION_REQUIRED', upload_status='TRANSFER_UNKNOWN',
+                     media_status='NEEDS_RECONCILIATION', media_asset_id=2, resolution_checkpoint_id=91,
+                     queue_capabilities={'can_verify': True, 'can_resolve': True},
+                     reconciliation_evidence={'id': 7, 'current': True, 'outcome': 'REMOTE_STATE_UNKNOWN',
+                         'coverage_status': 'COMPLETE', 'listing_complete': True, 'current_draft_count': 0,
+                         'match_result': 'NO_CURRENT_MATCH', 'blocker_code': None})
+        server = ThreadingHTTPServer(('127.0.0.1', 0), ClosureHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(channel='chrome', headless=True)
+                try:
+                    page = browser.new_page()
+                    for local, expected in [('NOT_STARTED', 'Risco remoto aparente baixo'),
+                                             ('POSSIBLE_REMOTE_EFFECT', 'O risco de duplicidade permanece')]:
+                        draft['resolution_safety_summary'] = {'local_attempt': local}
+                        page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                        page.locator('[data-resolve-draft="2"]').click()
+                        form = page.locator('#resolutionForm')
+                        text = form.inner_text()
+                        self.assertIn('Nenhum rascunho atual encontrado', text)
+                        self.assertIn('atualmente possui 0 rascunhos', text)
+                        self.assertIn('Isso não confirma sozinho', text)
+                        self.assertIn(expected, text)
+                        self.assertNotIn('Não foi possível concluir a verificação', text)
+                        self.assertTrue(form.locator('[value="CONFIRM_EXISTS"]').is_disabled())
+                        form.locator('[value="ABANDON"]').check()
+                        form.locator('[name="reason"]').fill('Decisao apenas na fixture')
+                        form.locator('[name="human_confirmed"]').check()
+                        form.locator('[type="submit"]').click()
+                        self.assertIn('risco de duplicidade', page.locator('#resolutionResult').inner_text())
+                        self.assertFalse([r for r in ClosureHandler.requests if r[0] == 'POST'])
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_human_resolution_and_batch_review_are_explicit_local_actions(self):
         from playwright.sync_api import sync_playwright
         snapshot = fixture_module.fixture()

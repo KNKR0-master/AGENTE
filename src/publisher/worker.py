@@ -32,6 +32,7 @@ from src.publisher.login_trace import LoginTrace
 from src.publisher.auth_test_lock import AuthTestLock
 from src.publisher.manual_profile import ProfileOwnership
 from src.publisher.browser_runtime import BrowserRuntimeManager
+from src.publisher.draft_listing import LISTING_SNAPSHOT, classify_listing
 from src.publisher.reconciliation_evidence import (
     record_reconciliation_evidence,
 )
@@ -219,6 +220,9 @@ def assess_remote_draft_rows(rows, caption, save_checkpoint_at, expected_duratio
         expected_duration_seconds=expected_duration_seconds, require_strong=True,
     )
     coverage = 'COMPLETE' if listing_complete else 'PARTIAL'
+    if listing_complete and not rows:
+        return {'outcome': 'REMOTE_STATE_UNKNOWN', 'coverage_status': 'COMPLETE',
+                'blocker_code': None, 'candidate_count': 0, 'matched_candidate_fingerprint': None}
     if not listing_complete or not save_checkpoint_at or expected_duration_seconds is None:
         return {'outcome': 'REMOTE_STATE_UNKNOWN', 'coverage_status': coverage,
                 'blocker_code': 'PARTIAL_LISTING' if not listing_complete else 'MATCH_EVIDENCE_INSUFFICIENT',
@@ -239,8 +243,8 @@ def assess_remote_draft_rows(rows, caption, save_checkpoint_at, expected_duratio
         return {'outcome': 'REMOTE_EXISTS_CONFIRMED', 'coverage_status': coverage,
                 'blocker_code': None, 'candidate_count': 1,
                 'matched_candidate_fingerprint': f'sha256:{fingerprint}'}
-    return {'outcome': 'REMOTE_STATE_UNKNOWN', 'coverage_status': 'PARTIAL',
-            'blocker_code': 'MATCH_EVIDENCE_INSUFFICIENT', 'candidate_count': 0,
+    return {'outcome': 'REMOTE_STATE_UNKNOWN', 'coverage_status': coverage,
+            'blocker_code': None, 'candidate_count': 0,
             'matched_candidate_fingerprint': None}
 
 
@@ -1429,40 +1433,9 @@ class PublisherWorker:
             drafts_tab.click(timeout=10000)
             text = page.locator('body').inner_text(timeout=5000)
             folded = text.casefold()
-        if 'rascunhos' not in folded or 'todos os computadores' not in folded:
-            result['blocker_code'] = 'PARTIAL_LISTING'
-            return result
-        listing = page.evaluate("""() => {
-          const rows = [...document.querySelectorAll('[data-tt="components_DraftRowLayout_FlexRow"]')]
-            .map(el => {
-              const lines = (el.querySelector('[data-tt="components_DraftRowLayout_FlexRow_2"]')?.innerText || '')
-                .split(/\\r?\\n/).map(x => x.trim()).filter(Boolean);
-              return {
-                caption_text: lines.slice(1).join('\\n'), duration_text: lines[0] || '',
-                updated_text: (el.querySelector('[data-tt="components_DraftRowLayout_FlexRow_3"]')?.innerText || '').trim()
-              };
-            });
-          const tabs = [...document.querySelectorAll('[data-tt="Header_HeaderTabBar_Container"]')];
-          const draftTab = tabs.find(el => /^Rascunhos\\s+\\d+$/i.test((el.innerText || '').trim()));
-          const total = draftTab ? Number((draftTab.innerText || '').match(/\\d+/)?.[0]) : null;
-          return {
-            rows, total, loading: !!document.querySelector('[aria-busy="true"], [role="progressbar"]'),
-            pagination: !!document.querySelector('[aria-label*="próxima" i], [aria-label*="next" i], [data-e2e*="pagination"]')
-          };
-        }""")
-        rows = listing.get('rows') or []
-        total = listing.get('total')
-        result['rows'] = rows
-        result['listing_bounds'] = {'visible_rows': len(rows), 'tab_total': total,
-                                    'loading': bool(listing.get('loading')),
-                                    'pagination': bool(listing.get('pagination'))}
-        result['listing_complete'] = (
-            isinstance(total, int) and total == len(rows) and
-            all(row.get('caption_text') and row.get('updated_text') for row in rows) and
-            not listing.get('loading') and not listing.get('pagination')
-        )
-        if not result['listing_complete']:
-            result['blocker_code'] = 'PARTIAL_LISTING'
+        result.update(classify_listing(page.evaluate(LISTING_SNAPSHOT)))
+        result['page_identity'] = {'host': urlsplit(page.url).hostname,
+                                   'path': urlsplit(page.url).path}
         return result
 
     def _verify_remote_draft_record(self, playwright, conn, draft_id, execution_id):
@@ -1512,6 +1485,13 @@ class PublisherWorker:
                 duration, listing_complete=observation.get('listing_complete') is True,
             )
         completed = datetime.now(timezone.utc)
+        complete = assessment['coverage_status'] == 'COMPLETE'
+        match_result = ('UNKNOWN' if assessment['blocker_code'] else
+                        'UNIQUE_CURRENT_MATCH' if assessment['candidate_count'] == 1 else
+                        'AMBIGUOUS_CURRENT_MATCH' if assessment['candidate_count'] > 1 else 'NO_CURRENT_MATCH')
+        current_listing = {'complete': complete,
+                           'count': len(observation.get('rows') or []) if complete else None,
+                           'match_result': match_result if complete else 'UNKNOWN'}
         evidence_id = record_reconciliation_evidence(
             conn, draft_id=draft_id, media_asset_id=asset['id'], execution_id=execution_id,
             account_id=account['id'], expected_account=account['tiktok_username'],
@@ -1522,6 +1502,8 @@ class PublisherWorker:
             valid_until=(completed + timedelta(minutes=5)).isoformat(),
             evidence_payload={'listing_bounds': observation.get('listing_bounds') or {},
                               'observed_duration': duration,
+                              'current_listing': current_listing,
+                              'page_identity': observation.get('page_identity') or {},
                               'pagination_observations': {'complete': observation.get('listing_complete') is True}},
             **assessment,
         )

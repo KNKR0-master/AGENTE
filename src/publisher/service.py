@@ -27,6 +27,7 @@ from src.publisher.reconciliation_evidence import (
     evaluate_reconciliation_evidence_validity, get_latest_reconciliation_evidence,
 )
 from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH, require_batch_size
+from src.publisher.draft_listing import current_listing_summary, resolution_safety_summary
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -655,6 +656,10 @@ class PublisherService:
                 (draft['id'],),
             ).fetchone()
             draft['resolution_checkpoint_id'] = checkpoint['id'] if checkpoint else None
+            if draft.get('queue_capabilities', {}).get('can_resolve'):
+                draft['resolution_safety_summary'] = resolution_safety_summary(draft, self.conn.execute(
+                    'SELECT step FROM publisher_execution_logs WHERE draft_id=?', (draft['id'],),
+                ).fetchall())
             evidence = get_latest_reconciliation_evidence(self.conn, draft_id=draft['id'])
             if evidence:
                 validity = evaluate_reconciliation_evidence_validity(
@@ -670,6 +675,7 @@ class PublisherService:
                     'verified_at': evidence['verification_completed_at'],
                     'current': validity['valid'],
                     'stale_reason': None if validity['valid'] else validity['reason'],
+                    **current_listing_summary(evidence),
                 }
         batch_ids = {draft['batch_id'] for draft in drafts if draft['batch_id'] is not None}
         queue_preflights = {batch_id: self.queue_preflight(batch_id) for batch_id in batch_ids}

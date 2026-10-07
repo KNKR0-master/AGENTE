@@ -106,6 +106,20 @@ class ManualResolutionTests(unittest.TestCase):
                 resolve_draft(self.conn, draft_id, data)
         self.assertEqual(get_row(self.conn, 'publisher_drafts', draft_id)['status'], 'MANUAL_ACTION_REQUIRED')
 
+    def test_complete_empty_observation_cannot_confirm_or_release_without_ack(self):
+        draft_id, execution_id, data = self.prepare_resolution(decision='CONFIRM_EXISTS')
+        data['evidence_id'] = self.record(draft_id, execution_id, outcome='REMOTE_STATE_UNKNOWN',
+            coverage_status='COMPLETE', candidate_count=0,
+            evidence_payload={'current_listing': {'complete': True, 'count': 0, 'match_result': 'NO_CURRENT_MATCH'}})
+        with self.assertRaises(ValueError):
+            resolve_draft(self.conn, draft_id, data)
+        with self.assertRaisesRegex(ValueError, 'ACKNOWLEDGEMENT_REQUIRED'):
+            resolve_draft(self.conn, draft_id, {**data, 'decision': 'ABANDON', 'acknowledge_remote_may_exist': False})
+        self.assertEqual(get_row(self.conn, 'publisher_drafts', draft_id)['status'], 'MANUAL_ACTION_REQUIRED')
+        self.assertEqual(get_row(self.conn, 'publisher_media_assets', data['media_asset_id'])['status'], 'NEEDS_RECONCILIATION')
+        with self.assertRaises(ValueError):
+            assert_upload_allowed(self.conn, draft_id)
+
     def test_http_resolution_is_local_and_confirmation_is_mandatory(self):
         from src.publisher.http import PublisherAPI
         draft_id, _, data = self.prepare_resolution()
