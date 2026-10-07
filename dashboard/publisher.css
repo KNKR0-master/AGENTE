@@ -101,3 +101,4 @@
 #headlinePresets { margin-top:24px; border-top:1px solid #d8dde2; padding-top:16px; }
 #headlinePresets input, #productHeadline textarea { max-width:100%; box-sizing:border-box; }
 #draftHeadline pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+.headline-preview img { display: block; max-width: 100%; max-height: 520px; object-fit: contain; margin-top: 12px; }

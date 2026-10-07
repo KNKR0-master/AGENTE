@@ -36,6 +36,9 @@ class PublisherAPI:
         self.drive_reauth = DriveReauthManager(root, self.drive_poller)
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.thumbnails = PublisherThumbnailService()
+        # H2 is explicitly injected in isolated fixtures only. No operational
+        # migration, source download, or renderer startup is performed here.
+        self.headline_renderer = None
 
     def runtime_info(self, handler):
         handler._json(
@@ -434,7 +437,24 @@ class PublisherAPI:
                     service = PublisherService(conn, self.root)
                     action = path.rsplit("/", 1)[-1]
                     batch_action_match = re.fullmatch(r'/api/publisher/batches/(\d+)/(reorder|rename|configuration|cancel)', path)
-                    if path == '/api/publisher/headline-presets':
+                    if re.fullmatch(r'/api/publisher/drafts/\d+/headline-preview', path):
+                        import base64
+                        from src.publisher.headlines import read_snapshot
+                        if self.headline_renderer is None:
+                            raise ValueError('HEADLINE_PREVIEW_NOT_CONFIGURED')
+                        draft = get_row(conn, 'publisher_drafts', int(path.split('/')[-2]))
+                        if not draft or not draft.get('video_path'):
+                            raise ValueError('HEADLINE_LOCAL_SOURCE_REQUIRED')
+                        artifact = self.headline_renderer.render(conn, draft['id'], read_snapshot(draft), draft['video_path'], kind='preview')
+                        if artifact['state'] != 'READY':
+                            result = {'state': artifact['state']}
+                        else:
+                            image = Path(artifact['local_path'])
+                            if image.stat().st_size > 8 * 1024 * 1024:
+                                raise ValueError('HEADLINE_PREVIEW_TOO_LARGE')
+                            result = {'state': 'READY', 'artifact_id': artifact['id'],
+                                      'image': 'data:image/png;base64,' + base64.b64encode(image.read_bytes()).decode('ascii')}
+                    elif path == '/api/publisher/headline-presets':
                         from src.publisher.headlines import save_preset
                         result = save_preset(conn, data)
                     elif re.fullmatch(r'/api/publisher/drafts/\d+/headline', path):

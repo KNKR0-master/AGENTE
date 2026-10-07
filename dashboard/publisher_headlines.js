@@ -1,4 +1,4 @@
-/* Local configuration only. No rendering, media access or remote actions. */
+/* Local headline configuration and explicit, local-only preview requests. */
 const PublisherHeadlines = (() => {
  const defaults={font_ref:'',font_sha256:'',font_face_index:0,font_size_ratio:0.05,font_weight:400,text_color:'#FFFFFF',alignment:'center',x:0.5,y:0.15,margin_x:0.05,margin_y:0.05,max_width:0.9,max_lines:3,wrapping:'word',background_color:null,background_padding_ratio:0.01,stroke_color:null,stroke_width_ratio:0.002,shadow_color:null,shadow_offset_x:0.002,shadow_offset_y:0.002,shadow_blur_ratio:0.004};
  const numeric={font_face_index:['Face da fonte',0,255,1],font_size_ratio:['Tamanho relativo',0.005,0.3,0.001],font_weight:['Peso',100,900,100],x:['Posicao X',0,1,0.01],y:['Posicao Y',0,1,0.01],margin_x:['Margem horizontal',0,0.45,0.01],margin_y:['Margem vertical',0,0.45,0.01],max_width:['Largura maxima',0.01,1,0.01],max_lines:['Maximo de linhas',1,8,1],background_padding_ratio:['Espaco do fundo',0,0.1,0.001],stroke_width_ratio:['Espessura do contorno',0,0.05,0.001],shadow_offset_x:['Sombra X',-0.1,0.1,0.001],shadow_offset_y:['Sombra Y',-0.1,0.1,0.001],shadow_blur_ratio:['Desfoque da sombra',0,0.1,0.001]};
@@ -57,6 +57,23 @@ const PublisherHeadlines = (() => {
    box.insertAdjacentHTML('beforeend',`<form id="draftHeadlineForm" class="editor"><label class="check"><input name="enabled" type="checkbox" ${h.enabled||h.required?'checked':''} ${h.required?'disabled':''}>Ativada${h.required?' (obrigatoria)':''}</label><label>Texto deste draft<textarea name="text" rows="3">${esc(h.text)}</textarea></label><label>Preset visual<select name="headline_preset_id"></select></label><button type="submit">Salvar headline deste draft</button></form>`);
   }
   target.querySelector('#draftHeadline')?.remove();target.append(box);
+  if(h.enabled){
+   const button=document.createElement('button');button.type='button';button.textContent='Gerar pr\u00e9via';
+   const preview=document.createElement('div');preview.className='headline-preview';preview.setAttribute('aria-live','polite');
+   box.append(button,preview);
+   button.onclick=async()=>{
+    button.disabled=true;preview.textContent='Gerando pr\u00e9via local...';
+    try{
+     const result=await api(`/drafts/${draft.id}/headline-preview`,{});
+     if(result.state!=='READY')throw new Error('Headline desativada.');
+     const image=document.createElement('img');image.alt='Pr\u00e9via da headline deste draft';image.src=result.image;
+     preview.replaceChildren(image);
+    }catch(error){
+     const message=String(error.message||error);
+     preview.textContent=message.includes('NOT_CONFIGURED')?'Pr\u00e9via local ainda n\u00e3o habilitada neste ambiente.':message.includes('LOCAL_SOURCE')?'O v\u00eddeo precisa estar dispon\u00edvel localmente. Nenhum download foi iniciado.':'N\u00e3o foi poss\u00edvel gerar a pr\u00e9via. Confira fonte, texto e margens.';
+    }finally{button.disabled=false;}
+   };
+  }
   const form=box.querySelector('#draftHeadlineForm');if(!form)return;
   choices(field(form,'headline_preset_id'),true);
   form.onsubmit=e=>{e.preventDefault();task(async()=>{
