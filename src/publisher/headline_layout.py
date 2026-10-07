@@ -90,6 +90,8 @@ def layout(text, spec, display, fonts, workspace):
         if max(widths) > limit:
             raise RenderError('HEADLINE_LAYOUT_OVERFLOW')
         box_w, box_h = max(widths), line_height * len(lines)
+        if box_h > height * spec['max_block_height_ratio']:
+            raise RenderError('HEADLINE_MAX_BLOCK_HEIGHT_EXCEEDED')
         anchor, top = round(width * spec['x']), round(height * spec['y'])
         left = anchor - {'left': 0, 'center': box_w / 2, 'right': box_w}[spec['alignment']]
         padding = math.ceil(height * spec['background_padding_ratio']) if spec['background_color'] else 0
@@ -100,7 +102,7 @@ def layout(text, spec, display, fonts, workspace):
         # Gaussian tail bounded at 4 sigma; reserve this plus outline and background.
         extent = max(padding, stroke, math.ceil(4 * blur) + abs(dx), math.ceil(4 * blur) + abs(dy)) + overhang + 2
         if (left - extent < width * spec['margin_x'] or left + box_w + extent > width * (1-spec['margin_x']) or
-                top - extent < height * spec['margin_y'] or top + box_h + extent > height * (1-spec['margin_y'])):
+                top - extent < height * spec['margin_y'] or top + box_h + extent > height * min(1-spec['margin_y'],spec['safe_bottom_ratio'])):
             raise RenderError('HEADLINE_SAFE_MARGIN_OVERFLOW')
         # A verified local face is materialized only into the private temporary workspace.
         font.save(Path(workspace) / 'font.ttf')

@@ -18,7 +18,7 @@ DEFAULT_SPEC = dict(font_ref='', font_sha256='', font_face_index=0,
                     max_width=0.9, max_lines=3, wrapping='word', background_color=None,
                     background_padding_ratio=0.01, stroke_color=None, stroke_width_ratio=0.002,
                     shadow_color=None, shadow_offset_x=0.002, shadow_offset_y=0.002,
-                    shadow_blur_ratio=0.004)
+                    shadow_blur_ratio=0.004, max_block_height_ratio=1.0, safe_bottom_ratio=1.0)
 
 
 def canonical(value):
@@ -54,6 +54,8 @@ def init_headlines(conn):
             if name not in columns:
                 conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
     conn.execute("INSERT OR IGNORE INTO publisher_migrations VALUES ('headline_contract_v1',?)", (now_iso(),))
+    from src.publisher.headline_workflow import init_workflow
+    init_workflow(conn)
 
 
 def boolean(value):
@@ -86,7 +88,7 @@ def validate_spec(data):
               'margin_x': (0, 0.45), 'margin_y': (0, 0.45), 'max_width': (0.01, 1),
               'background_padding_ratio': (0, 0.1), 'stroke_width_ratio': (0, 0.05),
               'shadow_offset_x': (-0.1, 0.1), 'shadow_offset_y': (-0.1, 0.1),
-              'shadow_blur_ratio': (0, 0.1)}
+              'shadow_blur_ratio': (0, 0.1), 'max_block_height_ratio': (0.01, 1), 'safe_bottom_ratio': (0.01, 1)}
     for key, (low, high) in ranges.items():
         value = spec[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -235,6 +237,12 @@ def readiness(snapshot):
 
 
 def capture(conn, draft_id, product):
-    snapshot = make_snapshot(conn, product)
+    from src.publisher.headline_workflow import default_product
+    snapshot = make_snapshot(conn, default_product(conn, product))
+    snapshot['size'] = product.get('default_headline_size') or 'STANDARD'
+    if snapshot['enabled'] and product.get('default_headline_template_id'):
+        from src.publisher.headline_workflow import get_template
+        template = get_template(conn, product['default_headline_template_id'], product.get('id',product.get('product_id')))
+        snapshot['template'] = {'id':template['id'], 'name':template['name']}
     conn.execute('UPDATE publisher_drafts SET headline_snapshot_json=? WHERE id=?', (canonical(snapshot), draft_id))
     return snapshot

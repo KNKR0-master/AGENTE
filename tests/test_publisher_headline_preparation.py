@@ -41,6 +41,8 @@ class HeadlinePreparationTests(unittest.TestCase):
         self.renderer = HeadlineRenderer(ROOT,self.worker.cache.root,artifact_root(self.root),{'fixture':FONT},cancel_event=self.worker.stop_event)
         self.addCleanup(lambda: shutil.rmtree(artifact_root(self.root),ignore_errors=True))
         self.worker.headline_renderer_factory = lambda:self.renderer
+        readiness=patch('src.publisher.headline_configuration.machine_readiness',return_value={'ready':True})
+        readiness.start();self.addCleanup(readiness.stop)
         self.uploads=[];self.ambiguous=False;self.before_upload=None
         self.file_input=MagicMock()
         page=MagicMock(); context=MagicMock();context.pages=[page]

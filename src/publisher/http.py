@@ -242,6 +242,12 @@ class PublisherAPI:
 
     def get(self, handler, query, path="/api/publisher"):
         with closing(connect(self.db)) as conn:
+            if path == '/api/publisher/headline-workflow':
+                from src.publisher.headline_configuration import machine_readiness
+                from src.publisher.headline_workflow import list_templates, style_catalog
+                handler._json({'templates':list_templates(conn), 'styles':style_catalog(conn),
+                               'readiness':machine_readiness(self.root)},no_store=True)
+                return
             if path == '/api/publisher/headline-presets':
                 from src.publisher.headlines import list_presets
                 handler._json({'presets': list_presets(conn)}, no_store=True)
@@ -440,12 +446,15 @@ class PublisherAPI:
                     if re.fullmatch(r'/api/publisher/drafts/\d+/headline-preview', path):
                         import base64
                         from src.publisher.headlines import read_snapshot
-                        if self.headline_renderer is None:
-                            raise ValueError('HEADLINE_PREVIEW_NOT_CONFIGURED')
                         draft = get_row(conn, 'publisher_drafts', int(path.split('/')[-2]))
-                        if not draft or not draft.get('video_path'):
+                        source = draft.get('video_path') or draft.get('temp_path')
+                        if not source:
                             raise ValueError('HEADLINE_LOCAL_SOURCE_REQUIRED')
-                        artifact = self.headline_renderer.render(conn, draft['id'], read_snapshot(draft), draft['video_path'], kind='preview')
+                        renderer = self.headline_renderer
+                        if renderer is None:
+                            from src.publisher.headline_configuration import create_renderer
+                            renderer = create_renderer(self.root, self.root/'data/publisher/temp')
+                        artifact = renderer.render(conn, draft['id'], read_snapshot(draft), source, kind='preview')
                         if artifact['state'] != 'READY':
                             result = {'state': artifact['state']}
                         else:
@@ -454,6 +463,14 @@ class PublisherAPI:
                                 raise ValueError('HEADLINE_PREVIEW_TOO_LARGE')
                             result = {'state': 'READY', 'artifact_id': artifact['id'],
                                       'image': 'data:image/png;base64,' + base64.b64encode(image.read_bytes()).decode('ascii')}
+                    elif path == '/api/publisher/headline-templates':
+                        from src.publisher.headline_workflow import save_template
+                        result = save_template(conn,data)
+                    elif path == '/api/publisher/headline-styles/initialize':
+                        from src.publisher.headline_workflow import initialize_styles
+                        result = {'styles':initialize_styles(conn,self.root)}
+                    elif path == '/api/publisher/headlines/bulk':
+                        result = service.bulk_headline(data)
                     elif path == '/api/publisher/headline-presets':
                         from src.publisher.headlines import save_preset
                         result = save_preset(conn, data)

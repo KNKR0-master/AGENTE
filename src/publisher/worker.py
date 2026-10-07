@@ -1891,6 +1891,12 @@ class PublisherWorker:
         if draft["status"] != "PREPARING":
             return
         PublisherService(conn, self.root).validate_fields(draft)
+        from src.publisher import headlines
+        if headlines.read_snapshot(draft)['enabled'] and self.headline_renderer_factory is None:
+            from src.publisher.headline_configuration import machine_readiness
+            readiness = machine_readiness(self.root)
+            if not readiness['ready']:
+                raise PreparationError('MANUAL_ACTION_REQUIRED', readiness['code'])
         account = get_row(conn, "publisher_accounts", draft["account_id"])
         preset = get_row(conn, "publisher_presets", draft["preset_id"]) if draft["preset_id"] else {"visibility": "PUBLIC", "comments": True}
         asset = get_row(conn,'publisher_media_assets',draft['media_asset_id'])

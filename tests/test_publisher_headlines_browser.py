@@ -69,6 +69,7 @@ class HeadlineBrowserTests(unittest.TestCase):
                     page.on('pageerror',lambda error:errors.append(str(error)))
                     page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
                     page.locator('[data-view="presets"]').click()
+                    page.locator('[data-headline-advanced] > summary').click()
                     form=page.locator('#headlinePresetForm')
                     form.locator('[name=name]').fill('Fixture Visual')
                     form.locator('[name=font_ref]').fill('fixture-font')

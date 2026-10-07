@@ -28,7 +28,7 @@ from src.publisher.reconciliation_evidence import (
 )
 from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH, require_batch_size
 from src.publisher.draft_listing import current_listing_summary, resolution_safety_summary
-from src.publisher import headlines
+from src.publisher import headlines, headline_workflow
 
 
 LEGACY_ERRORS = {"PRODUCT_NOT_FOUND", "PRODUCT_NOT_CONFIRMED"}
@@ -346,6 +346,7 @@ class PublisherService:
         for row in self.conn.execute("""SELECT x.product_id id,x.name,x.short_name,x.default_caption,
           x.flow_prompt,x.active,x.account_id,x.legacy_source,x.legacy_product_id,x.legacy_shop_url,
           x.default_headline_enabled,x.default_headline_text,x.default_headline_preset_id,x.headline_required,
+          x.default_headline_template_id,x.default_headline_size,
           x.name_source,x.source_drive_folder_id,x.created_at,x.updated_at
           FROM publisher_products x WHERE (?=1 OR x.active=1) ORDER BY x.name""", (int(include_archived),)):
             item = dict(row)
@@ -711,6 +712,8 @@ class PublisherService:
                               'history': self.execution_history(hidden_only=True)['executions']}
         return {"products": self.catalog(include_archived=True), "preferences": self.get_preferences(),
                 "headline_presets": headlines.list_presets(self.conn),
+                "headline_templates": headline_workflow.list_templates(self.conn),
+                "headline_styles": headline_workflow.style_catalog(self.conn),
                 "queue_presentation": queue_presentation,
                 "drive_folders": self.list_drive_folders(), "drafts": drafts, "statuses": STATUSES,
                 "queue_status_labels": {status: draft_queue_presentation({'status': status})['label'] for status in STATUSES},
@@ -985,6 +988,10 @@ class PublisherService:
 
         within_limit = 0 < len(ids) <= MAX_DRAFTS_PER_BATCH
         source_items = get_library_items(self.conn, ids) if within_limit else []
+        renderer_readiness = None
+        headline_selections = data.get('headline_selections') or {}
+        if not isinstance(headline_selections, dict) or set(headline_selections)-set(ids):
+            raise ValueError('HEADLINE_SELECTION_INVALID')
         by_id = {item["drive_file_id"]: item for item in source_items}
         items = []
         for file_id in ids if within_limit else []:
@@ -1005,6 +1012,19 @@ class PublisherService:
                 product_id = None
             else:
                 product_id = item.get("product_id")
+                if product_id:
+                    from src.publisher.headline_workflow import selection_snapshot
+                    try:
+                        snapshot = selection_snapshot(self.conn, self.get_product(product_id), headline_selections.get(file_id))
+                        item['headline_snapshot'] = snapshot
+                        if snapshot['enabled']:
+                            from src.publisher.headline_configuration import machine_readiness
+                            if renderer_readiness is None:
+                                renderer_readiness = machine_readiness(self.root)
+                            if not renderer_readiness['ready']:
+                                item_blocker(renderer_readiness['code'], 'Renderer da headline precisa ser configurado')
+                    except (ValueError, TypeError) as exc:
+                        item_blocker(str(exc), 'Revise o texto e o estilo da headline')
                 if item.get("product_archived"):
                     item_blocker("PRODUCT_ARCHIVED", "Produto arquivado", {
                         "action": "RESTORE_PRODUCT", "product_id": product_id,
@@ -1155,7 +1175,8 @@ class PublisherService:
                   VALUES (?,?,?,?,?,'',?,?,?,?,?)""",
                   (batch_id, item["product_id"], account_id, preset_id, asset_id, item["filename"], item["caption"], None, timestamp, timestamp)).lastrowid
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, draft_id))
-                headlines.capture(self.conn, draft_id, self.get_product(item['product_id']))
+                self.conn.execute('UPDATE publisher_drafts SET headline_snapshot_json=? WHERE id=?',
+                                  (headlines.canonical(item['headline_snapshot']), draft_id))
                 self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?", (timestamp, asset_id))
                 log(self.conn, draft_id, "CREATE", "DRAFT", "Biblioteca: referência Drive reservada; nenhum download realizado")
                 draft_ids.append(draft_id)
@@ -1270,6 +1291,7 @@ class PublisherService:
                                        (int(batch_id),)).fetchone()[0]
         oversized = batch_size > MAX_DRAFTS_PER_BATCH
         items = []
+        renderer_readiness = None
         for source in rows:
             draft = dict(source)
             media = dict(get_row(self.conn, 'publisher_media_assets', draft['media_asset_id'])) if draft['media_asset_id'] else None
@@ -1292,6 +1314,12 @@ class PublisherService:
                 self.validate_fields(draft)
             except (ValueError, KeyError) as exc:
                 blockers.append(str(exc))
+            if headlines.read_snapshot(draft)['enabled']:
+                from src.publisher.headline_configuration import machine_readiness
+                if renderer_readiness is None:
+                    renderer_readiness=machine_readiness(self.root)
+                if not renderer_readiness['ready']:
+                    blockers.append(renderer_readiness['code'])
             if media and not blockers:
                 try:
                     self.assert_media_available(media, draft['id'])
@@ -1335,6 +1363,15 @@ class PublisherService:
             raise ValueError('Prompt do Flow excede 100000 caracteres')
         account_id = data.get("account_id") or None
         headline_config = headlines.product_config(self.conn, data)
+        from src.publisher.headline_workflow import get_template, variant
+        template_id = int(data['default_headline_template_id']) if data.get('default_headline_template_id') else None
+        size = data.get('default_headline_size') or 'STANDARD'
+        if size not in {'SMALL','STANDARD','LARGE'}:
+            raise ValueError('HEADLINE_SIZE_INVALID')
+        if template_id:
+            template = get_template(self.conn, template_id, product_id)
+            headline_config = (headline_config[0], template['text'], headline_config[2], headline_config[3])
+        if headline_config[2]: variant(self.conn, headline_config[2], size)
         if account_id:
             get_row(self.conn, "publisher_accounts", account_id)
         timestamp = now_iso()
@@ -1372,6 +1409,8 @@ class PublisherService:
                str(data.get('name_source') or 'MANUAL'),data.get('source_drive_folder_id')))
             self.conn.execute('UPDATE publisher_products SET default_headline_enabled=?,default_headline_text=?,default_headline_preset_id=?,headline_required=? WHERE product_id=?',
                               (*headline_config, product_id))
+            self.conn.execute('UPDATE publisher_products SET default_headline_template_id=?,default_headline_size=? WHERE product_id=?',
+                              (template_id,size,product_id))
             if folder_ids:
                 from src.drive_inventory import set_folder_mapping
                 for folder_id in folder_ids:
@@ -1430,10 +1469,25 @@ class PublisherService:
             if not draft_queue_capabilities(self.conn, draft, media)['can_edit']:
                 raise ValueError('QUEUE_EDIT_BLOCKED')
             previous = headlines.read_snapshot(draft)
+            if 'mode' in data:
+                from src.publisher.headline_workflow import selection_snapshot
+                product = self.get_product(draft['product_id'])
+                product['headline_required'] = previous['required']
+                snapshot = selection_snapshot(self.conn, product, data)
+                self.conn.execute('UPDATE publisher_drafts SET headline_snapshot_json=?,updated_at=? WHERE id=?',
+                                  (headlines.canonical(snapshot),now_iso(),draft_id))
+                log(self.conn,draft_id,'HEADLINE_OVERRIDE',draft['status'],'Headline selecionada e copiada para o Draft')
+                return snapshot
+            data = dict(data)
+            size = data.pop('size', None)
+            if size and previous['enabled']:
+                from src.publisher.headline_workflow import variant
+                data['preset_id'] = variant(self.conn,data.get('preset_id') or previous['preset']['id'],size)
             # Policy and effective text belong to the Draft, never re-read current defaults.
             product = dict(default_headline_enabled=previous['enabled'], default_headline_text=previous['text'],
                            default_headline_preset_id=None, headline_required=previous['required'])
             snapshot = headlines.make_snapshot(self.conn, product, data)
+            if size: snapshot['size'] = size
             if 'preset_id' not in data and snapshot['enabled']:
                 snapshot['preset'] = previous['preset']
                 snapshot['render_spec_hash'] = headlines.render_hash(snapshot)
@@ -1444,6 +1498,42 @@ class PublisherService:
                               (headlines.canonical(snapshot), now_iso(), draft_id))
             log(self.conn, draft_id, 'HEADLINE_OVERRIDE', draft['status'], 'Configuracao local de headline atualizada')
             return snapshot
+
+    def bulk_headline(self, data):
+        from src.publisher.headline_workflow import selection_snapshot, variant
+        ids = list(dict.fromkeys(int(value) for value in data.get('ids',[])))
+        if not ids or len(ids)>MAX_DRAFTS_PER_BATCH:
+            raise ValueError('HEADLINE_BULK_SELECTION_INVALID')
+        patch = data.get('patch') or {}
+        if not patch or set(patch)-{'mode','template_id','text','preset_id','size'}:
+            raise ValueError('HEADLINE_SELECTION_INVALID')
+        with self.conn:
+            self.conn.execute('BEGIN IMMEDIATE')
+            changes=[]
+            for draft_id in ids:
+                draft=get_row(self.conn,'publisher_drafts',draft_id)
+                media=get_row(self.conn,'publisher_media_assets',draft['media_asset_id']) if draft['media_asset_id'] else None
+                if not draft_queue_capabilities(self.conn,draft,media)['can_edit']:
+                    raise ValueError('QUEUE_EDIT_BLOCKED')
+                previous=headlines.read_snapshot(draft)
+                if 'mode' in patch:
+                    product=self.get_product(draft['product_id']);product['headline_required']=previous['required']
+                    snapshot=selection_snapshot(self.conn,product,patch)
+                else:
+                    snapshot=previous
+                    if snapshot['enabled']:
+                        chosen=patch.get('preset_id') or snapshot['preset']['id']
+                        snapshot['preset']=headlines.get_preset(self.conn,variant(self.conn,chosen,patch.get('size',snapshot.get('size','STANDARD'))))
+                        snapshot['size']=patch.get('size',snapshot.get('size','STANDARD'))
+                        snapshot['render_spec_hash']=headlines.render_hash(snapshot)
+                        errors=headlines.readiness(snapshot)
+                        if errors:raise ValueError(errors[0])
+                changes.append((draft_id,snapshot))
+            for draft_id,snapshot in changes:
+                self.conn.execute('UPDATE publisher_drafts SET headline_snapshot_json=?,updated_at=? WHERE id=?',
+                                  (headlines.canonical(snapshot),now_iso(),draft_id))
+                log(self.conn,draft_id,'HEADLINE_OVERRIDE','DRAFT','Ajuste explicito local em lote')
+        return {'draft_ids':ids}
 
     def assert_config_editable(self, key, row_id):
         if key not in {"product_id", "account_id", "preset_id"}:

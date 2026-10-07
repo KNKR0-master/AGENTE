@@ -1,0 +1,17 @@
+{
+  "enabled": false,
+  "timeout_seconds": 120,
+  "ffmpeg_path": null,
+  "ffprobe_path": null,
+  "classic_font_ref": "classic",
+  "fonts": {
+    "classic": {
+      "path": "assets/fonts/approved-classic.ttf",
+      "sha256": "CONFIGURE_APPROVED_FONT_SHA256",
+      "face_index": 0
+    }
+  },
+  "default_style": "TIKTOK_CLASSIC",
+  "default_variant": "WHITE",
+  "default_size": "STANDARD"
+}

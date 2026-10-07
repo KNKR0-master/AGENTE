@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -39,15 +38,8 @@ def artifact_root(root):
 
 
 def configured_renderer(root, input_root, cancel_event):
-    from src.publisher.headline_renderer import HeadlineRenderer
-    config = Path(root) / 'config' / 'headline_renderer.json'
-    if not config.is_file():
-        raise RenderError('HEADLINE_RENDERER_UNAVAILABLE')
-    data = json.loads(config.read_text(encoding='utf-8'))
-    fonts = {key: os.path.expandvars(value) for key, value in data.get('fonts', {}).items()}
-    return HeadlineRenderer(root, input_root, artifact_root(root), fonts,
-                            ffmpeg=data.get('ffmpeg_path'), timeout=data.get('timeout_seconds', 120),
-                            cancel_event=cancel_event)
+    from src.publisher.headline_configuration import create_renderer
+    return create_renderer(root, input_root, cancel_event)
 
 
 def check_cancel(cancel_event):

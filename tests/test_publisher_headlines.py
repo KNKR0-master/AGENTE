@@ -235,6 +235,9 @@ class HeadlineContractTests(unittest.TestCase):
                 status, p = request('/headline-presets', {'name':'API', 'spec':spec()})
                 self.assertEqual(status, 200)
                 self.assertEqual(request('/headline-presets')[0], 200)
+                status, workflow=request('/headline-workflow')
+                self.assertEqual(status,200);self.assertFalse(workflow['readiness']['ready'])
+                self.assertEqual(request('/headline-templates',{'name':'Global','text':'OFERTA'})[0],200)
                 self.assertEqual(request(f'/drafts/{draft}/headline')[0], 200)
                 self.assertEqual(request('/drafts/999999/headline')[0], 404)
                 for invalid in [spec(x=9), spec(text_color='bad'), spec(max_lines=99)]:
@@ -260,7 +263,8 @@ class HeadlineMultiProductTests(unittest.TestCase):
         self.service.decide_media({'drive_file_id':'low','decision':'VALID'})
         self.service.assign_media_product({'drive_file_ids':['low'],'product_id':self.product_b})
         self.service.save_product({'id':self.product_empty,'default_caption':'Caption C'})
-        ids = self.service.create_library_batch({'drive_file_ids':['high','low','empty-caption'],'account_id':self.account})['draft_ids']
+        with patch('src.publisher.headline_configuration.machine_readiness',return_value={'ready':True}):
+            ids = self.service.create_library_batch({'drive_file_ids':['high','low','empty-caption'],'account_id':self.account})['draft_ids']
         snapshots = [h.read_snapshot(get_row(self.conn,'publisher_drafts',i)) for i in ids]
         self.assertEqual([s['text'] for s in snapshots], ['Alpha','Beta',''])
         self.assertEqual([s['enabled'] for s in snapshots], [True,True,False])

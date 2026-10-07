@@ -25,6 +25,7 @@ data/uploads/
 data/google_drive_mirror/
 data/tiktok-browser-profile/
 logs/
+config/headline_renderer.json
 data/tiktok-analytics-artifacts/
 data/logs/
 data/affiliate_reports/inbox/*
