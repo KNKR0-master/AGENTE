@@ -236,13 +236,8 @@ def readiness(snapshot):
     return []
 
 
-def capture(conn, draft_id, product):
-    from src.publisher.headline_workflow import default_product
-    snapshot = make_snapshot(conn, default_product(conn, product))
-    snapshot['size'] = product.get('default_headline_size') or 'STANDARD'
-    if snapshot['enabled'] and product.get('default_headline_template_id'):
-        from src.publisher.headline_workflow import get_template
-        template = get_template(conn, product['default_headline_template_id'], product.get('id',product.get('product_id')))
-        snapshot['template'] = {'id':template['id'], 'name':template['name']}
+def capture(conn, draft_id, product, selection=None):
+    from src.publisher.headline_workflow import selection_snapshot
+    snapshot = selection_snapshot(conn, product, selection)
     conn.execute('UPDATE publisher_drafts SET headline_snapshot_json=? WHERE id=?', (canonical(snapshot), draft_id))
     return snapshot

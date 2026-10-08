@@ -778,6 +778,9 @@ class PublisherService:
     def create_remote_batch(self, data):
         ids = list(dict.fromkeys(int(i) for i in data.get('media_asset_ids', [])))
         require_batch_size(len(ids))
+        headline_selections = data.get('headline_selections') or {}
+        if not isinstance(headline_selections, dict) or set(headline_selections) - {str(i) for i in ids}:
+            raise ValueError('HEADLINE_SELECTION_INVALID')
         fields = {k: data.get(k) or None for k in ('product_id','account_id','preset_id','scheduled_at')}
         fields['account_id'] = fields['account_id'] or self.default_account_id()
         fields['caption'] = ''
@@ -799,7 +802,7 @@ class PublisherService:
                   (batch, fields['product_id'],fields['account_id'],fields['preset_id'],asset_id,asset['filename'],
                    fields['caption'],fields['scheduled_at'],timestamp,timestamp)).lastrowid
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, row_id))
-                headlines.capture(self.conn, row_id, product)
+                headlines.capture(self.conn, row_id, product, headline_selections.get(str(asset_id)))
                 self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?", (timestamp,asset_id))
                 log(self.conn,row_id,'CREATE','DRAFT','Referencia remota; nenhum download realizado')
                 if not fields['caption'].strip():
@@ -1473,8 +1476,11 @@ class PublisherService:
             if 'mode' in data:
                 from src.publisher.headline_workflow import selection_snapshot
                 product = self.get_product(draft['product_id'])
+                if previous['required'] and data['mode'] == 'none':
+                    raise ValueError('HEADLINE_REQUIRED')
                 product['headline_required'] = previous['required']
                 snapshot = selection_snapshot(self.conn, product, data)
+                snapshot['required'] = previous['required']
                 self.conn.execute('UPDATE publisher_drafts SET headline_snapshot_json=?,updated_at=? WHERE id=?',
                                   (headlines.canonical(snapshot),now_iso(),draft_id))
                 log(self.conn,draft_id,'HEADLINE_OVERRIDE',draft['status'],'Headline selecionada e copiada para o Draft')
@@ -1518,8 +1524,11 @@ class PublisherService:
                     raise ValueError('QUEUE_EDIT_BLOCKED')
                 previous=headlines.read_snapshot(draft)
                 if 'mode' in patch:
+                    if previous['required'] and patch['mode'] == 'none':
+                        raise ValueError('HEADLINE_REQUIRED')
                     product=self.get_product(draft['product_id']);product['headline_required']=previous['required']
                     snapshot=selection_snapshot(self.conn,product,patch)
+                    snapshot['required']=previous['required']
                 else:
                     snapshot=previous
                     if snapshot['enabled']:
@@ -1581,6 +1590,11 @@ class PublisherService:
             if not resolved.is_relative_to(self.root / "data" / "publisher" / "uploads") or resolved.suffix.lower() != ".mp4" or not resolved.is_file() or not resolved.stat().st_size:
                 raise ValueError("Arquivo MP4 local invalido")
             paths.append((Path(filename).name, str(resolved.relative_to(self.root))))
+        headline_selections = data.get('headline_selections') or {}
+        filenames = [filename for filename, _ in paths]
+        if (not isinstance(headline_selections, dict) or set(headline_selections) - set(filenames) or
+                any(filenames.count(filename) != 1 for filename in headline_selections)):
+            raise ValueError('HEADLINE_SELECTION_INVALID')
         timestamp = now_iso()
         with self.conn:
             batch = self.conn.execute("INSERT INTO publisher_batches(name,source,created_at) VALUES (?,?,?)", (data.get("name") or f"Lote {timestamp[:16]}", source, timestamp)).lastrowid
@@ -1589,7 +1603,7 @@ class PublisherService:
                 draft = self.conn.execute("INSERT INTO publisher_drafts(batch_id,product_id,account_id,preset_id,video_path,filename,caption,scheduled_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                                           (batch, fields["product_id"], fields["account_id"], fields["preset_id"], path, filename, fields["caption"], fields["scheduled_at"], timestamp, timestamp)).lastrowid
                 self.conn.execute('UPDATE publisher_drafts SET queue_position=? WHERE id=?', (position, draft))
-                headlines.capture(self.conn, draft, product)
+                headlines.capture(self.conn, draft, product, headline_selections.get(filename))
                 log(self.conn, draft, "CREATE", "DRAFT", f"Entrada: {source}")
                 ids.append(draft)
         return {"batch_id": batch, "draft_ids": ids}

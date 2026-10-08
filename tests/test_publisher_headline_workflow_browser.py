@@ -53,6 +53,7 @@ class HeadlineWorkflowBrowserTests(unittest.TestCase):
         self.other=self.service.save_product(dict(name='Outro produto',default_caption='Outra legenda',default_headline_enabled=True,
                                                  default_headline_text='OUTRA OFERTA',default_headline_preset_id=self.standard))
         self.draft=self.batch()[0]
+        self.service.override_headline(self.draft,{'mode':'product_default'})
         inputs=self.root/'data/publisher/temp';inputs.mkdir(parents=True,exist_ok=True)
         self.renderer=HeadlineRenderer(ROOT,inputs,artifact_root(self.root),{'classic':FONT})
         self.addCleanup(lambda:__import__('shutil').rmtree(artifact_root(self.root),ignore_errors=True))
@@ -165,4 +166,60 @@ class HeadlineWorkflowBrowserTests(unittest.TestCase):
                     self.assertEqual(self.conn.execute('SELECT count(*) FROM publisher_batches').fetchone()[0],1)
                     self.assertTrue(machine_readiness(self.root)['ready'])
                 finally:browser.close()
+        finally:server.shutdown();server.server_close();thread.join(5)
+
+    def test_library_opt_in_bulk_confirmation_and_unselected_media(self):
+        from playwright.sync_api import sync_playwright
+        server=ThreadingHTTPServer(('127.0.0.1',0),WorkflowHandler)
+        server.db=self.root/'test.db';server.root=self.root;server.posts=[]
+        api=PublisherAPI.__new__(PublisherAPI);api.root=self.root;api.db=server.db;api.headline_renderer=self.renderer
+        server.api=api
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            before={table:[tuple(r) for r in self.conn.execute('SELECT * FROM '+table)]
+                    for table in ('publisher_drafts','publisher_batches','publisher_products')}
+            with sync_playwright() as p:
+                browser=p.chromium.launch(channel='chrome',headless=True)
+                try:
+                    page=browser.new_page(viewport={'width':1360,'height':1000})
+                    page.goto(f'http://127.0.0.1:{server.server_port}/publisher.html')
+                    page.locator('[data-view=library]').first.click()
+                    items=[dict(drive_file_id=f'remote-{i}',filename=f'FINAL_{i}.mp4',
+                                product_id=product,product_name='Fixture',caption='Legenda',status='AVAILABLE')
+                           for i,product in ((1,self.product),(2,self.other))]
+                    page.evaluate("""items=>{for(const item of items)uiState.setLibrarySelection(item.drive_file_id,true,item);librarySelectionChanged();openLibraryBatchPanel();}""",items)
+                    page.locator('#libraryHeadlineSelection > details > summary').click()
+                    first=page.locator('[data-headline-media="remote-1"] [data-headline-mode]')
+                    second=page.locator('[data-headline-media="remote-2"] [data-headline-mode]')
+                    self.assertEqual(first.input_value(),'none');self.assertEqual(second.input_value(),'none')
+                    first.select_option('product_default')
+                    page.wait_for_timeout(5500)
+                    payload=page.evaluate('libraryBatchPayload().headline_selections')
+                    self.assertEqual(payload['remote-1']['mode'],'product_default')
+                    self.assertEqual(payload.get('remote-2',{'mode':'none'})['mode'],'none')
+                    bulk=page.locator('#headlineMediaBulk')
+                    bulk.locator('[data-headline-mode]').select_option('custom')
+                    bulk.locator('[data-headline-text]').fill('ONLY SELECTED')
+                    bulk.locator('[data-headline-style]').select_option(str(self.standard))
+                    confirmations=[]
+                    def cancel(dialog):
+                        confirmations.append(dialog.message);dialog.dismiss()
+                    page.once('dialog',cancel)
+                    bulk.locator('[data-bulk-text]').click()
+                    self.assertIn('Vídeos afetados: 2',confirmations[0])
+                    self.assertIn('ONLY SELECTED',confirmations[0])
+                    self.assertIn('Classic',confirmations[0])
+                    self.assertEqual(second.input_value(),'none')
+                    page.once('dialog',lambda dialog:dialog.accept())
+                    bulk.locator('[data-bulk-text]').click()
+                    payload=page.evaluate('libraryBatchPayload().headline_selections')
+                    self.assertEqual(set(payload),{'remote-1','remote-2'})
+                    self.assertTrue(all(choice['text']=='ONLY SELECTED' for choice in payload.values()))
+                    page.evaluate("""()=>{uiState.setLibrarySelection('remote-2',false);librarySelectionChanged();}""")
+                    self.assertNotIn('remote-2',page.evaluate('libraryBatchPayload().headline_selections'))
+                    self.assertFalse(any(path.endswith('/library-batches') or '/enqueue' in path for path in server.posts))
+                finally:browser.close()
+            for table,rows in before.items():
+                self.assertEqual([tuple(r) for r in self.conn.execute('SELECT * FROM '+table)],rows)
+            self.assertFalse(self.provider.downloads or self.provider.deleted)
         finally:server.shutdown();server.server_close();thread.join(5)

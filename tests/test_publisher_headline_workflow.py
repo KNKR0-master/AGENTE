@@ -16,7 +16,11 @@ from tests import test_publisher_library_batch_preflight as library_fixture
 
 class HeadlineWorkflowTests(unittest.TestCase):
     setUp_fixture=remote.PublisherRemoteTests.setUp
-    batch=remote.PublisherRemoteTests.batch
+    def batch(self, count=1):
+        ids = remote.PublisherRemoteTests.batch(self, count)
+        if self.service.get_product(self.product)['default_headline_enabled']:
+            self.service.bulk_headline({'ids':ids,'patch':{'mode':'product_default'}})
+        return ids
 
     def setUp(self):
         self.setUp_fixture()
@@ -73,7 +77,7 @@ class HeadlineWorkflowTests(unittest.TestCase):
 
     def test_product_default(self):
         self.product_config(self.template())
-        snapshot=workflow.selection_snapshot(self.conn,self.service.get_product(self.product))
+        snapshot=workflow.selection_snapshot(self.conn,self.service.get_product(self.product),{'mode':'product_default'})
         self.assertEqual(snapshot['template']['name'],'Oferta')
 
     def test_disabled_default_survives_inactive_template(self):
@@ -105,9 +109,10 @@ class HeadlineWorkflowTests(unittest.TestCase):
         result=workflow.selection_snapshot(self.conn,self.service.get_product(self.product),dict(mode='custom',text='TEXTO NOVO',preset_id=self.standard,size='LARGE'))
         self.assertEqual(result['text'],'TEXTO NOVO');self.assertEqual(result['size'],'LARGE')
 
-    def test_required_cannot_be_disabled(self):
+    def test_product_required_does_not_override_per_video_opt_in(self):
         self.product_config();self.service.save_product(dict(id=self.product,headline_required=True))
-        with self.assertRaisesRegex(ValueError,'REQUIRED'):workflow.selection_snapshot(self.conn,self.service.get_product(self.product),{'mode':'none'})
+        snapshot=workflow.selection_snapshot(self.conn,self.service.get_product(self.product),{'mode':'none'})
+        self.assertFalse(snapshot['enabled']);self.assertFalse(snapshot['required'])
 
     def test_initial_styles_distinct_and_supported(self):
         specs=[headlines.get_preset(self.conn,s['preset_id'])['spec'] for s in self.styles if s['size_key']=='STANDARD']

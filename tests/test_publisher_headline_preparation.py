@@ -23,7 +23,11 @@ from tests.test_publisher_headline_renderer import FONT, ROOT, snapshot
 
 class HeadlinePreparationTests(unittest.TestCase):
     setUp_fixture = remote.PublisherRemoteTests.setUp
-    batch = remote.PublisherRemoteTests.batch
+    def batch(self, count=1):
+        ids = remote.PublisherRemoteTests.batch(self, count)
+        if self.service.get_product(self.product)['default_headline_enabled']:
+            self.service.bulk_headline({'ids':ids,'patch':{'mode':'product_default'}})
+        return ids
 
     @classmethod
     def setUpClass(cls):
@@ -103,6 +107,17 @@ class HeadlinePreparationTests(unittest.TestCase):
         self.file_input.set_input_files.assert_called_once_with(row['temp_path'])
         self.assertEqual(upload_source_record(self.conn,row)['kind'],'ORIGINAL')
         self.worker.headline_renderer_factory.assert_not_called()
+
+    def test_per_video_only_authorized_source_is_derived(self):
+        self.configure()
+        ids=remote.PublisherRemoteTests.batch(self,2)
+        self.service.override_headline(ids[0],{'mode':'product_default'})
+        sources=[self.local_prepare(draft_id) for draft_id in ids]
+        self.assertEqual([source.kind for source in sources],['HEADLINE_DERIVED','ORIGINAL'])
+        self.assertFalse(self.uploads)
+        self.file_input.set_input_files.assert_not_called()
+        self.assertFalse(self.provider.downloads or self.provider.deleted)
+        self.assertFalse(self.conn.execute('SELECT 1 FROM account_mutation_ledger').fetchone())
 
     def test_worker_derived_e2e_persistence_and_cleanup(self):
         self.configure();draft=self.batch()[0];execution=self.enqueue([draft])
@@ -266,7 +281,8 @@ class HeadlinePreparationTests(unittest.TestCase):
         second=self.service.create_remote_batch({'product_id':second_product,'account_id':self.account,'media_asset_ids':[2]})['draft_ids'][0]
         third_product=self.service.save_product({'name':'Third','default_caption':'Third caption',
             'default_headline_enabled':True,'default_headline_text':'OTHER HEADLINE','default_headline_preset_id':1})
-        third=self.service.create_remote_batch({'product_id':third_product,'account_id':self.account,'media_asset_ids':[3]})['draft_ids'][0]
+        third=self.service.create_remote_batch({'product_id':third_product,'account_id':self.account,'media_asset_ids':[3],
+            'headline_selections':{'3':{'mode':'product_default'}}})['draft_ids'][0]
         with self.conn:
             for position,draft in enumerate((second,third),2):
                 self.conn.execute('UPDATE publisher_drafts SET batch_id=?,queue_position=? WHERE id=?',

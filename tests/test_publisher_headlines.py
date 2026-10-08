@@ -22,7 +22,18 @@ def spec(**changes):
 
 class HeadlineContractTests(unittest.TestCase):
     setUp = remote.PublisherRemoteTests.setUp
-    batch = remote.PublisherRemoteTests.batch
+    def batch(self, count=1):
+        ids = remote.PublisherRemoteTests.batch(self, count)
+        product = self.service.get_product(self.product)
+        if product['default_headline_enabled'] or product['headline_required']:
+            # Historical H1 fixtures intentionally retain captured required/
+            # incomplete contracts; production creation now defaults off.
+            for draft_id in ids:
+                snapshot = h.make_snapshot(self.conn,product)
+                with self.conn:
+                    self.conn.execute('UPDATE publisher_drafts SET headline_snapshot_json=? WHERE id=?',
+                                      (h.canonical(snapshot),draft_id))
+        return ids
 
     def preset(self, **changes):
         return h.save_preset(self.conn, {'name': 'Visual', 'spec': spec(**changes)})['id']
@@ -52,7 +63,7 @@ class HeadlineContractTests(unittest.TestCase):
         self.assertIn('\U0001f31f', original['text'])
         self.service.save_product({'id': self.product, 'default_headline_text': 'Novo texto'})
         second = self.service.create_remote_batch({'product_id': self.product, 'account_id': self.account,
-                                                   'media_asset_ids': [2]})['draft_ids'][0]
+                                                   'media_asset_ids': [2], 'headline_selections':{'2':{'mode':'product_default'}}})['draft_ids'][0]
         self.assertEqual(self.snapshot(first), original)
         self.assertEqual(self.snapshot(second)['text'], 'Novo texto')
         self.assertEqual(self.snapshot(second)['provenance'], 'PRODUCT_DEFAULT')
@@ -64,7 +75,7 @@ class HeadlineContractTests(unittest.TestCase):
         preset_id = original['preset']['id']
         h.save_preset(self.conn, {'id': preset_id, 'expected_version': 1, 'name': 'Renamed', 'spec': spec(y=0.3)})
         second = self.service.create_remote_batch({'product_id': self.product, 'account_id': self.account,
-                                                   'media_asset_ids': [2]})['draft_ids'][0]
+                                                   'media_asset_ids': [2], 'headline_selections':{'2':{'mode':'product_default'}}})['draft_ids'][0]
         self.assertEqual(self.snapshot(first), original)
         self.assertEqual(self.snapshot(second)['preset']['version'], 2)
         self.assertEqual(self.snapshot(second)['preset']['spec']['y'], 0.3)
@@ -163,7 +174,8 @@ class HeadlineContractTests(unittest.TestCase):
         directory.mkdir(parents=True)
         path = directory/'fixture.mp4'
         path.write_bytes(b'fixture only, no rendering')
-        draft = self.service.create_batch({'product_id': self.product, 'account_id': self.account},
+        draft = self.service.create_batch({'product_id': self.product, 'account_id': self.account,
+                                          'headline_selections':{'fixture.mp4':{'mode':'product_default'}}},
                                           [('fixture.mp4', path)])['draft_ids'][0]
         original = self.snapshot(draft)
         self.service.bulk([draft], {}, 'duplicate')
@@ -264,7 +276,8 @@ class HeadlineMultiProductTests(unittest.TestCase):
         self.service.assign_media_product({'drive_file_ids':['low'],'product_id':self.product_b})
         self.service.save_product({'id':self.product_empty,'default_caption':'Caption C'})
         with patch('src.publisher.headline_configuration.machine_readiness',return_value={'ready':True}):
-            ids = self.service.create_library_batch({'drive_file_ids':['high','low','empty-caption'],'account_id':self.account})['draft_ids']
+            ids = self.service.create_library_batch({'drive_file_ids':['high','low','empty-caption'],'account_id':self.account,
+                'headline_selections':{'high':{'mode':'product_default'},'low':{'mode':'product_default'}}})['draft_ids']
         snapshots = [h.read_snapshot(get_row(self.conn,'publisher_drafts',i)) for i in ids]
         self.assertEqual([s['text'] for s in snapshots], ['Alpha','Beta',''])
         self.assertEqual([s['enabled'] for s in snapshots], [True,True,False])

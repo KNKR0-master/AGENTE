@@ -14,17 +14,28 @@ Search and active/inactive filters are local. Editing or deactivating a template
 does not change a previously created Draft snapshot. Obvious duplicate names or
 text in the same scope are rejected; identical text in different scopes is legal.
 
-Product configuration can enable a default headline, choose saved or custom
-text, select a Classic style and controlled size, and require a headline.
-Existing Products and legacy Drafts remain disabled. Caption remains independent.
+Product configuration stores a reusable suggestion: saved or custom text,
+Classic style and controlled size. It is not authorization to render any video.
+Every new video defaults to `none`, even when Product enabled/required legacy
+fields are set. Existing Draft snapshots and their captured policies are not
+rewritten. Caption remains independent.
 
 The Library's inline batch panel has a collapsed headline section for each
 selected video. Choices are none, Product default, global/Product saved text or
 custom text. New templates can be created contextually. Bulk text, style and size
-actions are explicit. Product default in a multi-Product selection resolves each
+actions require confirmation showing text, style and selected video count.
+Changing style/size alone does not enable a disabled video. Product suggestion
+in a multi-Product selection resolves each
 Product separately; it never copies one Product's text to another implicitly.
 Headline choices survive unrelated refreshes. Batch creation validates and copies
 each effective snapshot in the same reservation transaction.
+
+Absent per-media choices are disabled in Library, remote-reference and local
+Draft creation alike. Explicit `product_default`, `template` or `custom` choices
+capture enabled snapshots; `none` captures a disabled snapshot. No migration,
+historical repair, upload, resume or retry is performed by this change. H3a
+continues selecting ORIGINAL for disabled snapshots and a validated derived
+artifact for enabled snapshots. Draft #44 / Execution #11 remain untouched.
 
 Editable Queue Drafts can choose or adjust a headline before freeze. Bulk Draft
 edits reject the entire selection if any Draft is frozen. Queue details show a

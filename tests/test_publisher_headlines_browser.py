@@ -90,6 +90,7 @@ class HeadlineBrowserTests(unittest.TestCase):
                     product.locator('[type=submit]').click()
                     page.wait_for_function("document.querySelector('#notice').textContent.includes('salvos')")
                     draft=self.batch()[0]
+                    self.service.override_headline(draft,{'mode':'product_default'})
                     page.reload()
                     page.locator(f'[data-edit="{draft}"]').first.click()
                     page.locator('#draftHeadlineEntry button').click()

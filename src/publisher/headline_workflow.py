@@ -131,13 +131,15 @@ def default_product(conn, product):
 
 
 def selection_snapshot(conn, product, selection=None):
-    selection = selection or {'mode':'product_default'}
+    selection = {'mode':'none'} if selection is None else selection
     if not isinstance(selection, dict) or set(selection) - {'mode','template_id','text','preset_id','size'}:
         raise ValueError('HEADLINE_SELECTION_INVALID')
-    mode = selection.get('mode', 'product_default')
+    mode = selection.get('mode', 'none')
+    # Product configuration is a suggestion, not per-video authorization.
+    product = {**product, 'headline_required': False}
     template = None
     if mode == 'product_default':
-        effective = default_product(conn, product)
+        effective = default_product(conn, {**product, 'default_headline_enabled': True})
         snapshot = headlines.make_snapshot(conn, effective)
         if snapshot['enabled'] and effective.get('default_headline_template_id'):
             template = get_template(conn, effective['default_headline_template_id'], effective.get('id', effective.get('product_id')))
@@ -146,10 +148,12 @@ def selection_snapshot(conn, product, selection=None):
         if mode == 'template':
             template = get_template(conn, selection.get('template_id'), product.get('id',product.get('product_id')))
             text = template['text']
-        preset_id = selection.get('preset_id') or product.get('default_headline_preset_id')
+        preset_id = None if mode == 'none' else selection.get('preset_id') or product.get('default_headline_preset_id')
         if preset_id:
             preset_id = variant(conn, preset_id, selection.get('size','STANDARD'))
-        snapshot = headlines.make_snapshot(conn, product, {'enabled':mode != 'none', 'text':text, 'preset_id':preset_id})
+        effective = {**product, 'default_headline_preset_id':None, 'default_headline_text':''} if mode == 'none' else product
+        snapshot = headlines.make_snapshot(conn, effective, {'enabled':mode != 'none', 'text':text if mode != 'none' else '', 'preset_id':preset_id})
+        if mode == 'none': snapshot['provenance'] = 'DISABLED'
     else:
         raise ValueError('HEADLINE_SELECTION_INVALID')
     if mode == 'product_default' and snapshot['enabled'] and (selection.get('preset_id') or selection.get('size')):
