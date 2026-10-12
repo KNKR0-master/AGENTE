@@ -523,7 +523,7 @@ class PublisherAPI:
                     elif batch_action_match and batch_action_match[2] == 'cancel':
                         if data.get('human_confirmed') is not True:
                             raise ValueError('EXPLICIT_BATCH_CANCEL_CONFIRMATION_REQUIRED')
-                        result = service.cancel_batch(int(batch_action_match[1]))
+                        result = service.cancel_batch(int(batch_action_match[1]), eligible_only=data.get('eligible_only') is True)
                     elif path in {"/products/bulk", "/api/publisher/products/bulk"}:
                         result = service.product_bulk_plan(data.get("ids", [])) if data.get("action") == "preview" else service.bulk_products(
                             data.get("ids", []), data.get("action", "delete"), human_confirmed=data.get("human_confirmed") is True

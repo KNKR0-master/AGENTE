@@ -18,7 +18,7 @@ from src.publisher.folder_catalog import (
     set_container_auto_create,
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
-from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation, queue_preparation_context
+from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation, queue_preparation_context, local_cancel_blocker
 from src.publisher.queue_presentation import (
     HIDDEN_ITEM_SQL, change_visibility, history_visibility_counts,
     init_queue_presentation, presentation_targets,
@@ -708,6 +708,13 @@ class PublisherService:
             batch['review_summary'] = {key: value for key, value in batch_review(self.conn, batch['id']).items()
                                        if key not in ('items', 'eligible_ids')}
         active_executions = self._execution_summaries("e.status NOT IN ('COMPLETED','SUCCESS')")
+        from src.publisher.queue_policy import preupload_preparation_resume_allowed
+        for execution in active_executions:
+            items = self.conn.execute('SELECT * FROM publisher_execution_items WHERE execution_id=? ORDER BY execution_position',
+                                      (execution['id'],)).fetchall()
+            execution['can_resume_local_preparation'] = bool(
+                execution['status'] == 'PAUSED' and len(items) == execution['total']
+                and preupload_preparation_resume_allowed(self.conn, execution, items))
         history = self.execution_history(limit=30)
         queue_presentation = {**presentation_targets(self.conn),
                               'history': self.execution_history(hidden_only=True)['executions']}
@@ -1262,31 +1269,54 @@ class PublisherService:
                     'Conta/preset atualizados; produto e legenda do draft preservados')
         return {'batch_id': batch_id, 'draft_ids': [row['id'] for row in rows], 'changed_fields': sorted(fields)}
 
-    def cancel_batch(self, batch_id):
+    def cancel_batch(self, batch_id, *, eligible_only=False):
         batch_id = int(batch_id)
         with self.conn:
             self.conn.execute('BEGIN IMMEDIATE')
             get_row(self.conn, 'publisher_batches', batch_id)
             capabilities = batch_queue_capabilities(self.conn, batch_id)
-            if not capabilities['can_cancel']:
+            if not eligible_only and not capabilities['can_cancel']:
                 raise ValueError('BATCH_CANCEL_BLOCKED')
             rows = self.conn.execute(
                 "SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id",
                 (batch_id,),
             ).fetchall()
             released = 0
+            results = []
             for row in rows:
-                transition(self.conn, row['id'], 'ARCHIVED')
+                reason = local_cancel_blocker(self.conn, dict(row))
+                if reason:
+                    if not eligible_only:
+                        raise ValueError('BATCH_CANCEL_BLOCKED')
+                    results.append({'draft_id': row['id'], 'media_asset_id': row['media_asset_id'],
+                                    'result': 'BLOCKED', 'reason': reason})
+                    continue
+                transition(self.conn, row['id'], 'ARCHIVED', checklist=json.loads(row['checklist_json'] or '{}'))
+                # A cancelled local item is terminal for the old execution, never queued again on resume.
+                self.conn.execute("UPDATE publisher_execution_items SET status='FAILED',error_code='LOCAL_BATCH_CANCELLED' "
+                                  "WHERE draft_id=? AND status='WAITING_MANUAL'", (row['id'],))
                 if row['media_asset_id']:
-                    changed = self.conn.execute(
+                    self.conn.execute(
                         "UPDATE publisher_media_assets SET status='AVAILABLE',updated_at=? "
                         "WHERE id=? AND status IN ('RESERVED','FAILED')",
                         (now_iso(), row['media_asset_id']),
-                    ).rowcount
-                    released += int(changed > 0)
+                    )
+                    released += 1
                 log(self.conn, row['id'], 'BATCH_CANCELLED', 'OK', f'Lote {batch_id} cancelado sem efeito remoto')
-        return {'batch_id': batch_id, 'cancelled_drafts': len(rows), 'reservations_released': released,
-                'audit_preserved': True}
+                results.append({'draft_id': row['id'], 'media_asset_id': row['media_asset_id'],
+                                'result': 'CANCELLED', 'reservation_released': True})
+            self.conn.execute("UPDATE publisher_batch_executions SET status='COMPLETED',finished_at=? "
+                              "WHERE status='PAUSED' AND total>0 "
+                              "AND total=(SELECT COUNT(*) FROM publisher_execution_items i WHERE i.execution_id=publisher_batch_executions.id) "
+                              "AND EXISTS (SELECT 1 FROM publisher_execution_items i JOIN publisher_drafts d ON d.id=i.draft_id "
+                              "WHERE i.execution_id=publisher_batch_executions.id AND d.batch_id=?) "
+                              "AND NOT EXISTS (SELECT 1 FROM publisher_execution_items i WHERE i.execution_id=publisher_batch_executions.id "
+                              "AND (i.status<>'FAILED' OR COALESCE(i.error_code,'')<>'LOCAL_BATCH_CANCELLED'))",
+                              (now_iso(), batch_id))
+        return {'batch_id': batch_id, 'cancelled_drafts': sum(r['result'] == 'CANCELLED' for r in results),
+                'blocked_drafts': sum(r['result'] == 'BLOCKED' for r in results),
+                'reservations_released': released, 'items': results, 'audit_preserved': True,
+                'already_cancelled': not rows}
 
     def queue_preflight(self, batch_id):
         rows = self.conn.execute("SELECT * FROM publisher_drafts WHERE batch_id=? AND status<>'ARCHIVED' ORDER BY queue_position,id", (int(batch_id),)).fetchall()

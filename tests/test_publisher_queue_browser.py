@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def fixture():
+def fixture(*, local_cancel_eligible=False):
     caps = {'can_edit': True, 'can_reorder': True, 'can_remove': True,
             'can_start': True, 'can_verify': False, 'remote_effect_possible': False}
     drafts = []
@@ -31,6 +31,18 @@ def fixture():
                        'caption': caption, 'checklist': {}, 'media_status': 'RESERVED',
                        'queue_capabilities': caps, 'queue_display': {'label': 'Pendente', 'kind': 'neutral', 'message': ''},
                        'upload_status': 'NOT_STARTED', 'persistence_status': 'NOT_PERSISTED'})
+    media_assets = []
+    if local_cancel_eligible:
+        # Only cancellation scenarios carry complete, unstarted local reservations.
+        for draft in drafts:
+            media_id = 500 + draft['id']
+            remote_file_id = f'fixture_video_{draft["id"]}'
+            draft.update(media_asset_id=media_id, remote_file_id=remote_file_id,
+                         processing_status='NOT_STARTED', persistence_status='UNCONFIRMED',
+                         confirmed_at=None)
+            media_assets.append({'id': media_id, 'provider': 'drive', 'source_account': 'fixture',
+                                 'remote_file_id': remote_file_id, 'status': 'RESERVED',
+                                 'consumed_by_draft_id': None, 'remote_deleted_at': None})
     return {'drafts': drafts, 'products': [
         {'id': 1, 'name': 'Body Splash', 'short_name': 'Body Splash', 'active': True, 'aliases': [], 'folders': []},
         {'id': 2, 'name': 'Escova de Dentes', 'short_name': 'Escova', 'active': True, 'aliases': [], 'folders': []}],
@@ -39,9 +51,10 @@ def fixture():
         'batches': [{'id': 24, 'name': 'Lote de revisão', 'queue_capabilities': {
             'can_rename': True, 'can_edit_configuration': True,
             'editable_fields': ['account_id', 'preset_id'], 'can_reorder': True,
-            'can_cancel': True, 'active_draft_count': 3,
+            'can_cancel': local_cancel_eligible, 'can_cancel_eligible': local_cancel_eligible,
+            'has_execution': False, 'active_draft_count': 3,
         }}], 'presets': [{'id': 31, 'name': 'Preset alternativo', 'account_id': 2}], 'logs': [],
-        'statuses': ['DRAFT', 'ARCHIVED'], 'media_assets': [], 'drive_folders': [],
+        'statuses': ['DRAFT', 'ARCHIVED'], 'media_assets': media_assets, 'drive_folders': [],
         'account_protection': [], 'executions': [], 'execution_items': [],
         'history': {'executions': [], 'total_count': 0, 'has_more': False, 'next_before_id': None},
         'queue_preflights': {24: {'batch_id': 24, 'total_items': 3, 'ready_items': 2,
@@ -145,18 +158,30 @@ class QueueFixtureHandler(SimpleHTTPRequestHandler):
                 result, status = ({'batch_id': int(config[1]), 'changed_fields': list(body)}, 200)
         elif cancel:
             type(self).last_cancel = (int(cancel[1]), body)
-            if type(self).reject_cancel:
-                batch = next(item for item in self.snapshot['batches'] if item['id'] == int(cancel[1]))
+            batch = next(item for item in self.snapshot['batches'] if item['id'] == int(cancel[1]))
+            if body.get('human_confirmed') is not True:
+                result, status = ({'error': 'EXPLICIT_BATCH_CANCEL_CONFIRMATION_REQUIRED'}, 400)
+            elif type(self).reject_cancel or not batch['queue_capabilities']['can_cancel_eligible']:
                 batch['queue_capabilities']['can_cancel'] = False
+                batch['queue_capabilities']['can_cancel_eligible'] = False
                 result, status = ({'error': 'BATCH_CANCEL_BLOCKED'}, 409)
             else:
+                items = []
                 for draft in self.snapshot['drafts']:
-                    if draft['batch_id'] == int(cancel[1]):
+                    if draft['batch_id'] == int(cancel[1]) and draft['status'] != 'ARCHIVED':
                         draft['status'] = 'ARCHIVED'
-                batch = next(item for item in self.snapshot['batches'] if item['id'] == int(cancel[1]))
+                        media = next(item for item in self.snapshot['media_assets']
+                                     if item['id'] == draft['media_asset_id'])
+                        media['status'] = 'AVAILABLE'
+                        items.append({'draft_id': draft['id'], 'media_asset_id': media['id'],
+                                      'result': 'CANCELLED', 'reservation_released': True})
                 batch['queue_capabilities']['can_cancel'] = False
-                result, status = ({'batch_id': int(cancel[1]), 'cancelled_drafts': 3,
-                                   'reservations_released': 3, 'audit_preserved': True}, 200)
+                batch['queue_capabilities']['can_cancel_eligible'] = False
+                batch['queue_capabilities']['active_draft_count'] = 0
+                result, status = ({'batch_id': int(cancel[1]), 'cancelled_drafts': len(items),
+                                   'blocked_drafts': 0, 'reservations_released': len(items),
+                                   'items': items, 'audit_preserved': True,
+                                   'already_cancelled': not items}, 200)
         elif path == '/api/publisher/verify-reconciliation':
             result, status = ({'outcome': 'REMOTE_STATE_UNKNOWN', 'remote_read_only': True,
                                'local_evidence_append': True}, 200)
@@ -569,7 +594,7 @@ class QueueBrowserTests(unittest.TestCase):
                       draft.upload_status='TRANSFER_UNKNOWN';
                       draft.queue_display={label:'Envio a verificar',kind:'attention',message:'O TikTok pode já ter recebido este vídeo. Não envie novamente.'};
                       draft.queue_capabilities={can_edit:false,can_remove:false,can_reorder:false,can_verify:true,remote_effect_possible:true};
-                      state.batches[0].queue_capabilities={can_rename:false,can_edit:false,can_edit_configuration:false,can_reorder:false,can_remove:false,can_remove_item:false,can_cancel:false};
+                      state.batches[0].queue_capabilities={can_rename:false,can_edit:false,can_edit_configuration:false,can_reorder:false,can_remove:false,can_remove_item:false,can_cancel:false,can_cancel_eligible:false};
                       renderQueue();
                     }""")
                     self.assertEqual(page.locator('[data-queue-draft="1"] [data-remove-draft]').count(), 0)
@@ -729,6 +754,7 @@ class QueueBrowserTests(unittest.TestCase):
     def test_cancel_confirmation_decline_and_confirmed_request(self):
         from playwright.sync_api import sync_playwright
 
+        QueueFixtureHandler.snapshot = fixture(local_cancel_eligible=True)
         server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -743,19 +769,27 @@ class QueueBrowserTests(unittest.TestCase):
                     page.once('dialog', lambda dialog: (dialogs.append(dialog.message), dialog.dismiss()))
                     page.locator('#queueBatches [data-batch-cancel="24"]').click()
                     self.assertEqual(len(dialogs), 1)
-                    self.assertIn('3 Draft(s) sairão da fila', dialogs[0])
-                    self.assertIn('Nenhum arquivo remoto será excluído', dialogs[0])
+                    self.assertIn('Cancelar somente o trabalho local elegível de "Lote de revisão"?', dialogs[0])
+                    self.assertIn('Cada vídeo será revalidado.', dialogs[0])
+                    self.assertIn('Itens com possível transferência permanecerão bloqueados.', dialogs[0])
+                    self.assertIn('O histórico será preservado; nenhum arquivo do Drive será excluído.', dialogs[0])
                     self.assertIsNone(QueueFixtureHandler.last_cancel)
                     self.assertEqual(page.locator('#queueBatches .queue-item').count(), 3)
 
                     page.once('dialog', lambda dialog: dialog.accept())
                     page.locator('#queueBatches [data-batch-cancel="24"]').click()
-                    page.wait_for_function("document.querySelector('#notice')?.textContent.includes('arquivados')")
+                    page.wait_for_function("document.querySelector('#notice')?.textContent === '3 cancelado(s); 0 bloqueado(s). Histórico e arquivos remotos preservados.'")
                     self.assertEqual(page.locator('#queueBatches .queue-item').count(), 0)
-                    self.assertEqual(QueueFixtureHandler.last_cancel, (24, {'human_confirmed': True}))
+                    self.assertEqual(QueueFixtureHandler.last_cancel,
+                                     (24, {'human_confirmed': True, 'eligible_only': True}))
                     self.assertEqual([draft['status'] for draft in QueueFixtureHandler.snapshot['drafts']],
                                      ['ARCHIVED', 'ARCHIVED', 'ARCHIVED'])
-                    self.assertIn('arquivados', page.locator('#notice').inner_text())
+                    self.assertEqual([media['status'] for media in QueueFixtureHandler.snapshot['media_assets']],
+                                     ['AVAILABLE', 'AVAILABLE', 'AVAILABLE'])
+                    self.assertTrue(all(media['remote_deleted_at'] is None
+                                        for media in QueueFixtureHandler.snapshot['media_assets']))
+                    self.assertEqual(page.locator('#notice').inner_text(),
+                                     '3 cancelado(s); 0 bloqueado(s). Histórico e arquivos remotos preservados.')
                 finally:
                     context.close()
         finally:
@@ -765,6 +799,7 @@ class QueueBrowserTests(unittest.TestCase):
     def test_cancel_rejection_refreshes_capabilities_without_hiding_batch(self):
         from playwright.sync_api import sync_playwright
 
+        QueueFixtureHandler.snapshot = fixture(local_cancel_eligible=True)
         QueueFixtureHandler.reject_cancel = True
         server = ThreadingHTTPServer(('127.0.0.1', 0), QueueFixtureHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -778,12 +813,15 @@ class QueueBrowserTests(unittest.TestCase):
                     page.locator('#queueBatches [data-batch-cancel="24"]').wait_for(timeout=10000)
                     page.once('dialog', lambda dialog: dialog.accept())
                     page.locator('#queueBatches [data-batch-cancel="24"]').click()
-                    page.wait_for_function("document.querySelector('#notice')?.textContent.includes('A fila foi atualizada')")
-                    self.assertEqual(QueueFixtureHandler.last_cancel, (24, {'human_confirmed': True}))
+                    page.wait_for_function("document.querySelector('#notice')?.textContent === 'Não foi possível confirmar o cancelamento. Revise a fila antes de qualquer nova ação.'")
+                    self.assertEqual(QueueFixtureHandler.last_cancel,
+                                     (24, {'human_confirmed': True, 'eligible_only': True}))
                     self.assertEqual(page.locator('#queueBatches [data-queue-batch]').count(), 1)
                     self.assertEqual(page.locator('#queueBatches .queue-item').count(), 3)
                     self.assertEqual(page.locator('#queueBatches [data-batch-cancel]').count(), 0)
                     self.assertTrue(all(draft['status'] == 'DRAFT' for draft in QueueFixtureHandler.snapshot['drafts']))
+                    self.assertTrue(all(media['status'] == 'RESERVED'
+                                        for media in QueueFixtureHandler.snapshot['media_assets']))
                 finally:
                     context.close()
         finally:

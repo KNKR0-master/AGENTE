@@ -18,6 +18,9 @@ MAX_IMAGE_BYTES = 1_000_000
 MAX_CACHE_BYTES = 16_000_000
 MAX_CACHE_ENTRIES = 128
 CACHE_TTL_SECONDS = 600
+FAILURE_TTL_SECONDS = 30
+STALE_TTL_SECONDS = 1800
+TRANSIENT_FAILURES = {'THUMBNAIL_FETCH_FAILED', 'THUMBNAIL_REMOTE_FAILURE', 'THUMBNAIL_INFLIGHT_TIMEOUT'}
 FETCH_TIMEOUT_SECONDS = 8
 FILE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
 
@@ -86,6 +89,7 @@ class ThumbnailCache:
         self._lock = threading.Lock()
         self._entries = OrderedDict()
         self._inflight = {}
+        self._failures = OrderedDict()
         self._bytes = 0
         self.cache_hits = 0
         self.metadata_reads = 0
@@ -97,10 +101,34 @@ class ThumbnailCache:
             self._entries.move_to_end(file_id)
             self.cache_hits += 1
             return record[0]
-        if record:
+        if record and record[1] + STALE_TTL_SECONDS <= self.clock():
             self._bytes -= len(record[0].content)
             del self._entries[file_id]
         return None
+
+    def _fallback(self, file_id):
+        record = self._entries.get(file_id)
+        if record and record[1] + STALE_TTL_SECONDS > self.clock():
+            return record[0]
+        return None
+
+    def _failed(self, file_id):
+        record = self._failures.get(file_id)
+        if record and record[0] > self.clock():
+            value = self._fallback(file_id) if record[1] is None or record[1] in TRANSIENT_FAILURES else None
+            if value:
+                return True, value
+            if record[1]:
+                raise ThumbnailUnavailable(record[1])
+            return True, None
+        self._failures.pop(file_id, None)
+        return False, None
+
+    def _remember_failure(self, file_id, code=None):
+        self._failures[file_id] = (self.clock() + FAILURE_TTL_SECONDS, code)
+        self._failures.move_to_end(file_id)
+        while len(self._failures) > MAX_CACHE_ENTRIES:
+            self._failures.popitem(last=False)
 
     def get(self, file_id, fetcher=None):
         fetcher = fetcher or self.fetcher
@@ -110,6 +138,9 @@ class ThumbnailCache:
             cached = self._cached(file_id)
             if cached:
                 return cached
+            failed, value = self._failed(file_id)
+            if failed:
+                return value
             event = self._inflight.get(file_id)
             leader = event is None
             if leader:
@@ -120,13 +151,21 @@ class ThumbnailCache:
                 raise ThumbnailUnavailable("THUMBNAIL_INFLIGHT_TIMEOUT")
             with self._lock:
                 cached = self._cached(file_id)
+                failed, value = self._failed(file_id)
             if cached:
                 return cached
+            if failed:
+                return value
             raise ThumbnailUnavailable("THUMBNAIL_NOT_AVAILABLE")
         try:
             value = fetcher(file_id)
+            if value is None:
+                with self._lock:
+                    self._remember_failure(file_id)
+                    return self._fallback(file_id)
             if value and len(value.content) <= MAX_IMAGE_BYTES:
                 with self._lock:
+                    self._failures.pop(file_id, None)
                     old = self._entries.pop(file_id, None)
                     if old:
                         self._bytes -= len(old[0].content)
@@ -136,6 +175,14 @@ class ThumbnailCache:
                         _, evicted = self._entries.popitem(last=False)
                         self._bytes -= len(evicted[0].content)
             return value
+        except Exception as exc:
+            code = str(exc) if isinstance(exc, ThumbnailUnavailable) else 'THUMBNAIL_REMOTE_FAILURE'
+            with self._lock:
+                self._remember_failure(file_id, code)
+                fallback = self._fallback(file_id) if code in TRANSIENT_FAILURES else None
+            if fallback:
+                return fallback
+            raise ThumbnailUnavailable(code) from exc
         finally:
             with self._lock:
                 self._inflight.pop(file_id).set()

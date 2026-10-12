@@ -47,6 +47,8 @@ def queue_preparation_context(conn, draft_id):
     ).fetchone()
     code = str(latest['message']) if latest and latest['step'] == 'HEADLINE_PREPARATION_FAILED' else ''
     return {'remote_checkpoint': remote_checkpoint,
+            'local_cancelled': bool(conn.execute("SELECT 1 FROM publisher_execution_logs WHERE draft_id=? "
+                                                "AND step='BATCH_CANCELLED' LIMIT 1", (draft_id,)).fetchone()),
             'local_preparation_error': code if code.startswith('HEADLINE_') and code.replace('_', '').isalnum() else ''}
 
 
@@ -76,7 +78,7 @@ def preupload_preparation_resume_allowed(conn, execution, items):
 
 
 def draft_queue_presentation(draft, media=None, *, item_status=None, remote_checkpoint=False,
-                             local_preparation_error=''):
+                             local_preparation_error='', local_cancelled=False):
     remote_possible = bool(remote_checkpoint or draft.get('upload_status') not in (None, 'NOT_STARTED')
                            or draft.get('confirmed_at') or draft.get('persistence_status') == 'PERSISTED'
                            or (media and media.get('status') in ('NEEDS_RECONCILIATION', 'CONSUMED_PENDING_DELETE', 'CONSUMED')))
@@ -84,6 +86,9 @@ def draft_queue_presentation(draft, media=None, *, item_status=None, remote_chec
                    'UNCONFIRMED': 'Persistência não confirmada' if remote_possible else '',
                    'DRAFT_ALREADY_PERSISTED': 'Rascunho já salvo'}.get(draft.get('persistence_status'), '')
     summary = {'persistence_label': persistence}
+    if local_cancelled and draft.get('status') == 'ARCHIVED':
+        return {**summary, 'label': 'Cancelado localmente', 'kind': 'neutral',
+                'message': 'Reserva liberada; histórico mantido. Nenhum arquivo remoto foi excluído.'}
     if local_preparation_error and not remote_possible:
         return {**summary, 'label': 'Falha na preparação da headline', 'kind': 'attention',
                 'reason': 'LOCAL_PREPARATION_FAILURE', 'technical_code': local_preparation_error,
@@ -188,7 +193,8 @@ def batch_queue_capabilities(conn, batch_id):
     pending_only = has_items and not has_execution and all(cap['can_edit'] for cap in draft_caps)
     can_reorder = pending_only and all(cap['can_reorder'] for cap in draft_caps)
     all_drafts_removable = has_items and all(cap['can_remove'] for cap in draft_caps)
-    can_cancel = pending_only and all_drafts_removable
+    locally_cancelable = [local_cancel_blocker(conn, draft) is None for draft in drafts]
+    can_cancel = pending_only and all_drafts_removable and all(locally_cancelable)
     return {
         'can_rename': pending_only,
         'can_edit': pending_only,
@@ -199,4 +205,47 @@ def batch_queue_capabilities(conn, batch_id):
         'can_archive': False,
         'has_execution': has_execution,
         'active_draft_count': len(drafts),
+        'can_cancel_eligible': any(locally_cancelable),
     }
+
+
+def local_cancel_blocker(conn, draft):
+    """Proof of local-only work; never infer safety from an empty remote list."""
+    if draft['status'] not in ('DRAFT', 'CAPTION_MISSING'):
+        return 'DRAFT_STATE_BLOCKED'
+    context = queue_preparation_context(conn, draft['id'])
+    if (context['remote_checkpoint'] or draft.get('upload_status') not in (None, 'NOT_STARTED')
+            or draft.get('processing_status') not in (None, 'NOT_STARTED')
+            or draft.get('persistence_status') != 'UNCONFIRMED' or draft.get('confirmed_at')):
+        return 'REMOTE_EFFECT_POSSIBLE'
+    if conn.execute("SELECT 1 FROM publisher_execution_logs WHERE draft_id=? AND UPPER(step) IN "
+                    "('UPLOAD','UPLOADED','UPLOAD_CONFIRMED','CAPTION','REMOTE_DELETED') LIMIT 1",
+                    (draft['id'],)).fetchone():
+        return 'REMOTE_EFFECT_POSSIBLE'
+    if conn.execute("SELECT 1 FROM publisher_batch_executions WHERE batch_id=? "
+                    "AND status IN ('QUEUED','RUNNING','PROCESSING') LIMIT 1", (draft['batch_id'],)).fetchone():
+        return 'EXECUTION_ACTIVE'
+    media = conn.execute('SELECT * FROM publisher_media_assets WHERE id=?', (draft.get('media_asset_id'),)).fetchone()
+    if (not media or not media['remote_file_id'] or media['status'] not in ('AVAILABLE', 'RESERVED', 'FAILED')
+            or media['consumed_by_draft_id'] is not None or media['remote_deleted_at']):
+        return 'RESERVATION_IDENTITY_OR_STATE_BLOCKED'
+    other = conn.execute("SELECT 1 FROM publisher_drafts d JOIN publisher_media_assets m ON m.id=d.media_asset_id "
+                         "WHERE d.id<>? AND d.status<>'ARCHIVED' AND (m.id=? OR "
+                         "(m.provider=? AND m.source_account=? AND m.remote_file_id=?)) LIMIT 1",
+                         (draft['id'], media['id'], media['provider'], media['source_account'], media['remote_file_id'])).fetchone()
+    if other:
+        return 'OTHER_ACTIVE_RESERVATION'
+    if conn.execute("SELECT 1 FROM publisher_execution_items i JOIN publisher_batch_executions e ON e.id=i.execution_id "
+                    "JOIN publisher_drafts d ON d.id=i.draft_id JOIN publisher_media_assets m ON m.id=d.media_asset_id "
+                    "WHERE (m.id=? OR (m.provider=? AND m.source_account=? AND m.remote_file_id=?)) "
+                    "AND (i.status IN ('QUEUED','PROCESSING','CLEANUP') OR e.status IN ('QUEUED','RUNNING','PROCESSING')) LIMIT 1",
+                    (media['id'], media['provider'], media['source_account'], media['remote_file_id'])).fetchone():
+        return 'EXECUTION_ACTIVE'
+    items = conn.execute('SELECT i.*,e.status execution_status,e.started_at FROM publisher_execution_items i '
+                         'JOIN publisher_batch_executions e ON e.id=i.execution_id WHERE i.draft_id=?',
+                         (draft['id'],)).fetchall()
+    for item in items:
+        execution = dict(status=item['execution_status'], started_at=item['started_at'])
+        if execution['status'] != 'PAUSED' or not preupload_preparation_resume_allowed(conn, execution, [dict(item)]):
+            return 'EXECUTION_NOT_PROVEN_LOCAL_ONLY'
+    return None

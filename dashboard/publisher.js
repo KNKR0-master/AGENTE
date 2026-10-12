@@ -214,9 +214,41 @@ function resolutionSafetyMessage(summary){
  return 'Estado local: transferência iniciada ou resultado não confirmado. O risco de duplicidade permanece, mesmo quando a lista atual está vazia. Não tente reenviar enquanto a decisão estiver pendente.';
 }
 function queueActionState(capability){const rows=selectedDrafts();return {ok:PublisherUIState.bulkAllowed(rows,capability),blocked:rows.filter(d=>!d.queue_capabilities?.[capability]).length};}
+const thumbnailImages=new Map();
+function cancelBlocker(reason){return {REMOTE_EFFECT_POSSIBLE:'possível efeito no TikTok; exige revisão',EXECUTION_ACTIVE:'execução ativa',RESERVATION_IDENTITY_OR_STATE_BLOCKED:'identidade ou estado da reserva não comprovado',OTHER_ACTIVE_RESERVATION:'outra reserva ativa',EXECUTION_NOT_PROVEN_LOCAL_ONLY:'histórico não comprova operação apenas local',DRAFT_STATE_BLOCKED:'estado não permite cancelamento local'}[reason]||'revisão manual necessária';}
+function localRecoveryControls(batchId,executionId){
+ const batch=state.batches.find(item=>item.id===batchId),execution=state.executions?.find(item=>item.id===executionId);
+ return `${batch?.queue_capabilities?.can_cancel_eligible?`<button type="button" data-batch-cancel="${batchId}">Cancelar trabalho local elegível</button>`:''}${execution?.can_resume_local_preparation&&!state.worker_config?.tiktok_actions_paused?`<button type="button" data-local-preparation-resume="${executionId}">Retomar preparação validada</button>`:''}`;
+}
+document.addEventListener('click',event=>{const button=event.target.closest('[data-local-preparation-resume]');if(!button||button.disabled)return;task(async()=>{const id=Number(button.dataset.localPreparationResume),execution=state.executions.find(item=>item.id===id);if(!execution?.can_resume_local_preparation)throw Error('A retomada local não está comprovadamente segura');if(!confirm('Retomar a execução existente com o snapshot congelado? A preparação será revalidada antes de qualquer envio. Não é permitido reenviar uma transferência ambígua.'))return;button.disabled=true;try{await api('/resume-batch',{execution_id:id});await refresh();notice('Retomada encaminhada ao worker existente; snapshot preservado.');}finally{button.disabled=false;}},'queue');});
+function rememberThumbnails(container){
+ for(const image of container.querySelectorAll('[data-thumbnail-url]')){
+  if(image.complete&&image.naturalWidth>0)thumbnailImages.set(image.dataset.thumbnailUrl,{node:image,attempts:0});
+ }
+ while(thumbnailImages.size>128)thumbnailImages.delete(thumbnailImages.keys().next().value);
+}
+function bindThumbnails(container){
+ for(let image of container.querySelectorAll('[data-thumbnail-url]')){
+  const url=image.dataset.thumbnailUrl;
+  if(!/^\/api\/publisher\/library\/thumbnail\/[A-Za-z0-9_-]+$/.test(url))continue;
+  const record=thumbnailImages.get(url)||{attempts:0};
+  if(record.node?.complete&&record.node.naturalWidth>0){
+   if(record.node!==image&&!record.node.isConnected){image.replaceWith(record.node);image=record.node;}
+   else if(record.node!==image)image.src=url;
+   image.hidden=false;if(image.nextElementSibling)image.nextElementSibling.hidden=true;
+  }
+  if(image.dataset.thumbnailBound)continue;image.dataset.thumbnailBound='true';
+  image.addEventListener('load',()=>{image.hidden=false;if(image.nextElementSibling)image.nextElementSibling.hidden=true;thumbnailImages.set(url,{node:image,attempts:0});});
+  image.addEventListener('error',()=>{image.hidden=true;const fallback=image.nextElementSibling;if(fallback){fallback.hidden=false;fallback.title='Miniatura indisponível; vídeo não foi baixado';}thumbnailImages.set(url,{attempts:record.attempts,retryAfter:Date.now()+30000});});
+  if(record.node?.naturalWidth>0)continue;
+  if(record.attempts>=2||record.retryAfter>Date.now()){image.hidden=true;if(image.nextElementSibling)image.nextElementSibling.hidden=false;continue;}
+  record.attempts++;thumbnailImages.set(url,record);image.src=url;
+ }
+ while(thumbnailImages.size>128)thumbnailImages.delete(thumbnailImages.keys().next().value);
+}
 function queueThumbnail(identity){
  const placeholder='<span class="queue-thumbnail queue-placeholder" aria-hidden="true">▶</span>';
- return identity.thumbnailUrl?`<img class="queue-thumbnail" src="${esc(identity.thumbnailUrl)}" alt="Prévia de ${esc(identity.filename)}" loading="lazy" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="queue-thumbnail queue-placeholder" hidden aria-hidden="true">▶</span>`:placeholder;
+ return identity.thumbnailUrl?`<img class="queue-thumbnail" data-thumbnail-url="${esc(identity.thumbnailUrl)}" alt="Prévia de ${esc(identity.filename)}" loading="lazy"><span class="queue-thumbnail queue-placeholder" hidden aria-hidden="true">▶</span>`:placeholder;
 }
 function queueMediaIdentity(item,identity){
  const product=state.products.find(product=>product.id===item.product_id);
@@ -251,11 +283,12 @@ function renderQueueViews(){
  applyQueueNavigationHighlight();
 }
 function renderHiddenQueue(){
+ rememberThumbnails($('#queueHiddenEntries'));
  for(const detail of $('#queueHiddenEntries').querySelectorAll('[data-hidden-details]'))detail.open?expandedHiddenDetails.add(detail.dataset.hiddenDetails):expandedHiddenDetails.delete(detail.dataset.hiddenDetails);
  const groups=PublisherUIState.queueHiddenGroups(state,historyState.executions,queueFilters());
  $('#queueHiddenEntries').innerHTML=groups.map(group=>{
   const first=group.items[0],identity=PublisherUIState.queueIdentity(first),title=identity.batch;
-  return `<section class="queue-hidden-group"><h3>${esc(title)}</h3>${group.items.map(item=>{
+ return `<section class="queue-hidden-group"><h3>${esc(title)}</h3>${group.items.map(item=>{
    const identity=PublisherUIState.queueIdentity(item),display=identity.display,id=item.id??item.draft_id;
    const reasons=item.hidden_reasons,when=reasons.map(reason=>reason.hidden_at).sort().at(-1);
 return `<article class="queue-hidden-item ${display.kind==='attention'||item.item_status==='FAILED'?'queue-attention':''}" data-hidden-draft="${id}" data-hidden-execution="${group.execution?.id||''}">${queueMediaIdentity(item,identity)}${queueBatchContext(item,identity)}<div class="queue-status"><span class="queue-state ${esc(display.kind)}">${esc(display.label)}</span>${display.kind==='attention'||item.item_status==='FAILED'?'<strong>Requer atenção</strong>':''}<small>${esc(display.persistence_label||'')}</small><small>${esc(display.message||'')}</small><small>Oculto em ${esc(when?new Date(when).toLocaleString():'data não informada')}</small></div><div class="queue-item-actions">${reasons.map(reason=>`<div><small>${esc({DRAFT:'Vídeo',BATCH:'Lote',EXECUTION:'Execução'}[reason.target_type])} #${reason.target_id}</small>${presentationButton('restore',reason.target_type,reason.target_id)}</div>`).join('')}</div><details class="queue-hidden-details" data-hidden-details="${esc(`${group.key}:${id}`)}" ${expandedHiddenDetails.has(`${group.key}:${id}`)?'open':''}><summary>Detalhes</summary><small>Draft #${id} · MediaAsset ${item.media_asset_id??'—'} · Conta ${esc(item.account_name||'Não informada')} · Execução #${group.execution?.id||'—'} · ${esc(item.status??item.draft_status)} · ${esc(item.item_status||'')} · ${esc(item.persistence_status||'')}</small></details></article>`;
@@ -267,9 +300,17 @@ return `<article class="queue-hidden-item ${display.kind==='attention'||item.ite
   $('#queueHiddenEntries').insertAdjacentHTML('beforeend',`<div class="record"><div><strong>${esc(label||{DRAFT:'Vídeo',BATCH:'Lote',EXECUTION:'Execução'}[target.target_type])}</strong><small>#${target.target_id} · Oculto em ${esc(new Date(target.hidden_at).toLocaleString())}</small></div>${presentationButton('restore',target.target_type,target.target_id)}</div>`);
  }
  $('#queueHiddenEntries').querySelectorAll('[data-hidden-details]').forEach(detail=>detail.addEventListener('toggle',()=>detail.open?expandedHiddenDetails.add(detail.dataset.hiddenDetails):expandedHiddenDetails.delete(detail.dataset.hiddenDetails)));
+ bindThumbnails($('#queueHiddenEntries'));
+ for(const row of $('#queueHiddenEntries').querySelectorAll('[data-hidden-draft]')){
+  const draft=state.drafts.find(item=>item.id===Number(row.dataset.hiddenDraft));if(!draft)continue;
+  const actions=document.createElement('div');actions.className='actions';actions.innerHTML=localRecoveryControls(draft.batch_id,Number(row.dataset.hiddenExecution));
+  if(draft.queue_capabilities?.can_resolve)actions.insertAdjacentHTML('beforeend',`<button type="button" data-resolve-draft="${draft.id}">Resolver pendência...</button>`);
+  row.append(actions);
+ }
 }
 function renderQueue(){
  const container=$('#queueBatches'),activeElement=document.activeElement;
+ rememberThumbnails(container);
  if(activeElement?.matches('[data-batch-rename-input]')&&container.contains(activeElement)){queueRenderDeferred=true;return;}
  for(const detail of container.querySelectorAll('[data-queue-details]'))detail.open?expandedQueueDraftDetails.add(detail.dataset.queueDetails):expandedQueueDraftDetails.delete(detail.dataset.queueDetails);
  const allGroups=PublisherUIState.queueVisibleGroups(state),activeIds=new Set(allGroups.flatMap(group=>group.drafts.map(d=>d.id)));
@@ -303,10 +344,11 @@ function renderQueue(){
   const preparationDetails=localPause?`<details><summary>Detalhes técnicos da preparação</summary>${esc(localPause.technical_code)}</details>`:'';
   const batchTitle=group.source==='execution'&&group.batchId==null?'Múltiplos lotes':batch?.name||(group.batchId==null?'Rascunhos sem lote':'Lote sem nome');
   const renameTitle=renamingBatchId===group.batchId?`<form class="queue-rename-form" data-batch-rename-form="${group.batchId}"><input data-batch-rename-input data-batch-id="${group.batchId}" aria-label="Nome do lote" maxlength="160" required value="${esc(renamingBatchValue||batch?.name||'')}"><button type="submit" class="primary">Salvar</button><button type="button" data-batch-rename-cancel>Cancelar</button></form>`:`<div class="queue-batch-title"><h3>${esc(batchTitle)}</h3>${group.source==='pending'&&caps.can_rename?`<button type="button" data-batch-rename="${group.batchId}" title="Renomear lote" aria-label="Renomear ${esc(batchTitle)}">Renomear</button>`:''}</div>`;
-  const batchControls=`<div class="queue-batch-controls">${group.source==='pending'&&caps.can_edit_configuration?`<button type="button" data-batch-configure="${group.batchId}">Editar conta/preset</button>`:''}${group.source==='pending'&&caps.can_cancel?`<span class="queue-danger-actions"><button type="button" data-batch-cancel="${group.batchId}">Cancelar lote</button></span>`:''}${group.batchIds.map(id=>`<button type="button" data-batch-review="${id}">Revisar lote${group.batchIds.length>1?' '+esc(state.batches.find(b=>b.id===id)?.name||id):''}</button>${presentationButton('hide','BATCH',id)}`).join('')}</div>`;
+  const batchControls=`<div class="queue-batch-controls">${group.source==='pending'&&caps.can_edit_configuration?`<button type="button" data-batch-configure="${group.batchId}">Editar conta/preset</button>`:''}${group.batchIds.map(id=>`${state.batches.find(b=>b.id===id)?.queue_capabilities?.can_cancel_eligible?`<button type="button" data-batch-cancel="${id}">Cancelar trabalho local elegível</button>`:''}<button type="button" data-batch-review="${id}">Revisar lote${group.batchIds.length>1?' '+esc(state.batches.find(b=>b.id===id)?.name||id):''}</button>${presentationButton('hide','BATCH',id)}`).join('')}</div>`;
+  const localResume=execution?.can_resume_local_preparation&&!runtimeBlocked?`<button type="button" data-local-preparation-resume="${execution.id}">Retomar preparação validada</button>`:'';
   const summary=group.source==='pending'?`${pre.total_items} Draft(s) · ${pre.ready_items} pronto(s) · ${pre.blocked_items} precisam de correção${pre.warning_items?` · ${pre.warning_items} com aviso`:''}`:
     reviewSummary?`${reviewSummary.total} vídeos · ${reviewSummary.prepared} prontos · ${reviewSummary.published} publicados · ${reviewSummary.scheduled} agendados · ${reviewSummary.abandoned} abandonados · ${reviewSummary.attention} requerem atenção`:`${group.all.length} vídeos · revisão pendente`;
-  const startButton=group.source==='pending'?`<button type="button" data-start-batch="${group.batchId}" class="primary" ${startBlocked?'disabled':''} title="${startBlocked&&pre.blocked_items?`${pre.blocked_items} itens precisam ser corrigidos antes de continuar`:''}">Preparar lote</button>`:'';
+  const startButton=group.source==='pending'?`<button type="button" data-start-batch="${group.batchId}" class="primary" ${startBlocked?'disabled':''} title="${startBlocked&&pre.blocked_items?`${pre.blocked_items} itens precisam ser corrigidos antes de continuar`:''}">Preparar lote</button>`:localResume;
   return `<section class="queue-batch" data-queue-batch="${esc(group.key)}" aria-label="${esc(batchTitle)}"><div class="queue-batch-heading"><div>${renameTitle}<p>${summary}</p></div><span class="queue-state">${batchLabel}</span>${startButton}${batchControls}</div>${pauseMessage?`<p class="queue-batch-warning">${esc(pauseMessage)}</p>`:''}${group.source==='pending'&&pre.blocked_items?`<p class="queue-batch-warning">${pre.blocked_items} Draft(s) precisam ser corrigidos antes de continuar.</p>`:''}${progress}${preparationDetails}<div class="queue-items">${group.drafts.map((d,index)=>{
    const executionItem=execution?state.execution_items?.find(candidate=>candidate.execution_id===execution.id&&candidate.draft_id===d.id):null;
    const identity=PublisherUIState.queueIdentity(d,executionItem),display=identity.display;
@@ -323,6 +365,7 @@ function renderQueue(){
   }).join('')}</div></section>`;
  }).join('');
  queueRenderDeferred=false;
+ bindThumbnails(container);
  applyQueueNavigationHighlight();
 }
 function queueHistoryControls(execution){
@@ -330,6 +373,7 @@ function queueHistoryControls(execution){
  return `<div class="actions">${batchIds.map(id=>`<button type="button" data-batch-review="${id}">Revisar lote ${esc(state.batches.find(b=>b.id===id)?.name||id)}</button>${presentationButton('hide','BATCH',id)}`).join('')}</div><details><summary>Detalhes técnicos da execução</summary>Execução #${execution.id} · ${esc(execution.status||'Concluída')}${presentationButton('hide','EXECUTION',execution.id)}</details>`;
 }
 function renderExecutionHistory(){
+ rememberThumbnails($('#queueHistoryEntries'));
  const incoming=state.history||{executions:[],total_count:0,has_more:false,next_before_id:null};
  if(!historyState.initialized){historyState={...historyState,executions:incoming.executions||[],totalCount:Number(incoming.total_count||0),nextBeforeId:incoming.next_before_id,hasMore:!!incoming.has_more,initialized:true};}
  else{
@@ -354,6 +398,7 @@ function renderExecutionHistory(){
 return `<details class="queue-history-execution" data-history-execution="${execution.id}" ${expandedHistoryExecutions.has(execution.id)?'open':''}><summary>${esc(name)} · ${esc(when?new Date(when).toLocaleString():'data não informada')} · ${Number(execution.total||items.length)} vídeos</summary>${queueHistoryControls(execution)}<p>${Number(execution.succeeded||0)} concluídos · ${Number(execution.failed||0)} falharam · ${Number(execution.waiting_manual||0)} aguardaram ação</p><ul>${items.map(item=>{const identity=PublisherUIState.queueIdentity(item);const display=identity.display;return `<li class="queue-history-item ${display.kind==='attention'?'queue-attention':''}" data-history-item-key="${execution.id}:${item.draft_id}">${queueMediaIdentity(item,identity)}${queueBatchContext(item,identity)}<div class="queue-status"><span class="queue-state ${esc(display.kind)}">${esc(display.label)}</span>${display.persistence_label?`<small>${esc(display.persistence_label)}</small>`:''}${display.message?`<small>${esc(display.message)}</small>`:''}</div><details><summary>Detalhes técnicos</summary><small>Draft #${item.draft_id} · MediaAsset ${item.media_asset_id??'—'} · Conta ${esc(item.account_name||'Não informada')} · Execução #${execution.id} · posição ${item.execution_position??'—'} · ${esc(item.item_status)} · ${esc(item.draft_status)} · ${esc(item.persistence_status)}${item.item_error_code?` · ${esc(item.item_error_code)}`:''}</small></details></li>`;}).join('')||'<li>Nenhum Draft vinculado a esta execução.</li>'}</ul></details>`;
  }).join('')||'<p class="empty-mini">Nenhuma execução concluída.</p>';
  $('#queueHistoryEntries').querySelectorAll('[data-history-execution]').forEach(detail=>detail.addEventListener('toggle',()=>detail.open?expandedHistoryExecutions.add(Number(detail.dataset.historyExecution)):expandedHistoryExecutions.delete(Number(detail.dataset.historyExecution))));
+ bindThumbnails($('#queueHistoryEntries'));
  renderQueueViews();
 }
 async function loadMoreExecutionHistory(){
@@ -408,7 +453,7 @@ document.addEventListener('click',event=>{
  const configure=event.target.closest('[data-batch-configure]');
  if(configure){configuringBatchId=Number(configure.dataset.batchConfigure);const form=$('#batchConfigurationForm');form.reset();fillSelect(field(form,'account_id'),state.accounts.filter(account=>account.active),'Manter conta atual');fillSelect(field(form,'preset_id'),state.presets,'Manter preset atual');$('#batchConfigurationDialog').showModal();return;}
  const cancel=event.target.closest('[data-batch-cancel]');
- if(cancel&&!cancel.disabled)task(async()=>{const id=Number(cancel.dataset.batchCancel),batch=state.batches.find(item=>item.id===id),count=batch?.queue_capabilities?.active_draft_count||0;if(!batch?.queue_capabilities?.can_cancel)throw Error('Este lote não pode ser cancelado com segurança');if(!confirm(`Cancelar este lote? ${count} Draft(s) sairão da fila. Mídias reservadas elegíveis serão liberadas; o histórico será preservado. Nenhum arquivo remoto será excluído.`))return;try{await api(`/batches/${id}/cancel`,{human_confirmed:true});}catch(error){let refreshed=false;try{await refresh();refreshed=true;}catch{}throw Error(refreshed?'O lote mudou de estado e não foi cancelado. A fila foi atualizada; revise as ações disponíveis.':'Não foi possível confirmar o cancelamento. Atualize a fila antes de tentar novamente.');}for(const draft of state.drafts.filter(item=>item.batch_id===id))selected.delete(draft.id);await refresh();notice(`${count} Draft(s) arquivados; histórico mantido e arquivos remotos preservados`);},'queue');
+ if(cancel&&!cancel.disabled)task(async()=>{const id=Number(cancel.dataset.batchCancel),batch=state.batches.find(item=>item.id===id);if(!batch?.queue_capabilities?.can_cancel_eligible)throw Error('Não há trabalho local comprovadamente seguro para cancelar');if(!confirm(`Cancelar somente o trabalho local elegível de "${batch.name}"? Cada vídeo será revalidado. Itens com possível transferência permanecerão bloqueados. O histórico será preservado; nenhum arquivo do Drive será excluído. Para alterar uma headline congelada, crie outro Draft somente após a liberação segura.`))return;let result;try{result=await api(`/batches/${id}/cancel`,{human_confirmed:true,eligible_only:true});}catch(error){try{await refresh();}catch{}throw Error('Não foi possível confirmar o cancelamento. Revise a fila antes de qualquer nova ação.');}for(const item of result.items||[])if(item.result==='CANCELLED')selected.delete(item.draft_id);await refresh();const blocked=(result.items||[]).filter(i=>i.result==='BLOCKED').map(i=>`Draft #${i.draft_id}: ${cancelBlocker(i.reason)}`).join('; ');notice(`${result.cancelled_drafts} cancelado(s); ${result.blocked_drafts} bloqueado(s). Histórico e arquivos remotos preservados.${blocked?' '+blocked:''}`);},'queue');
  if(event.target.closest('[data-queue-go-library]'))view('library');
 });
 $('#productSearch').oninput=()=>task(loadProductWorkspace);
@@ -532,6 +577,7 @@ function patchActiveLibraryGroupHeader(currentRow,freshRow){
  if(currentDetails&&freshDetails)currentDetails.innerHTML=freshDetails.innerHTML;
 }
 function renderLibrary(){
+ rememberThumbnails($('#libraryRows'));
  const library=state.library||{groups:[],total_groups:0,page:1,pages:0};
  const items=visibleLibraryItems();
  $('#libraryCount').textContent=`(${library.total_groups||0} grupos · ${library.total_matching_media||0} mídias)`;
@@ -545,7 +591,7 @@ function renderLibrary(){
  const signature=value=>encodeURIComponent(JSON.stringify(value));
  const mediaRow=item=>{
     const unavailable=item.status==='REMOTE_UNAVAILABLE';
-    const thumbnail=item.file_type==='VIDEO'&&!unavailable?`<span class="thumbnail-wrap"><img class="media-thumbnail" data-thumbnail src="/api/publisher/library/thumbnail/${encodeURIComponent(item.drive_file_id)}" alt="Prévia de ${esc(item.filename)}" loading="lazy"><span class="media-thumbnail placeholder" hidden aria-hidden="true">▶</span></span>`:`<span class="media-thumbnail placeholder" aria-hidden="true">▶</span>`;
+    const thumbnail=item.file_type==='VIDEO'&&!unavailable?`<span class="thumbnail-wrap"><img class="media-thumbnail" data-thumbnail data-thumbnail-url="/api/publisher/library/thumbnail/${encodeURIComponent(item.drive_file_id)}" alt="Prévia de ${esc(item.filename)}" loading="lazy"><span class="media-thumbnail placeholder" hidden aria-hidden="true">▶</span></span>`:`<span class="media-thumbnail placeholder" aria-hidden="true">▶</span>`;
     const canDelete=!unavailable&&!item.media_asset_id&&item.status!=='CONSUMED'&&item.status!=='RESERVED';
     const menu=`<details class="row-menu"><summary aria-label="Mais ações para ${esc(item.filename)}">⋯</summary><div><button type="button" data-change-library-product="${esc(item.drive_file_id)}">Alterar somente este vídeo</button><button type="button" data-ignore-library="${esc(item.drive_file_id)}">Ignorar</button>${canDelete?`<button class="danger" type="button" data-delete-library="${esc(item.drive_file_id)}" data-delete-filename="${esc(item.filename)}" data-delete-size="${esc(item.size||0)}">Excluir do Drive</button>`:''}</div></details>`;
     const origin={MEDIA_OVERRIDE:'Override deste vídeo',DIRECT_FOLDER:'Produto da pasta',ANCESTOR_FOLDER:'Produto herdado da pasta'}[item.product_resolution]||'Produto da pasta não associado';
@@ -609,7 +655,7 @@ function renderLibrary(){
   for(const row of desiredNodes){if(row===cursor)cursor=cursor.nextElementSibling;else tbody.insertBefore(row,cursor);}
  }
  document.querySelectorAll('[data-folder-combobox]').forEach(container=>mountProductCombobox(container,{input:container.querySelector('input[type=search]'),hidden:container.querySelector('input[type=hidden]'),results:container.querySelector('.combobox-results'),context:container.dataset.folderContext,key:container.dataset.productPickerKey}));
- document.querySelectorAll('[data-thumbnail]').forEach(image=>{if(image.dataset.thumbnailBound)return;image.dataset.thumbnailBound='true';image.addEventListener('error',()=>{image.hidden=true;image.nextElementSibling.hidden=false;},{once:true});});
+ bindThumbnails($('#libraryRows'));
  refreshActiveProductPicker();
  renderLibrarySelectedPanel();
 }

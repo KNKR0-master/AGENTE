@@ -150,3 +150,31 @@ Queue/verifier/review and the full Publisher plus complementary Drive suites.
 
 H3b remains a separately authorized operational canary. This commit does not
 start it, migrate operational state, write Drive or execute TikTok actions.
+## Local recovery safeguards (validation pending)
+
+Style samples are generated directly as synthetic PNGs with the versioned font/layout contract;
+they do not require a downloaded video or a synthetic MP4. A failed sample has an explicitly
+labelled simplified illustration and a manual sample retry. The illustration is not font or render validation.
+
+Video previews require an existing local source. Preview failures distinguish source, font,
+configuration, tool, media and artifact/temporary failures. There is no preview download command:
+the worker download path is not repurposed into a pre-queue download flow. Draft eligibility,
+preview availability and final derived-media validation are separate. Enabled headlines still
+require the validated derived artifact before upload, with no original-video fallback.
+
+Cancel eligible local work requires HTTP human confirmation and transactional, per-Draft proof.
+Upload/checkpoint/ledger evidence, active executions, uncertain history and conflicting reservations
+block release. The existing strict cancellation contract remains available; partial cancellation is
+explicitly requested. Cancelled Drafts are archived, immutable snapshots/checklists retained,
+matching reservations released, and audit logs kept. A paused execution becomes completed only
+when every item was locally cancelled; mixed executions remain blocked for manual review.
+Repeated partial cancellation does not recreate work or release a reservation belonging to another Draft.
+
+Hidden queue items retain identity-based navigation and visibility restore, plus applicable local
+cancel/recovery actions. Existing audited pre-upload resume stays in the worker; no generic retry
+or new upload path is introduced. Cancelling does not consume media or authorize Drive deletion.
+
+Thumbnail rendering retains loaded images by exact local file endpoint across DOM refresh.
+Failures have bounded retries; metadata-only/image access and scope checks remain in the service.
+A transient refresh may reuse the same cached image for a bounded stale window, never after an
+identity mismatch. No full video is downloaded for thumbnails.
