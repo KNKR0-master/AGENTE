@@ -62,6 +62,41 @@ timeline UI. Text remains visible for the full video.
 
 ## Preview
 
+### Calibrated Classic Versions
+
+The explicit `Preparar estilos Classic` action now offers Amarelo Forte (yellow
+with black outline), Branco com Contorno, and compact rounded Fundo Preto.
+The original plain-white option is retained for compatibility, not recommended
+as the general-purpose high-contrast option. No preset update runs at startup.
+Only an exact, active generated v1 (including its original name) is upgraded;
+human-edited/archived presets are not overwritten. Each upgrade appends an H1
+version and preserves all previous specs and captured Draft snapshots.
+
+The calibrated anchor is x=0.5 with symmetric 14% margins, a maximum 68% text
+width, y=0.10 and the existing 32% upper bound. FFmpeg's own `text_w/2` centers
+each line independently. Ink bounds produce compact per-line backgrounds;
+rounded alpha layers and text share the canonical H2 filter graph.
+
+Product, Library per-video and Draft controls show lazy cached canonical PNG
+samples, labeled by preset/version. Samples are demonstrations on a synthetic
+light/dark frame; they are not a preview of the selected source video. They are
+not regenerated on unrelated refreshes or each dropdown opening.
+
+`POST /api/publisher/headline-preview/compare` resolves an existing local source
+by Product, Drive file or Draft ID. It never accepts a browser-supplied file path,
+downloads media, updates a Draft, or bypasses the edit/freeze guard. Frozen Drafts
+can compare the captured text against a selected preset without changing their
+snapshot. An empty selection preserves the captured version, not the current
+preset version. New comparison artifacts/cache rows live in OS TEMP, outside
+`agent.db`. `GET /api/publisher/headline-presets/{id}/swatch?version={n}` reads
+the exact immutable version and shares that separate preview cache.
+
+Draft #44 has an execution and remains non-editable under the existing Queue
+guard, even though upload is NOT_STARTED. There is no supported audited style
+replacement for that frozen Draft in this change. Updating the canary requires
+a separately approved procedure; no exception, new Draft or automatic resume
+is introduced. Its old READY artifacts and hashes remain untouched.
+
 Preview is explicit and uses the same H2 font, glyph, wrapping, layout and style
 as the final render. It requires an already local source under the existing JIT
 TEMP root. Opening Queue/Library or refreshing does not download or render media.

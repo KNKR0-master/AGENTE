@@ -18,6 +18,7 @@ from src.publisher.headline_timing import frame_timeline, validate_frame_timelin
 POLICY = dict(version='headline-renderer-1', codec='libx264', preset='medium', crf=18,
               pixel_format='yuv420p', audio='copy-aac-otherwise-aac-192k',
               cadence='decoded-presentation-frames-v2', encoder_time_base='source',
+              layout='individual-line-centering-rounded-background-v2',
               preview='quarter-duration-capped-at-one-second-v1', fonttools=fontTools.__version__)
 
 

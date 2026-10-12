@@ -52,6 +52,15 @@ No text is embedded into the filter graph or filename. Drawtext expansion and
 shaping are disabled. `%`, quotes, colon, semicolon, brackets, backslash and
 precomposed Portuguese accents remain literal.
 
+The calibrated layout identity is `individual-line-centering-rounded-background-v2`.
+Line plans expose conservative advance boxes and glyph ink boxes. Per-line
+backgrounds can use `background_per_line` and `background_radius_ratio`;
+FFmpeg creates small bounded RGBA rounded layers, composited on the source
+timeline before text. Zero-radius legacy block backgrounds retain their existing
+appearance. New specs and this renderer identity invalidate cache reuse where
+appropriate, without overwriting old READY files or changing old snapshot hashes.
+No new font, imaging dependency or rendering service is used.
+
 ## Encoding and validation policy v1
 
 Video: MP4, libx264, medium, CRF 18, yuv420p, one encoder thread, faststart.

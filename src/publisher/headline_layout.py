@@ -45,12 +45,14 @@ def layout(text, spec, display, fonts, workspace):
                 if getattr(table, 'coverage', 0) & 1:
                     kerning.update(getattr(table, 'kernTable', {}))
         overhang = 0
+        ink_bounds = {}
 
         def measure(value):
             nonlocal overhang
             # Rounded advances/outline overhangs conservatively bound this simple
             # left-to-right layout. No platform font fallback is allowed.
             pen_x, left, right, previous = 0, 0, 0, None
+            ink_bottom, ink_top = 0, 0
             for char in value:
                 name = cmap[ord(char)]
                 pen_x += math.ceil(max(0, kerning.get((previous, name), 0)) * scale)
@@ -58,6 +60,8 @@ def layout(text, spec, display, fonts, workspace):
                 glyphs[name].draw(pen)
                 if pen.bounds:
                     x0, y0, x1, y1 = pen.bounds
+                    ink_bottom = min(ink_bottom, math.floor(y0 * scale))
+                    ink_top = max(ink_top, math.ceil(y1 * scale))
                     if y1 * scale > ascent or -y0 * scale > descent:
                         raise RenderError('HEADLINE_FONT_METRICS_UNSUPPORTED')
                     left = min(left, pen_x + math.floor(x0 * scale))
@@ -66,6 +70,7 @@ def layout(text, spec, display, fonts, workspace):
                                    math.ceil((x1-font['hmtx'][name][0]) * scale))
                 pen_x += math.ceil(font['hmtx'][name][0] * scale)
                 previous = name
+            ink_bounds[value] = (ink_bottom, ink_top)
             return max(right, pen_x) - left + 2
 
         limit = math.floor(width * spec['max_width'])
@@ -110,6 +115,12 @@ def layout(text, spec, display, fonts, workspace):
             raise RenderError('HEADLINE_FONT_UNAVAILABLE')
         return dict(lines=lines, font_size=size, ascent=ascent, descent=descent, line_height=line_height,
                     widths=widths, box=[left, top, box_w, box_h], anchor=anchor, padding=padding,
+                    line_boxes=[[anchor - {'left': 0, 'center': w / 2, 'right': w}[spec['alignment']],
+                                 top + i * line_height, w, line_height] for i, w in enumerate(widths)],
+                    line_ink_boxes=[[anchor - {'left': 0, 'center': w / 2, 'right': w}[spec['alignment']],
+                                     top + i * line_height + ascent - ink_bounds[line][1],
+                                     w, max(1, ink_bounds[line][1] - ink_bounds[line][0])]
+                                    for i, (line, w) in enumerate(zip(lines, widths))],
                     stroke=stroke, blur=blur, shadow_offset=[dx, dy], spec=spec, display=display)
     finally:
         font.close()
@@ -136,13 +147,34 @@ def filters(plan, workspace):
         return ','.join(result)
 
     foreground = text_filters(spec['text_color'])
-    if spec['background_color']:
+    rounded = spec['background_color'] and spec['background_radius_ratio'] > 0
+    if spec['background_color'] and not rounded:
         pad = plan['padding']
-        foreground = (f"drawbox=x={left-pad}:y={top-pad}:w={width+2*pad}:h={height+2*pad}:"
-                      f"color={spec['background_color']}:t=fill," + foreground)
+        boxes = plan['line_ink_boxes'] if spec['background_per_line'] else [plan['box']]
+        foreground = ''.join(f"drawbox=x={x-pad}:y={y-pad}:w={w+2*pad}:h={h+2*pad}:"
+                             f"color={spec['background_color']}:t=fill," for x,y,w,h in boxes) + foreground
+    background_graph = ''
+    input_label = '[0:v]'
+    if rounded:
+        boxes = plan['line_ink_boxes'] if spec['background_per_line'] else [plan['box']]
+        pad = plan['padding']
+        for index, (x, y, w, h) in enumerate(boxes):
+            w, h = math.ceil(w + 2 * pad), math.ceil(h + 2 * pad)
+            radius = min(round(plan['display'][1] * spec['background_radius_ratio']), w // 2, h // 2)
+            # Small FFmpeg alpha layers, not full-frame CPU masks. Overlay keeps
+            # the source presentation timestamps as the main input timeline.
+            distance = f"pow(max(abs(X-(W-1)/2)-(W/2-{radius}),0),2)+pow(max(abs(Y-(H-1)/2)-(H/2-{radius}),0),2)"
+            alpha = f"if(lte({distance},{radius * radius}),255,0)"
+            label = f'[headlinebox{index}]'
+            output = f'[headlinebase{index}]'
+            background_graph += (f"color=c={spec['background_color']}:s={w}x{h},format=rgba,"
+                                 f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha}'{label};"
+                                 f"{input_label}{label}overlay=x={round(x-pad)}:y={round(y-pad)}:"
+                                 f"shortest=1{output};")
+            input_label = output
     if spec['shadow_color']:
         shadow = text_filters(spec['shadow_color'], True)
         blur = f",gblur=sigma={plan['blur']}" if plan['blur'] else ''
-        return (f"[0:v]split[base][layer];[layer]format=rgba,colorchannelmixer=aa=0,{shadow}{blur}[shadow];"
+        return (background_graph + f"{input_label}split[base][layer];[layer]format=rgba,colorchannelmixer=aa=0,{shadow}{blur}[shadow];"
                 f"[base][shadow]overlay=shortest=1,{foreground}[out]")
-    return f'[0:v]{foreground}[out]'
+    return background_graph + f'{input_label}{foreground}[out]'

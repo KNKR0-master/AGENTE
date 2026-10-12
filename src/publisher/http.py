@@ -53,6 +53,17 @@ class PublisherAPI:
             no_store=True,
         )
 
+    def _headline_preview_cache(self):
+        cache = getattr(self, '_style_preview_cache', None)
+        if cache is None:
+            from src.publisher.headline_previews import HeadlinePreviewCache
+            renderer = self.headline_renderer
+            if renderer is None:
+                from src.publisher.headline_configuration import create_renderer
+                renderer = create_renderer(self.root, self.root / 'data/publisher/temp')
+            cache = self._style_preview_cache = HeadlinePreviewCache(renderer)
+        return cache
+
     def initialize(self):
         self.worker.profile_ownership.reconcile_all()
         self.worker.cache = TemporaryMediaCache(self.root)
@@ -241,6 +252,21 @@ class PublisherAPI:
         return result
 
     def get(self, handler, query, path="/api/publisher"):
+        swatch_match = re.fullmatch(r'/api/publisher/headline-presets/(\d+)/swatch', path)
+        if swatch_match:
+            from src.publisher.headlines import list_presets
+            with closing(sqlite3.connect(Path(self.db).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                preset = next((p for p in list_presets(conn) if p['id'] == int(swatch_match[1])), None)
+                if not preset: raise ValueError('HEADLINE_PRESET_INVALID')
+                version = int(query.get('version', [preset['current_version']])[0])
+                row = conn.execute('SELECT spec_json FROM publisher_headline_preset_versions WHERE preset_id=? AND version=?',
+                                   (preset['id'], version)).fetchone()
+                if not row: raise ValueError('HEADLINE_PRESET_INVALID')
+                captured = dict(id=preset['id'], version=version, name=preset['name'], spec=json.loads(row[0]))
+            sample = self._headline_preview_cache().swatch(captured)
+            handler._json(sample, no_store=True)
+            return
         with closing(connect(self.db)) as conn:
             if path == '/api/publisher/headline-workflow':
                 from src.publisher.headline_configuration import machine_readiness
@@ -439,6 +465,13 @@ class PublisherAPI:
                 if length > 1024*1024:
                     raise ValueError("Requisicao muito grande")
                 data = json.loads(handler.rfile.read(length) or b"{}")
+                if path == '/api/publisher/headline-preview/compare':
+                    from src.publisher.headline_previews import comparison_request
+                    with closing(sqlite3.connect(Path(self.db).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
+                        conn.row_factory = sqlite3.Row
+                        snapshot, source = comparison_request(conn, data)
+                    handler._json(self._headline_preview_cache().compare(snapshot, source), no_store=True)
+                    return
                 with closing(connect(self.db)) as conn:
                     service = PublisherService(conn, self.root)
                     action = path.rsplit("/", 1)[-1]

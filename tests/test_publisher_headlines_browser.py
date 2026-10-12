@@ -11,6 +11,7 @@ from src.store import connect
 from src.publisher import headlines
 from src.publisher.service import PublisherService, get_row
 from tests import test_publisher_remote as remote
+from tests.publisher_headline_fixture import HeadlineFixtureServer
 from tests.test_publisher_queue_browser import QueueFixtureHandler, fixture
 
 
@@ -20,7 +21,20 @@ class HeadlineFixtureHandler(QueueFixtureHandler):
         self.send_response(status)
         self.send_header('Content-Type','application/json')
         self.send_header('Content-Length',str(len(body)))
-        self.end_headers(); self.wfile.write(body)
+        self.response_delivered = False
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except ConnectionAbortedError as exc:
+            if not (isinstance(self.server, HeadlineFixtureServer)
+                    and self.server.record_expected_disconnect(self, exc, status)):
+                exc.add_note(f'Fixture response not delivered: {self.command} '
+                             f'{urlsplit(self.path).path}')
+                raise
+            self.close_connection = True
+            return False
+        self.response_delivered = True
+        return True
 
     def do_GET(self):
         path=urlsplit(self.path).path

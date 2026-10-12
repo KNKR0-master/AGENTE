@@ -229,7 +229,11 @@ class LibraryBatchPanelBrowserTests(unittest.TestCase):
         selected.locator('summary').click()
         selected.locator('[data-remove-library-selection="G1C1A1"]').click()
         page.wait_for_function("document.querySelector('#libraryBatchSelectionText')?.textContent.startsWith('1 vídeo')")
-        page.wait_for_function("window.PublisherUIState && document.querySelector('#libraryBatchReadiness')?.textContent.includes('1 prontos')")
+        page.wait_for_function(r"""() => {
+          const counter = document.querySelector('#libraryBatchReadiness .batch-readiness-overview > span:first-child');
+          return window.PublisherUIState && counter
+            && /^1 eleg\u00edve(?:l|is) para criar Draft$/.test(counter.textContent.trim());
+        }""")
         self.assertEqual(BatchPanelFixtureHandler.preview_requests[-1]['drive_file_ids'], ['G1C2A1'])
         self.assertTrue(page.locator('#libraryBatchDialog').evaluate('el => el.open'))
         self.assertEqual(errors, [])
@@ -291,7 +295,10 @@ class LibraryBatchPanelBrowserTests(unittest.TestCase):
         page.locator('#libraryBatchSelectedPanel [data-remove-library-selection="G1C1A1"]').click()
         self.assertFalse(page.locator('#createBatchFromLibrary').is_disabled())
         self.assertNotIn('precisam ser corrigidos', page.locator('#librarySelectionCount').inner_text())
-        page.wait_for_function("document.querySelector('#libraryBatchReadiness')?.textContent.includes('1 prontos')")
+        page.wait_for_function(r"""() => {
+          const counter = document.querySelector('#libraryBatchReadiness .batch-readiness-overview > span:first-child');
+          return counter && /^1 eleg\u00edve(?:l|is) para criar Draft$/.test(counter.textContent.trim());
+        }""")
         self.assertEqual(BatchPanelFixtureHandler.preview_requests[-1]['drive_file_ids'], ['G1C2A1'])
         self.assertFalse(errors, errors)
 

@@ -4,6 +4,8 @@ from src.store import now_iso
 
 STYLES = {'WHITE': 'Classic · Branco', 'YELLOW': 'Classic · Amarelo',
           'BLACK_BACKGROUND': 'Classic · Fundo preto', 'OUTLINE': 'Classic · Branco com contorno'}
+CALIBRATED_LABELS = {**STYLES, 'YELLOW': 'Classic · Amarelo Forte',
+                     'OUTLINE': 'Classic · Branco com Contorno', 'BLACK_BACKGROUND': 'Classic · Fundo Preto'}
 SIZES = {'SMALL': ('Pequeno', .026), 'STANDARD': ('Padrão', .034), 'LARGE': ('Grande', .042)}
 
 
@@ -78,8 +80,26 @@ def save_template(conn, data):
 
 
 def style_catalog(conn):
-    return [{**dict(r), 'label': STYLES[r['style_key']], 'size_label': SIZES[r['size_key']][0]}
-            for r in conn.execute('SELECT * FROM publisher_headline_style_variants ORDER BY style_key,size_key')]
+    return [{**dict(r), 'label': r['name'].removesuffix(' · '+SIZES[r['size_key']][0]),
+             'size_label': SIZES[r['size_key']][0]}
+            for r in conn.execute('SELECT s.*,p.name,p.current_version FROM publisher_headline_style_variants s '
+                                  'JOIN publisher_headline_presets p ON p.id=s.preset_id ORDER BY s.style_key,s.size_key')]
+
+
+def classic_spec(font, style, size, *, legacy=False):
+    spec = {**headlines.DEFAULT_SPEC, **font, 'font_size_ratio':SIZES[size][1], 'max_lines':2,
+            'x':.46 if legacy else .5, 'y':.10, 'margin_x':.14, 'margin_y':.06,
+            'max_width':.62 if legacy else .68, 'max_block_height_ratio':.16, 'safe_bottom_ratio':.32,
+            'background_padding_ratio':.008, 'stroke_width_ratio':.0015 if legacy else .0025}
+    if style == 'YELLOW':
+        spec['text_color'] = '#FFE500' if legacy else '#FFEB00'
+        if not legacy: spec['stroke_color'] = '#000000'
+    if style == 'OUTLINE': spec['stroke_color'] = '#000000'
+    if style == 'BLACK_BACKGROUND':
+        spec['background_color'] = '#000000'
+        if not legacy:
+            spec.update(background_radius_ratio=.007, background_per_line=True)
+    return headlines.validate_spec(spec)
 
 
 def initialize_styles(conn, root):
@@ -90,16 +110,19 @@ def initialize_styles(conn, root):
     font = ready['classic_font']
     for style, label in STYLES.items():
         for size, (size_label, ratio) in SIZES.items():
-            if conn.execute('SELECT 1 FROM publisher_headline_style_variants WHERE style_key=? AND size_key=?', (style,size)).fetchone():
+            spec = classic_spec(font, style, size)
+            existing = conn.execute('SELECT preset_id FROM publisher_headline_style_variants WHERE style_key=? AND size_key=?', (style,size)).fetchone()
+            if existing:
+                preset = next(p for p in headlines.list_presets(conn) if p['id'] == existing[0])
+                # Only the exact generated v1 is eligible for this explicit
+                # upgrade. Human-edited and archived presets remain authoritative.
+                if (preset['active'] and preset['current_version'] == 1 and
+                        preset['name'] == label+' · '+size_label and
+                        headlines.validate_spec(preset['spec']) == classic_spec(font, style, size, legacy=True)):
+                    headlines.save_preset(conn, {'id':preset['id'], 'expected_version':1,
+                        'name':CALIBRATED_LABELS[style]+' · '+size_label, 'spec':spec})
                 continue
-            spec = {**headlines.DEFAULT_SPEC, **font, 'font_size_ratio':ratio, 'max_lines':2,
-                    'x':.46, 'y':.10, 'margin_x':.14, 'margin_y':.06, 'max_width':.62,
-                    'max_block_height_ratio':.16, 'safe_bottom_ratio':.32,
-                    'background_padding_ratio':.008, 'stroke_width_ratio':.0015}
-            if style == 'YELLOW': spec['text_color'] = '#FFE500'
-            if style == 'BLACK_BACKGROUND': spec['background_color'] = '#000000'
-            if style == 'OUTLINE': spec['stroke_color'] = '#000000'
-            preset = headlines.save_preset(conn, {'name':label+' · '+size_label, 'spec':spec})
+            preset = headlines.save_preset(conn, {'name':CALIBRATED_LABELS[style]+' · '+size_label, 'spec':spec})
             with conn:
                 conn.execute('INSERT INTO publisher_headline_style_variants VALUES (?,?,?)', (style,size,preset['id']))
     return style_catalog(conn)

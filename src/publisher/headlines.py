@@ -16,7 +16,8 @@ DEFAULT_SPEC = dict(font_ref='', font_sha256='', font_face_index=0,
                     font_size_ratio=0.05, font_weight=400, text_color='#FFFFFF',
                     alignment='center', x=0.5, y=0.15, margin_x=0.05, margin_y=0.05,
                     max_width=0.9, max_lines=3, wrapping='word', background_color=None,
-                    background_padding_ratio=0.01, stroke_color=None, stroke_width_ratio=0.002,
+                    background_padding_ratio=0.01, background_radius_ratio=0.0,
+                    background_per_line=False, stroke_color=None, stroke_width_ratio=0.002,
                     shadow_color=None, shadow_offset_x=0.002, shadow_offset_y=0.002,
                     shadow_blur_ratio=0.004, max_block_height_ratio=1.0, safe_bottom_ratio=1.0)
 
@@ -87,6 +88,7 @@ def validate_spec(data):
     ranges = {'font_size_ratio': (0.005, 0.3), 'x': (0, 1), 'y': (0, 1),
               'margin_x': (0, 0.45), 'margin_y': (0, 0.45), 'max_width': (0.01, 1),
               'background_padding_ratio': (0, 0.1), 'stroke_width_ratio': (0, 0.05),
+              'background_radius_ratio': (0, 0.05),
               'shadow_offset_x': (-0.1, 0.1), 'shadow_offset_y': (-0.1, 0.1),
               'shadow_blur_ratio': (0, 0.1), 'max_block_height_ratio': (0.01, 1), 'safe_bottom_ratio': (0.01, 1)}
     for key, (low, high) in ranges.items():
@@ -106,6 +108,7 @@ def validate_spec(data):
         spec[key] = spec[key].upper()
     if spec['alignment'] not in ('left', 'center', 'right') or spec['wrapping'] not in ('word', 'explicit'):
         raise ValueError('HEADLINE_LAYOUT_INVALID')
+    spec['background_per_line'] = boolean(spec['background_per_line'])
     return spec
 
 
@@ -171,7 +174,7 @@ def render_hash(snapshot):
         spec = dict((snapshot.get('preset') or {}).get('spec') or {})
         spec.pop('font_ref', None)  # Asset bytes + face identify the font, not its local alias.
         for color, fields in {
-            'background_color': ('background_padding_ratio',),
+            'background_color': ('background_padding_ratio', 'background_radius_ratio', 'background_per_line'),
             'stroke_color': ('stroke_width_ratio',),
             'shadow_color': ('shadow_offset_x', 'shadow_offset_y', 'shadow_blur_ratio'),
         }.items():
