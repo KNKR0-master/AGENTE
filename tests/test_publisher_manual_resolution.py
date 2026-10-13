@@ -38,7 +38,10 @@ class ManualResolutionTests(unittest.TestCase):
         self.assertEqual(get_row(self.conn, 'publisher_drafts', draft_id)['upload_status'], 'TRANSFER_UNKNOWN')
         with self.assertRaisesRegex(ValueError, 'RECONCILIATION'):
             assert_upload_allowed(self.conn, draft_id)
-        self.service.assert_media_available(get_row(self.conn, 'publisher_media_assets', before['media_asset_id']))
+        with self.assertRaisesRegex(ValueError, 'MEDIA_HISTORY_RECONCILIATION_REQUIRED'):
+            self.service.assert_media_available(get_row(self.conn, 'publisher_media_assets', before['media_asset_id']))
+        self.assertTrue(result['reuse_blocked'])
+        self.assertEqual(result['reuse_blocker']['draft_id'], draft_id)
         audit = json.loads(self.conn.execute("SELECT message FROM publisher_execution_logs WHERE draft_id=? AND step='MANUAL_RESOLUTION'", (draft_id,)).fetchone()[0])
         self.assertEqual(audit['previous_media_state'], 'NEEDS_RECONCILIATION')
         self.assertEqual(audit['execution_id'], execution_id)

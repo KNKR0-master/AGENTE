@@ -268,6 +268,9 @@ def restore_pre_upload_failure(conn, draft_id):
     asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
     if asset.get('status') not in {'PROCESSING', 'FAILED', 'AVAILABLE'}:
         return False
+    from src.publisher.media_history import media_history_blocker
+    if media_history_blocker(conn, asset, draft_id=draft_id, account_id=draft['account_id'], purpose='release'):
+        return False
     timestamp = now_iso()
     conn.execute(
         "UPDATE publisher_drafts SET status='DRAFT',error_code=NULL,updated_at=? WHERE id=?",
@@ -1613,7 +1616,7 @@ class PublisherWorker:
                                     'Persistencia local ja confirmada; cleanup sem nova acao TikTok',
                                 )
                                 conn.commit()
-                                if not cleanup_remote(conn, row_id, self.provider_factory(asset), self.root):
+                                if not cleanup_remote(conn, row_id, root=self.root, provider_factory=self.provider_factory):
                                     raise PreparationError('MANUAL_ACTION_REQUIRED', 'Cleanup remoto pendente; origem preservada')
                                 self.finish_item(conn, row_id, 'SUCCEEDED')
                                 self._queue_pending_execution(conn, execution_id)
@@ -1723,7 +1726,7 @@ class PublisherWorker:
                                 conn.commit()
                                 draft = get_row(conn, 'publisher_drafts', row_id)
                                 asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
-                                if not cleanup_remote(conn, row_id, self.provider_factory(asset), self.root):
+                                if not cleanup_remote(conn, row_id, root=self.root, provider_factory=self.provider_factory):
                                     raise PreparationError('MANUAL_ACTION_REQUIRED', 'Cleanup remoto pendente; origem preservada')
                                 self.finish_item(conn, row_id, 'SUCCEEDED')
                                 self._queue_pending_execution(conn, execution_id)
@@ -1744,7 +1747,7 @@ class PublisherWorker:
                             elif command == 'cleanup':
                                 draft = get_row(conn,'publisher_drafts',row_id)
                                 asset = get_row(conn,'publisher_media_assets',draft['media_asset_id'])
-                                cleanup_remote(conn,row_id,self.provider_factory(asset),self.root)
+                                cleanup_remote(conn, row_id, root=self.root, provider_factory=self.provider_factory)
                             elif command == "release":
                                 with self.lock:
                                     self.pages.pop(row_id, None)
@@ -1770,7 +1773,7 @@ class PublisherWorker:
                                     draft = get_row(conn, 'publisher_drafts', row_id)
                                     asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
                                     cleanup_ok = cleanup_remote(
-                                        conn, row_id, self.provider_factory(asset), self.root,
+                                        conn, row_id, root=self.root, provider_factory=self.provider_factory,
                                     )
                                     if not cleanup_ok:
                                         raise PreparationError(
@@ -1960,7 +1963,19 @@ class PublisherWorker:
                         prepared.validate(conn, get_row(conn, 'publisher_drafts', row_id), self.stop_event)
                     except ValueError as exc:
                         raise PreparationError('MANUAL_ACTION_REQUIRED', f'Preparacao local bloqueada: {exc}') from exc
-                safety.start_mutation(account['id'], mutation_keys[operation], operation, draft_id=row_id)
+                def recheck_upload():
+                    from src.publisher.media_history import assert_media_history_allowed
+                    current = get_row(conn, 'publisher_drafts', row_id)
+                    if current['status'] != 'PREPARING':
+                        raise ValueError('UPLOAD_DRAFT_STATE_CHANGED')
+                    assert_upload_allowed(conn, row_id)
+                    # Bind the prepared source and actual browser account too;
+                    # reading a newly changed asset identity alone is not proof.
+                    assert_media_history_allowed(conn, asset, draft_id=row_id, account_id=account['id'], purpose='upload')
+                # Guard and intent share a write lock. After commit, the ledger
+                # itself prevents concurrent release/reservation of this file.
+                safety.start_mutation(account['id'], mutation_keys[operation], operation, draft_id=row_id,
+                                      pre_mutation_guard=recheck_upload if operation == 'VIDEO_UPLOAD' else None)
                 log(conn, row_id, 'ACCOUNT_SAFETY_GUARD', 'OK', f'{operation} autorizado e registrado antes do efeito remoto')
                 conn.commit()
             def after_mutation(operation):

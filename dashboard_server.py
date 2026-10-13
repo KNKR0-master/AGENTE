@@ -166,7 +166,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/publisher/runtime-info":
             PUBLISHER.runtime_info(self)
             return
-        if re.fullmatch(r"/api/publisher/drafts/\d+/headline", path) or re.fullmatch(r'/api/publisher/headline-presets/\d+/swatch', path) or path in {"/api/publisher/headline-workflow","/api/publisher/headline-presets","/api/publisher", "/api/publisher/library", "/api/publisher/library/groups", "/api/publisher/library/group-items", "/api/publisher/products/workspace", "/api/publisher/folder-catalog", "/api/publisher/drive-sync/status", "/api/publisher/drive-auth/status", "/api/publisher/execution-history"} or path.startswith("/api/publisher/library/thumbnail/") or re.fullmatch(r'/api/publisher/batches/\d+/(preflight|review)', path):
+        if re.fullmatch(r"/api/publisher/drafts/\d+/headline", path) or re.fullmatch(r'/api/publisher/headline-presets/\d+/swatch', path) or path in {"/api/publisher/headline-workflow","/api/publisher/headline-presets","/api/publisher", "/api/publisher/library", "/api/publisher/library/groups", "/api/publisher/library/group-items", "/api/publisher/products/workspace", "/api/publisher/folder-catalog", "/api/publisher/drive-sync/status", "/api/publisher/drive-auth/status", "/api/publisher/execution-history"} or path.startswith("/api/publisher/library/thumbnail/") or re.fullmatch(r'/api/publisher/batches/\d+/(preflight|review|consumption-evaluation)', path):
             PUBLISHER.get(self, query, path)
             return
         conn = connect(DB_PATH)

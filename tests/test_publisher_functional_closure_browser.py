@@ -138,7 +138,7 @@ class FunctionalClosureBrowserTests(unittest.TestCase):
                     page.wait_for_timeout(5500)
                     self.assertTrue(dialog.is_visible())
                     dialog.locator('[name="human_confirmed"]').check()
-                    dialog.locator('[type="submit"]').click()
+                    dialog.locator('#batchPostingForm [type="submit"]').click()
                     page.wait_for_function("document.querySelector('#batchReviewResult').textContent.includes('1 registrados')")
                     posting = next(r[2] for r in ClosureHandler.requests if r[1].endswith('register-published'))
                     self.assertEqual(posting['draft_ids'], [1])

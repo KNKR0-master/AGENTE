@@ -5,6 +5,7 @@ from collections.abc import Iterable
 
 from src.store import now_iso
 from src.publisher.batch_limits import MAX_DRAFTS_PER_BATCH, BatchLimitExceeded
+from src.publisher.media_history import media_history_blocker
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
@@ -79,6 +80,7 @@ def _base_query(*, include_unavailable=False) -> str:
       LEFT JOIN publisher_media_overrides ov ON ov.drive_file_id=df.drive_file_id
       LEFT JOIN publisher_media_decisions dec ON dec.drive_file_id=df.drive_file_id
       LEFT JOIN publisher_media_assets ma ON ma.remote_file_id=df.drive_file_id
+       AND ma.provider='google_drive' AND ma.source_account='cecilia'
       LEFT JOIN publisher_drafts d ON d.media_asset_id=ma.id AND d.status<>'ARCHIVED'
       LEFT JOIN publisher_batches b ON b.id=d.batch_id
       LEFT JOIN publisher_products pp ON pp.product_id=COALESCE(ov.product_id, f.product_id, ancestor.product_id)
@@ -125,7 +127,14 @@ def _raw_rows(conn, *, drive_file_ids: Iterable[str] | None = None, search: str 
     if clauses:
         query += " AND " + " AND ".join(clauses)
     query += " ORDER BY COALESCE(df.modified_time, df.created_time, df.updated_at) DESC, df.name COLLATE NOCASE"
-    return [dict(row) for row in conn.execute(query, params)]
+    rows = [dict(row) for row in conn.execute(query, params)]
+    for row in rows:
+        if row.get('media_asset_id'):
+            asset = conn.execute('SELECT * FROM publisher_media_assets WHERE id=?',
+                                 (row['media_asset_id'],)).fetchone()
+            row['media_history_blocker'] = media_history_blocker(
+                conn, dict(asset) if asset else None, draft_id=row.get('draft_id'), purpose='reserve')
+    return rows
 
 
 def _classify(row: dict) -> dict:
@@ -176,6 +185,7 @@ def _classify(row: dict) -> dict:
         "folder_product_id": row.get("direct_folder_product_id") or row.get("inferred_product_id"),
         "folder_product_name": row.get("direct_folder_product_name") or row.get("ancestor_product_name"),
         "media_asset_id": row.get("media_asset_id"),
+        "media_history_blocker": row.get("media_history_blocker"),
         "media_status": media_status or None,
         "draft_id": row.get("draft_id"),
         "draft_status": row.get("draft_status"),
@@ -197,10 +207,22 @@ def _classify(row: dict) -> dict:
         batch_name = str(row.get("batch_name") or "").strip()
         reason = (f"Em uso em: {batch_name}" if batch_name else
                   f"Em uso por Rascunho #{row['draft_id']}" if row.get("draft_id") else "Mídia reservada")
+        if row.get('media_history_blocker'):
+            blocker = row['media_history_blocker']
+            context = (f" Draft #{blocker['draft_id']} · Conta #{blocker['account_id']}."
+                       if blocker.get('draft_id') is not None else '')
+            reason += '. ' + blocker['message'] + context
         result.update(status="RESERVED", status_label=FRIENDLY_STATUS["RESERVED"], reason=reason)
         return result
     if media_status == "CONSUMED":
         result.update(status="CONSUMED", status_label=FRIENDLY_STATUS["CONSUMED"], reason="Mídia já consumida")
+        return result
+    if row.get('media_history_blocker'):
+        blocker = row['media_history_blocker']
+        context = (f" Draft #{blocker['draft_id']} · Conta #{blocker['account_id']}."
+                   if blocker.get('draft_id') is not None else '')
+        result.update(status='ATTENTION', status_label=FRIENDLY_STATUS['ATTENTION'],
+                      reason=blocker['message'] + context)
         return result
     if decision == "IGNORED":
         result.update(status="IGNORED", status_label=FRIENDLY_STATUS["IGNORED"], reason=row.get("decision_reason") or "Ignorado manualmente")

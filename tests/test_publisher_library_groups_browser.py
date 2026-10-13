@@ -2,6 +2,7 @@ import json
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -182,6 +183,15 @@ class GroupFixtureHandler(SimpleHTTPRequestHandler):
 @unittest.skipUnless(shutil.which("chrome") or Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe").exists(),
                      "Chrome Stable is required")
 class GroupedLibraryBrowserTests(unittest.TestCase):
+    @staticmethod
+    def wait_for_server_event(page, event, timeout):
+        # The isolation route uses Playwright's sync dispatcher. Pump it while
+        # waiting for a background browser request to reach the fixture server.
+        deadline = time.monotonic() + timeout
+        while not event.is_set() and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+        return event.is_set()
+
     def setUp(self):
         GroupFixtureHandler.lazy_requests = 0
         GroupFixtureHandler.selection_requests = 0
@@ -343,7 +353,7 @@ class GroupedLibraryBrowserTests(unittest.TestCase):
                     page.locator('[data-library-group-row="product:1"]').wait_for(timeout=15000)
 
                     # Hold the real five-second refresh's old ACTIVE query while the operator changes views.
-                    self.assertTrue(GroupFixtureHandler.delayed_active_started.wait(timeout=12))
+                    self.assertTrue(self.wait_for_server_event(page, GroupFixtureHandler.delayed_active_started, timeout=12))
                     page.locator("#libraryGroupView").select_option("REQUIRES_ATTENTION")
                     picker = page.locator('[data-product-picker-key="folder:unassigned"] input[type=search]')
                     picker.wait_for(timeout=10000)

@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from contextlib import nullcontext
 
 from src.store import now_iso
 
@@ -191,14 +192,19 @@ class AccountSafetyGuard:
                 self.activate(account_id, "POSTING_LIMIT_REACHED", reason, "LOCAL_ACTIVITY_BUDGET")
                 raise AccountProtectionBlocked("POSTING_LIMIT_REACHED", reason)
 
-    def start_mutation(self, account_id, mutation_key, mutation_type, *, draft_id=None):
+    def start_mutation(self, account_id, mutation_key, mutation_type, *, draft_id=None, pre_mutation_guard=None):
         self.assert_allowed(account_id)
-        existing = self.conn.execute("""SELECT * FROM account_mutation_ledger
-          WHERE account_id=? AND mutation_key=?""", (int(account_id), str(mutation_key))).fetchone()
-        if existing:
-            raise AccountProtectionBlocked("MANUAL_REVIEW_REQUIRED", "DUPLICATE_MUTATION_KEY",
-                                           "Mutacao ja registrada; reconciliacao obrigatoria")
-        with self.conn:
+        owns_transaction = not self.conn.in_transaction
+        with self.conn if owns_transaction else nullcontext():
+            if owns_transaction:
+                self.conn.execute('BEGIN IMMEDIATE')
+            existing = self.conn.execute("""SELECT * FROM account_mutation_ledger
+              WHERE account_id=? AND mutation_key=?""", (int(account_id), str(mutation_key))).fetchone()
+            if existing:
+                raise AccountProtectionBlocked("MANUAL_REVIEW_REQUIRED", "DUPLICATE_MUTATION_KEY",
+                                               "Mutacao ja registrada; reconciliacao obrigatoria")
+            if pre_mutation_guard is not None:
+                pre_mutation_guard()
             self.conn.execute("""INSERT INTO account_mutation_ledger
               (account_id,mutation_key,mutation_type,draft_id,status,started_at)
               VALUES (?,?,?,?, 'STARTED',?)""", (int(account_id), str(mutation_key), mutation_type,

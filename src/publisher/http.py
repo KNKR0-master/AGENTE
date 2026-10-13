@@ -332,6 +332,12 @@ class PublisherAPI:
                 from src.publisher.posting_review import batch_review
                 handler._json(batch_review(conn, int(batch_review_match[1])), no_store=True)
                 return
+            consumption_evaluation_match = re.fullmatch(r'/api/publisher/batches/(\d+)/consumption-evaluation', path)
+            if consumption_evaluation_match:
+                from src.publisher.batch_consumption import evaluate_batch_consumption
+                handler._json(evaluate_batch_consumption(conn, int(consumption_evaluation_match[1]),
+                                                        self.worker.provider_factory), no_store=True)
+                return
             if path == "/api/publisher/library/groups":
                 handler._json(PublisherService(conn, self.root).media_library_groups({
                     key: values[0] for key, values in query.items() if values
@@ -514,6 +520,10 @@ class PublisherAPI:
                     elif re.fullmatch(r'/api/publisher/batches/(\d+)/register-published', path):
                         from src.publisher.posting_review import register_batch_published
                         result = register_batch_published(conn, int(path.split('/')[-2]), data)
+                    elif re.fullmatch(r'/api/publisher/batches/(\d+)/finalize-consumption', path):
+                        from src.publisher.batch_consumption import finalize_batch_consumption
+                        result = finalize_batch_consumption(
+                            conn, int(path.split('/')[-2]), data, self.worker.provider_factory, self.root)
                     elif batch_action_match and batch_action_match[2] == 'reorder':
                         result = service.reorder_batch(int(batch_action_match[1]), data.get('ordered_draft_ids') or [])
                     elif batch_action_match and batch_action_match[2] == 'rename':
@@ -574,7 +584,7 @@ class PublisherAPI:
                     elif action == 'folder-container-settings':
                         result = service.configure_product_container(data)
                     elif action == 'media-delete':
-                        result = service.delete_library_media(data, media_provider())
+                        result = service.delete_library_media(data, provider_factory=media_provider)
                     elif action == "bulk":
                         ids = data.get("ids", [])
                         if data.get("action") in {"reset", "published", "scheduled"} and not data.get("human_confirmed"):
@@ -614,6 +624,9 @@ class PublisherAPI:
                     elif action in {"login", "review", "cleanup"}:
                         if action == 'cleanup' and data.get('human_confirmed') is not True:
                             raise ValueError('EXPLICIT_MEDIA_CONSUMPTION_CONFIRMATION_REQUIRED')
+                        if action == 'cleanup':
+                            from src.publisher.lifecycle import assert_cleanup_allowed
+                            assert_cleanup_allowed(conn, data['id'])
                         get_row(conn, "publisher_accounts" if action == "login" else "publisher_drafts", data["id"])
                         result = self.worker.submit(action, data["id"]) or {"ok": True}
                     else:

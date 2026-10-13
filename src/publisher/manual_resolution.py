@@ -4,6 +4,7 @@ import json
 
 from src.publisher.lifecycle import reconcile_received
 from src.publisher.queue_policy import reconciliation_context
+from src.publisher.media_history import media_history_blocker
 from src.publisher.reconciliation_evidence import get_latest_reconciliation_evidence
 from src.publisher.service import get_row, log
 from src.store import now_iso
@@ -56,6 +57,7 @@ def resolve_draft(conn, draft_id, data):
             conn.execute("UPDATE publisher_media_assets SET status='AVAILABLE',updated_at=? WHERE id=?", (now_iso(), media['id']))
         after = get_row(conn, 'publisher_drafts', draft['id'])
         media_after = get_row(conn, 'publisher_media_assets', media['id'])
+        reuse_blocker = media_history_blocker(conn, media_after, account_id=draft['account_id'], purpose='reserve')
         audit = dict(human_confirmed=True, decision=decision, reason=reason,
                      draft_id=draft['id'], media_asset_id=media['id'], account_id=draft['account_id'],
                      execution_id=context['execution_id'], checkpoint_id=checkpoint['id'],
@@ -63,7 +65,9 @@ def resolve_draft(conn, draft_id, data):
                      previous_state=draft['status'], resulting_state=after['status'],
                      previous_media_state=media['status'], resulting_media_state=media_after['status'],
                      remote_may_exist_acknowledged=data.get('acknowledge_remote_may_exist') is True,
+                     reuse_authorized=False, reuse_blocker=reuse_blocker,
                      observed_at=now_iso())
         log(conn, draft['id'], 'MANUAL_RESOLUTION', after['status'], json.dumps(audit, ensure_ascii=True))
     return {'draft_id': draft['id'], 'status': after['status'], 'media_status': media_after['status'],
-            'decision': decision, 'remote_actions': 0, 'retry_authorized': False}
+            'decision': decision, 'remote_actions': 0, 'retry_authorized': False,
+            'reuse_blocked': reuse_blocker is not None, 'reuse_blocker': reuse_blocker}

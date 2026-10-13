@@ -4,6 +4,7 @@ import json
 from src.publisher.service import get_row, log, transition
 from src.publisher.diagnostics import safe_error
 from src.publisher.media import verify_identity
+from src.publisher.media_history import assert_media_history_allowed, MediaHistoryBlocked
 from src.store import now_iso
 
 
@@ -137,12 +138,11 @@ def _remove_temp(conn, draft_id, temp_path, root):
     return True
 
 
-def cleanup_remote(conn, draft_id, provider, root=None):
-    """Finalize one persisted media asset with crash-safe, 404-aware idempotency.
+def assert_cleanup_allowed(conn, draft_id, *, expected_draft=None, expected_asset=None):
+    """Shared backend gate; callers recheck under the cleanup write lock.
 
-    The remote call is made while an IMMEDIATE SQLite transaction is held. A
-    crash rolls back only the local confirmation; the committed intent remains,
-    so a later call can reconcile a post-delete 404 without issuing delete again.
+    Bind later checks to the identity originally approved, rather than silently
+    adopting a changed MediaAsset or Publisher account between checkpoints.
     """
     draft = get_row(conn, 'publisher_drafts', draft_id)
     asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
@@ -157,6 +157,34 @@ def cleanup_remote(conn, draft_id, provider, root=None):
         raise ValueError('MEDIA_NOT_CLEANUP_ELIGIBLE')
     if not asset.get('remote_file_id') or not asset.get('filename') or asset.get('size_bytes') is None:
         raise ValueError('MANUAL_ACTION_REQUIRED')
+    assert_media_history_allowed(
+        conn, expected_asset if expected_asset is not None else asset,
+        draft_id=draft_id,
+        account_id=(expected_draft if expected_draft is not None else draft)['account_id'],
+        purpose='consume')
+    return draft, asset
+
+
+def cleanup_remote(conn, draft_id, provider=None, root=None, *, identity_validator=None, provider_factory=None):
+    """Finalize one persisted media asset with crash-safe, 404-aware idempotency.
+
+    The remote call is made while an IMMEDIATE SQLite transaction is held. A
+    crash rolls back only the local confirmation; the committed intent remains,
+    so a later call can reconcile a post-delete 404 without issuing delete again.
+    """
+    if identity_validator:
+        identity_validator()
+    draft, asset = assert_cleanup_allowed(conn, draft_id)
+
+    def cleanup_provider():
+        nonlocal provider
+        if provider is None:
+            if provider_factory is None:
+                raise ValueError('MEDIA_PROVIDER_REQUIRED')
+            # A real adapter constructor performs Drive reads/authentication.
+            # Instantiate only after the canonical guard under the write lock.
+            provider = provider_factory(get_row(conn, 'publisher_media_assets', draft['media_asset_id']))
+        return provider
 
     # Serialize the first observation with creation of the delete intent. If
     # the remote lookup happened before this lock, a concurrent cleanup could
@@ -165,11 +193,14 @@ def cleanup_remote(conn, draft_id, provider, root=None):
     if asset['status'] == 'RESERVED':
         with conn:
             conn.execute('BEGIN IMMEDIATE')
+            if identity_validator:
+                identity_validator()
+            assert_cleanup_allowed(conn, draft_id, expected_draft=draft, expected_asset=asset)
             current = get_row(conn, 'publisher_media_assets', asset['id'])
             if current['status'] == 'RESERVED':
                 # A 404 before the intent is committed remains ambiguous and
                 # must never be promoted to successful cleanup.
-                if _remote_state(provider, current) == 'NOT_FOUND':
+                if _remote_state(cleanup_provider(), current) == 'NOT_FOUND':
                     raise ValueError('MANUAL_ACTION_REQUIRED')
                 timestamp = now_iso()
                 conn.execute(
@@ -188,12 +219,15 @@ def cleanup_remote(conn, draft_id, provider, root=None):
         # Keep the committed intent while serializing the remote side effect.
         with conn:
             conn.execute('BEGIN IMMEDIATE')
+            if identity_validator:
+                identity_validator()
+            assert_cleanup_allowed(conn, draft_id, expected_draft=draft, expected_asset=asset)
             current = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
             if current['status'] == 'CONSUMED':
                 pass
             elif current['status'] != 'CONSUMED_PENDING_DELETE' or not _has_cleanup_intent(conn, draft_id):
                 raise ValueError('MANUAL_ACTION_REQUIRED')
-            elif _remote_state(provider, current) == 'PRESENT':
+            elif _remote_state(cleanup_provider(), current) == 'PRESENT':
                 provider.delete_remote(current)
                 if _remote_state(provider, current) != 'NOT_FOUND':
                     raise ValueError('REMOTE_DELETE_NOT_CONFIRMED')
@@ -202,6 +236,10 @@ def cleanup_remote(conn, draft_id, provider, root=None):
                 # This is the crash-recovery branch: intent + persisted draft +
                 # identity + 404 means the prior delete already took effect.
                 _mark_consumed(conn, draft_id, current['id'])
+    except MediaHistoryBlocked:
+        # A safety block is not a failed remote delete or a completed cleanup.
+        # Propagate its explicit reason without rewriting historical evidence.
+        raise
     except Exception as exc:
         message = str(safe_error('cleanup', exc))
         with conn:
@@ -217,4 +255,9 @@ def _finish_local_cleanup(conn, draft, root):
     from src.publisher.upload_preparation import cleanup_derived_after_consumption
     if draft.get('temp_path'):
         _remove_temp(conn, draft['id'], draft['temp_path'], root)
-    return cleanup_derived_after_consumption(conn, draft['id'], root)
+    result = cleanup_derived_after_consumption(conn, draft['id'], root)
+    if result:
+        with conn:
+            log(conn, draft['id'], 'LOCAL_CLEANUP_CONFIRMED', 'OK',
+                'Arquivos locais removidos apos consumo confirmado')
+    return result

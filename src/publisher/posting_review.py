@@ -61,7 +61,9 @@ def batch_review(conn, batch_id):
                           persistence_status=draft['persistence_status']))
     resolved = counts['published'] + counts['scheduled'] + counts['abandoned']
     prepared = resolved + counts['prepared']
+    from src.publisher.batch_consumption import batch_consumption_review
     return {'batch_id': batch['id'], 'name': batch['name'], **counts, 'items': items,
+            'consumption': batch_consumption_review(conn, batch['id']),
             'prepared_percent': round(prepared * 100 / counts['total']) if counts['total'] else 0,
             'review_complete': bool(counts['total']) and resolved == counts['total'],
             'eligible_ids': [item['draft_id'] for item in items if item['eligible']]}

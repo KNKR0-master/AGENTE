@@ -136,12 +136,15 @@ class GoogleDriveMediaProvider:
     def delete_remote(self, asset):
         item = self.get_remote_metadata(asset["remote_file_id"])
         if item is None:
-            return
+            return False
+        # Recheck the active source tree immediately before the mutation.
+        item = self.get_metadata(asset["remote_file_id"])
         verify_identity(asset, item)
         if not item.get("capabilities", {}).get("canDelete"):
             raise ValueError("Conta de servico sem permissao de exclusao; limpeza remota pendente")
         # The lifecycle owns post-delete verification and performs this call once.
         self.service.files().delete(fileId=asset["remote_file_id"], supportsAllDrives=True).execute(num_retries=0)
+        return True
 
 
 def verify_identity(asset, item):

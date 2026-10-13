@@ -19,6 +19,7 @@ from src.publisher.folder_catalog import (
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
 from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation, queue_preparation_context, local_cancel_blocker
+from src.publisher.media_history import assert_media_history_allowed, MediaHistoryBlocked
 from src.publisher.queue_presentation import (
     HIDDEN_ITEM_SQL, change_visibility, history_visibility_counts,
     init_queue_presentation, presentation_targets,
@@ -334,6 +335,9 @@ def assert_upload_allowed(conn, draft_id):
         raise ValueError('UPLOAD_RECONCILIATION_REQUIRED')
     if conn.execute("SELECT 1 FROM publisher_execution_logs WHERE draft_id=? AND step IN ('UPLOAD_STARTED','SAVE_DRAFT','TIKTOK_DRAFT_CONFIRMED','TEST_FINAL_RESULT') LIMIT 1", (draft_id,)).fetchone():
         raise ValueError('UPLOAD_RECONCILIATION_REQUIRED')
+    if row.get('media_asset_id'):
+        asset = get_row(conn, 'publisher_media_assets', row['media_asset_id'])
+        assert_media_history_allowed(conn, asset, draft_id=draft_id, account_id=row['account_id'], purpose='upload')
 
 
 class PublisherService:
@@ -705,8 +709,10 @@ class PublisherService:
         for batch in batch_rows:
             batch['queue_capabilities'] = batch_queue_capabilities(self.conn, batch['id'])
             from src.publisher.posting_review import batch_review
-            batch['review_summary'] = {key: value for key, value in batch_review(self.conn, batch['id']).items()
-                                       if key not in ('items', 'eligible_ids')}
+            review = batch_review(self.conn, batch['id'])
+            batch['review_summary'] = {key: value for key, value in review.items()
+                                       if key not in ('items', 'eligible_ids', 'consumption')}
+            batch['review_summary']['consumption_counts'] = review['consumption']['counts']
         active_executions = self._execution_summaries("e.status NOT IN ('COMPLETED','SUCCESS')")
         from src.publisher.queue_policy import preupload_preparation_resume_allowed
         for execution in active_executions:
@@ -766,7 +772,8 @@ class PublisherService:
               OR remote_file_id IN (SELECT google_drive_file_id FROM content_items WHERE status IN ('PUBLISHED','QUEUED','SENT_TO_PHONE')))""")
         return {'indexed': len(files)}
 
-    def assert_media_available(self, asset, draft_id=None):
+    def assert_media_available(self, asset, draft_id=None, *, account_id=None):
+        assert_media_history_allowed(self.conn, asset, draft_id=draft_id, account_id=account_id, purpose='reserve')
         if asset['status'] not in {'AVAILABLE', 'RESERVED', 'FAILED'}:
             raise ValueError(f"Midia indisponivel: {asset['status']}")
         if self.conn.execute("SELECT 1 FROM content_items WHERE google_drive_file_id=? AND status IN ('PUBLISHED','QUEUED','SENT_TO_PHONE') LIMIT 1",(asset['remote_file_id'],)).fetchone():
@@ -802,7 +809,7 @@ class PublisherService:
             drafts = []
             for position, asset_id in enumerate(ids, 1):
                 asset = get_row(self.conn, 'publisher_media_assets', asset_id)
-                self.assert_media_available(asset)
+                self.assert_media_available(asset, account_id=fields['account_id'])
                 row_id = self.conn.execute("""INSERT INTO publisher_drafts
                   (batch_id,product_id,account_id,preset_id,media_asset_id,video_path,filename,caption,scheduled_at,created_at,updated_at)
                   VALUES (?,?,?,?,?,'',?,?,?,?,?)""",
@@ -906,7 +913,14 @@ class PublisherService:
             return {"scope": "folder", "folder_id": folder_id, "product_id": product_id}
         return set_product_overrides(self.conn, ids, int(data.get("product_id")))
 
-    def delete_library_media(self, data, provider):
+    def delete_library_media(self, data, provider=None, *, provider_factory=None):
+        # Raw Library deletion must not become an escape route for archived
+        # Publisher history. Use the same write-lock protocol as cleanup.
+        with self.conn:
+            self.conn.execute('BEGIN IMMEDIATE')
+            return self._delete_library_media_locked(data, provider, provider_factory=provider_factory)
+
+    def _delete_library_media_locked(self, data, provider, *, provider_factory=None):
         if data.get("human_confirmed") is not True:
             raise ValueError("CONFIRM_MEDIA_DELETE")
         drive_file_id = str(data.get("drive_file_id") or "").strip()
@@ -917,6 +931,8 @@ class PublisherService:
         if len(rows) != 1:
             raise ValueError("Arquivo não encontrado no inventário")
         item = rows[0]
+        if item.get('media_history_blocker'):
+            raise MediaHistoryBlocked(item['media_history_blocker'])
         if item["filename"] != filename or (data.get("size") is not None and int(data["size"]) != int(item.get("size") or 0)):
             raise ValueError("MEDIA_IDENTITY_MISMATCH")
         if item.get("media_status") in {"RESERVED", "PROCESSING", "CONSUMED_PENDING_DELETE", "CONSUMED"} or item.get("draft_id"):
@@ -926,6 +942,10 @@ class PublisherService:
             "remote_file_id": drive_file_id, "filename": item["filename"],
             "size_bytes": int(item.get("size") or 0), "checksum": item.get("md5_checksum"),
         }
+        if provider is None:
+            if provider_factory is None:
+                raise ValueError('MEDIA_PROVIDER_REQUIRED')
+            provider = provider_factory()
         before = provider.get_remote_metadata(drive_file_id)
         if before is None:
             raise ValueError("REMOTE_FILE_NOT_FOUND")
@@ -1074,9 +1094,9 @@ class PublisherService:
                                                   (item["media_asset_id"],)).fetchone()
                         if asset:
                             try:
-                                self.assert_media_available(dict(asset))
+                                self.assert_media_available(dict(asset), account_id=account_id)
                             except ValueError as exc:
-                                item_blocker("MEDIA_NOT_AVAILABLE", str(exc))
+                                item_blocker(exc.code if isinstance(exc, MediaHistoryBlocked) else "MEDIA_NOT_AVAILABLE", str(exc))
 
             product_name = (item.get("product_short_name") or item.get("product_name")) if item else None
             items.append({
@@ -1168,10 +1188,11 @@ class PublisherService:
             draft_ids = []
             for position, file_id in enumerate(ids, 1):
                 item = by_id[file_id]
-                asset = self.conn.execute("SELECT * FROM publisher_media_assets WHERE remote_file_id=?", (file_id,)).fetchone()
+                asset = self.conn.execute("SELECT * FROM publisher_media_assets WHERE provider='google_drive' "
+                                          "AND source_account='cecilia' AND remote_file_id=?", (file_id,)).fetchone()
                 if asset:
                     asset = dict(asset)
-                    self.assert_media_available(asset)
+                    self.assert_media_available(asset, account_id=account_id)
                     asset_id = asset["id"]
                 else:
                     asset_id = self.conn.execute("""INSERT INTO publisher_media_assets
@@ -1294,7 +1315,9 @@ class PublisherService:
                 transition(self.conn, row['id'], 'ARCHIVED', checklist=json.loads(row['checklist_json'] or '{}'))
                 # A cancelled local item is terminal for the old execution, never queued again on resume.
                 self.conn.execute("UPDATE publisher_execution_items SET status='FAILED',error_code='LOCAL_BATCH_CANCELLED' "
-                                  "WHERE draft_id=? AND status='WAITING_MANUAL'", (row['id'],))
+                                  "WHERE draft_id=? AND status IN ('WAITING_MANUAL','FAILED') "
+                                  "AND execution_id IN (SELECT id FROM publisher_batch_executions WHERE status='PAUSED')",
+                                  (row['id'],))
                 if row['media_asset_id']:
                     self.conn.execute(
                         "UPDATE publisher_media_assets SET status='AVAILABLE',updated_at=? "
@@ -1302,7 +1325,12 @@ class PublisherService:
                         (now_iso(), row['media_asset_id']),
                     )
                     released += 1
-                log(self.conn, row['id'], 'BATCH_CANCELLED', 'OK', f'Lote {batch_id} cancelado sem efeito remoto')
+                log(self.conn, row['id'], 'BATCH_CANCELLED', 'OK', json.dumps({
+                    'batch_id': batch_id, 'draft_id': row['id'], 'media_asset_id': row['media_asset_id'],
+                    'previous_state': row['status'], 'previous_error_code': row['error_code'],
+                    'resulting_state': 'ARCHIVED', 'reservation_released': True,
+                    'remote_actions': 0, 'retry_authorized': False,
+                }, ensure_ascii=True, sort_keys=True))
                 results.append({'draft_id': row['id'], 'media_asset_id': row['media_asset_id'],
                                 'result': 'CANCELLED', 'reservation_released': True})
             self.conn.execute("UPDATE publisher_batch_executions SET status='COMPLETED',finished_at=? "
@@ -1338,6 +1366,8 @@ class PublisherService:
                 blockers.append('BATCH_LIMIT_EXCEEDED')
             if not actions['can_start']:
                 blockers.append('DRAFT_NOT_STARTABLE')
+            if actions.get('media_history_blocker'):
+                blockers.append(actions['media_history_blocker']['code'])
             if not str(draft['caption'] or '').strip():
                 blockers.append('CAPTION_MISSING')
             if media is None or media['status'] not in ('AVAILABLE', 'RESERVED'):
