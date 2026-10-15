@@ -246,8 +246,12 @@ class HistoricalMediaGuardTests(MediaSafetyFixture):
 
     def test_reconciled_persistence_preserves_existing_review_but_not_second_upload(self):
         _, old, execution = self.remote_attempt()
-        evidence_id = self.observe(old, execution, outcome='REMOTE_EXISTS_CONFIRMED')
-        result = self.resolution(old, 'CONFIRM_EXISTS', evidence_id)
+        from tests.publisher_security_fixture import uncertain,trusted_observation
+        context=uncertain(self,old)
+        evidence_id=trusted_observation(self,old,context)
+        result=resolve_draft(self.conn,old,dict(decision='CONFIRM_EXISTS',human_confirmed=True,
+            reason='Verified specific synthetic remote identity',account_id=self.account,media_asset_id=1,
+            checkpoint_id=context['checkpoint'],evidence_id=evidence_id))
         self.assertEqual(result['status'], 'READY_FOR_REVIEW')
         asset = get_row(self.conn, 'publisher_media_assets', 1)
         self.assertIsNone(media_history_blocker(self.conn, asset, draft_id=old))

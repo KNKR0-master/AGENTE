@@ -16,6 +16,7 @@ from src.publisher.upload_preparation import (prepare_upload_source, artifact_ro
 from src.publisher.worker import PublisherWorker, PreparationError, restore_pre_upload_failure
 from src.publisher.service import get_row, init_publisher, assert_upload_allowed
 from src.publisher.lifecycle import cleanup_remote
+from tests.publisher_security_fixture import promote_prepared_fake, cleanup_consent
 from src.store import connect
 from tests import test_publisher_remote as remote
 from tests.test_publisher_headline_renderer import FONT, ROOT, snapshot
@@ -101,7 +102,9 @@ class HeadlinePreparationTests(unittest.TestCase):
     def test_worker_original_does_not_instantiate_renderer(self):
         draft=self.batch()[0];self.enqueue([draft])
         self.worker.headline_renderer_factory=MagicMock(side_effect=AssertionError('renderer forbidden'))
-        self.worker.prepare(None,self.conn,draft)
+        with self.assertRaisesRegex(PreparationError,'evidencia pendente'):
+            self.worker.prepare(None,self.conn,draft)
+        promote_prepared_fake(self,draft,self.uploads[-1].read_bytes())
         row=get_row(self.conn,'publisher_drafts',draft)
         self.assertEqual(self.uploads,[Path(row['temp_path'])])
         self.file_input.set_input_files.assert_called_once_with(row['temp_path'])
@@ -121,7 +124,9 @@ class HeadlinePreparationTests(unittest.TestCase):
 
     def test_worker_derived_e2e_persistence_and_cleanup(self):
         self.configure();draft=self.batch()[0];execution=self.enqueue([draft])
-        self.worker.prepare(None,self.conn,draft)
+        with self.assertRaisesRegex(PreparationError,'evidencia pendente'):
+            self.worker.prepare(None,self.conn,draft)
+        promote_prepared_fake(self,draft,self.uploads[-1].read_bytes())
         row=get_row(self.conn,'publisher_drafts',draft);record=upload_source_record(self.conn,row)
         self.assertEqual(row['persistence_status'],'PERSISTED')
         self.assertEqual(record['kind'],'HEADLINE_DERIVED')
@@ -131,13 +136,13 @@ class HeadlinePreparationTests(unittest.TestCase):
         self.assertLess(steps.index('HEADLINE_ARTIFACT_READY'),steps.index('UPLOAD_STARTED'))
         self.assertEqual(record['render_spec_hash'],headlines.read_snapshot(row)['render_spec_hash'])
         self.assertTrue(Path(row['temp_path']).exists())
-        with self.conn:self.conn.execute("UPDATE publisher_execution_items SET status='CLEANUP' WHERE execution_id=?",(execution,))
-        self.assertTrue(cleanup_remote(self.conn,draft,self.provider,self.root))
+        consent=cleanup_consent(self,draft)
+        self.assertTrue(cleanup_remote(self.conn,draft,self.provider,self.root,authorization_id=consent))
         self.assertFalse(self.uploads[0].exists());self.assertFalse(Path(row['temp_path']).exists())
         self.assertEqual(self.provider.deleted,['remote-0'])
         self.assertEqual(self.conn.execute('SELECT count(*) FROM publisher_upload_sources').fetchone()[0],1)
         self.assertEqual(self.conn.execute('SELECT count(*) FROM publisher_derived_media_artifacts').fetchone()[0],1)
-        self.assertTrue(cleanup_remote(self.conn,draft,self.provider,self.root))
+        self.assertTrue(cleanup_remote(self.conn,draft,self.provider,self.root,authorization_id=consent))
         self.assertEqual(self.provider.deleted,['remote-0'])
 
     def test_render_failure_before_upload_pauses_tail_without_side_effect(self):
@@ -177,7 +182,9 @@ class HeadlinePreparationTests(unittest.TestCase):
         self.configure();draft=self.batch()[0];self.enqueue([draft])
         before=headlines.read_snapshot(get_row(self.conn,'publisher_drafts',draft))
         self.service.save_product({'id':self.product,'default_headline_text':'Changed product'})
-        self.worker.prepare(None,self.conn,draft)
+        with self.assertRaisesRegex(PreparationError,'evidencia pendente'):
+            self.worker.prepare(None,self.conn,draft)
+        promote_prepared_fake(self,draft,self.uploads[-1].read_bytes())
         row=get_row(self.conn,'publisher_drafts',draft)
         self.assertEqual(upload_source_record(self.conn,row)['render_spec_hash'],before['render_spec_hash'])
         self.assertEqual(row['caption'],'Legenda')

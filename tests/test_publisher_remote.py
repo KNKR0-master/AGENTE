@@ -64,12 +64,8 @@ class PublisherRemoteTests(unittest.TestCase):
             'caption':'Legenda','media_asset_ids':list(range(1,n+1))})['draft_ids']
 
     def confirm(self,draft):
-        with self.conn:
-            transition(self.conn,draft,'PREPARING')
-            log(self.conn,draft,'TIKTOK_DRAFT_CONFIRMED','OK','fixture','data/publisher/evidence/fixture.png')
-        checks=dict.fromkeys(['file','upload','caption','settings','durable'],True)
-        checks.update(tiktok_draft_id='tt-123',tiktok_draft_url='https://www.tiktok.com/fixture/123')
-        confirm_received(self.conn,draft,checks)
+        from tests.publisher_security_fixture import confirm_independent_fake_identity
+        confirm_independent_fake_identity(self,draft)
 
     def test_twenty_references_no_download_and_atomic_reservation(self):
         ids=self.batch(20)
@@ -98,14 +94,16 @@ class PublisherRemoteTests(unittest.TestCase):
         checks=dict.fromkeys(['file','upload','caption','product','settings','durable'],True)
         checks.update(tiktok_draft_id='id',tiktok_draft_url='https://www.tiktok.com/draft/id')
         self.assertFalse(confirm_received(self.conn,draft,checks))
-        self.assertIsNotNone(get_row(self.conn,'publisher_drafts',draft)['confirmed_at'])
-        self.assertEqual(get_row(self.conn,'publisher_media_assets',1)['status'],'RECEIVED_NEEDS_REVIEW')
+        self.assertIsNone(get_row(self.conn,'publisher_drafts',draft)['confirmed_at'])
+        self.assertEqual(get_row(self.conn,'publisher_media_assets',1)['status'],'NEEDS_RECONCILIATION')
         with self.assertRaises(ValueError): cleanup_remote(self.conn,draft,self.provider)
 
     def test_delete_failure_restart_retry_only_cleanup(self):
         draft=self.batch()[0]; self.confirm(draft)
+        from tests.publisher_security_fixture import cleanup_consent
+        self.authorizations={draft:cleanup_consent(self,draft)}
         self.provider.fail_delete=True
-        self.assertFalse(cleanup_remote(self.conn,draft,self.provider))
+        self.assertFalse(cleanup_remote(self.conn,draft,self.provider,authorization_id=getattr(self,'authorizations',{}).get(draft)))
         recover_sessions(self.conn)
         self.assertEqual(get_row(self.conn,'publisher_drafts',draft)['status'],'READY_FOR_REVIEW')
         self.assertEqual(get_row(self.conn,'publisher_media_assets',1)['status'],'CONSUMED_PENDING_DELETE')
@@ -114,14 +112,16 @@ class PublisherRemoteTests(unittest.TestCase):
             with self.assertRaises(ValueError): worker.enqueue(self.conn,[draft])
         with self.assertRaises(ValueError): self.service.bulk([draft],{},'reset')
         self.provider.fail_delete=False
-        self.assertTrue(cleanup_remote(self.conn,draft,self.provider))
-        self.assertTrue(cleanup_remote(self.conn,draft,self.provider))
+        self.assertTrue(cleanup_remote(self.conn,draft,self.provider,authorization_id=getattr(self,'authorizations',{}).get(draft)))
+        self.assertTrue(cleanup_remote(self.conn,draft,self.provider,authorization_id=getattr(self,'authorizations',{}).get(draft)))
         self.assertEqual(len(self.provider.deleted),1)
         self.assertFalse(self.provider.downloads)
 
     def test_reindex_preserves_consumed_history(self):
         draft=self.batch()[0]; self.confirm(draft)
-        cleanup_remote(self.conn,draft,self.provider)
+        from tests.publisher_security_fixture import cleanup_consent
+        self.authorizations={draft:cleanup_consent(self,draft)}
+        cleanup_remote(self.conn,draft,self.provider,authorization_id=self.authorizations[draft])
         self.service.index_media(self.provider)
         self.assertEqual(get_row(self.conn,'publisher_media_assets',1)['status'],'CONSUMED')
         with self.assertRaises(ValueError): self.batch()
@@ -195,86 +195,35 @@ class PublisherRemoteTests(unittest.TestCase):
              patch('src.publisher.worker.ensure_ffprobe_available',return_value='ffprobe'), \
              patch.object(worker,'provider_factory',return_value=self.provider), \
              patch('src.publisher.worker.prepare_job',side_effect=prepared):
-            worker.prepare(None,self.conn,draft)
+            with self.assertRaisesRegex(Exception,'evidencia pendente'):
+                worker.prepare(None,self.conn,draft)
         self.assertEqual(self.provider.downloads,['remote-0'])
         self.assertEqual(self.provider.deleted,[])
         self.assertTrue(list(worker.cache.root.glob('job_*')))
-        self.assertEqual(get_row(self.conn,'publisher_drafts',draft)['status'],'READY_FOR_REVIEW')
+        self.assertEqual(get_row(self.conn,'publisher_drafts',draft)['status'],'MANUAL_ACTION_REQUIRED')
+        self.assertEqual(get_row(self.conn,'publisher_drafts',draft)['persistence_status'],'UNCONFIRMED')
 
     def test_resume_reconciles_first_item_before_queuing_tail(self):
-        ids = self.batch(3)
-        worker = PublisherWorker(self.root, self.root / 'test.db')
-        with patch.object(worker, 'start'):
-            execution = worker.enqueue(self.conn, ids, auto_cleanup=True)
-        with self.conn:
-            self.conn.execute(
-                "UPDATE publisher_drafts SET status='MANUAL_ACTION_REQUIRED',upload_status='TRANSFER_CONFIRMED',processing_status='MEDIA_READY_FOR_EDIT' WHERE id=?",
-                (ids[0],),
-            )
-            self.conn.execute(
-                "UPDATE publisher_media_assets SET status='NEEDS_RECONCILIATION' WHERE id=1"
-            )
-            for draft_id, asset_id in zip(ids[1:], (2, 3)):
-                self.conn.execute(
-                    "UPDATE publisher_drafts SET status='DRAFT',upload_status='NOT_STARTED',processing_status='NOT_STARTED' WHERE id=?",
-                    (draft_id,),
-                )
-                self.conn.execute(
-                    "UPDATE publisher_media_assets SET status='AVAILABLE' WHERE id=?",
-                    (asset_id,),
-                )
-            self.conn.execute(
-                "UPDATE publisher_execution_items SET status='WAITING_MANUAL',error_code='MANUAL_ACTION_REQUIRED' WHERE execution_id=?",
-                (execution,),
-            )
-            self.conn.execute(
-                "UPDATE publisher_batch_executions SET status='PAUSED',finished_at=? WHERE id=?",
-                ('2026-01-01T00:00:00+00:00', execution),
-            )
-        with patch.object(worker, 'start'):
-            self.assertEqual(worker.resume_execution(self.conn, execution), execution)
-        items = self.conn.execute(
-            "SELECT draft_id,status FROM publisher_execution_items WHERE execution_id=? ORDER BY draft_id",
-            (execution,),
-        ).fetchall()
-        self.assertEqual([(row[0], row[1]) for row in items], [(ids[0], 'PROCESSING'), (ids[1], 'QUEUED'), (ids[2], 'QUEUED')])
-        self.assertEqual(get_row(self.conn, 'publisher_drafts', ids[1])['status'], 'PREPARING')
-        self.assertEqual(get_row(self.conn, 'publisher_drafts', ids[2])['status'], 'PREPARING')
+        ids=self.batch(3);worker=PublisherWorker(self.root,self.root/'test.db')
+        before=[get_row(self.conn,'publisher_drafts',i) for i in ids]
+        with patch.object(worker,'start') as start:
+            with self.assertRaisesRegex(ValueError,'AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION'):
+                worker.enqueue(self.conn,ids,auto_cleanup=True)
+            start.assert_not_called()
+        self.assertEqual([get_row(self.conn,'publisher_drafts',i) for i in ids],before)
+        self.assertTrue(worker.commands.empty())
+        self.assertFalse(self.provider.downloads or self.provider.deleted)
 
     def test_resume_cleans_up_already_reconciled_first_item_before_queuing_tail(self):
-        ids = self.batch(3)
-        worker = PublisherWorker(self.root, self.root / 'test.db')
-        with patch.object(worker, 'start'):
-            execution = worker.enqueue(self.conn, ids, auto_cleanup=True)
-        with self.conn:
-            self.conn.execute(
-                "UPDATE publisher_drafts SET status='READY_FOR_REVIEW',persistence_status='PERSISTED',"
-                "upload_status='TRANSFER_CONFIRMED',processing_status='MEDIA_READY_FOR_EDIT',confirmed_at=? WHERE id=?",
-                ('2026-01-01T00:00:00+00:00', ids[0]),
-            )
-            self.conn.execute("UPDATE publisher_media_assets SET status='RESERVED' WHERE id=1")
-            log(self.conn, ids[0], 'TIKTOK_DRAFT_RECONCILED', 'OK', 'fixture', 'evidence/reconciled.png')
-            for draft_id, asset_id in zip(ids[1:], (2, 3)):
-                self.conn.execute(
-                    "UPDATE publisher_drafts SET status='DRAFT',upload_status='NOT_STARTED',processing_status='NOT_STARTED' WHERE id=?",
-                    (draft_id,),
-                )
-                self.conn.execute("UPDATE publisher_media_assets SET status='AVAILABLE' WHERE id=?", (asset_id,))
-            self.conn.execute(
-                "UPDATE publisher_execution_items SET status='WAITING_MANUAL',error_code='MANUAL_ACTION_REQUIRED' WHERE execution_id=?",
-                (execution,),
-            )
-            self.conn.execute(
-                "UPDATE publisher_batch_executions SET status='PAUSED',finished_at=? WHERE id=?",
-                ('2026-01-01T00:00:00+00:00', execution),
-            )
-        with patch.object(worker, 'start'):
-            self.assertEqual(worker.resume_execution(self.conn, execution), execution)
-        items = self.conn.execute(
-            "SELECT draft_id,status FROM publisher_execution_items WHERE execution_id=? ORDER BY draft_id",
-            (execution,),
-        ).fetchall()
-        self.assertEqual([(row[0], row[1]) for row in items], [(ids[0], 'PROCESSING'), (ids[1], 'QUEUED'), (ids[2], 'QUEUED')])
+        ids=self.batch(3);worker=PublisherWorker(self.root,self.root/'test.db')
+        before=[get_row(self.conn,'publisher_drafts',i) for i in ids]
+        with patch.object(worker,'start') as start:
+            with self.assertRaisesRegex(ValueError,'AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION'):
+                worker.enqueue(self.conn,ids,auto_cleanup=True)
+            start.assert_not_called()
+        self.assertEqual([get_row(self.conn,'publisher_drafts',i) for i in ids],before)
+        self.assertTrue(worker.commands.empty())
+        self.assertFalse(self.provider.downloads or self.provider.deleted)
 
     def test_pre_upload_failure_restores_draft_and_media_for_later_retry(self):
         draft = self.batch()[0]
@@ -306,7 +255,7 @@ class PublisherRemoteTests(unittest.TestCase):
         draft = self.batch()[0]
         worker = PublisherWorker(self.root, self.root / 'test.db')
         with patch.object(worker, 'start'):
-            execution = worker.enqueue(self.conn, [draft], auto_cleanup=True)
+            execution = worker.enqueue(self.conn, [draft], auto_cleanup=False)
         with self.conn:
             self.conn.execute(
                 "UPDATE publisher_execution_items SET status='PROCESSING' WHERE execution_id=? AND draft_id=?",

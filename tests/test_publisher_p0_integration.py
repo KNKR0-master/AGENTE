@@ -15,6 +15,7 @@ from src.publisher.lifecycle import cleanup_remote, assert_cleanup_allowed
 from src.publisher.media_history import media_history_blocker
 from src.publisher.service import get_row, assert_upload_allowed, log
 from src.store import connect, now_iso
+from tests.publisher_security_fixture import cleanup_consent, confirm_independent_fake_identity
 
 
 class PublisherP0IntegrationTests(unittest.TestCase):
@@ -223,8 +224,17 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
             if remote:
                 self.conn.execute("UPDATE publisher_drafts SET upload_status='TRANSFER_CONFIRMED',processing_status='MEDIA_READY_FOR_EDIT' WHERE id=?", (old,))
                 log(self.conn, old, 'UPLOAD_STARTED', 'OK', 'Synthetic historical transfer')
-            if reconciled:
-                self.conn.execute("UPDATE publisher_drafts SET persistence_status='PERSISTED',confirmed_at=?,tiktok_draft_persisted_at=?,tiktok_draft_url='https://www.tiktok.com/fixture/reconciled' WHERE id=?", (timestamp, timestamp, old))
+        if reconciled:
+            # Reconstruct an older verified attempt through the real protocol.
+            # Only one fixture reservation is active at a time; preserve the
+            # already verified successor and restore it after archiving history.
+            current_status=get_row(self.conn,'publisher_drafts',draft_id)['status']
+            with self.conn:
+                self.conn.execute("UPDATE publisher_drafts SET status='ARCHIVED' WHERE id=?",(draft_id,))
+            confirm_independent_fake_identity(self,old)
+            with self.conn:
+                self.conn.execute("UPDATE publisher_drafts SET status='ARCHIVED' WHERE id=?",(old,))
+                self.conn.execute('UPDATE publisher_drafts SET status=? WHERE id=?',(current_status,draft_id))
         return old
 
     def evidence(self, draft_id):
@@ -237,7 +247,7 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
         with self.conn:
             self.conn.execute('UPDATE publisher_drafts SET batch_id=NULL WHERE id=?', (old,))
             self.conn.execute("UPDATE publisher_drafts SET status='ARCHIVED' WHERE id=?", (ids[4],))
-        self.assertTrue(cleanup_remote(self.conn, ids[3], self.drive, self.root))
+        self.assertTrue(cleanup_remote(self.conn, ids[3], self.drive, self.root,authorization_id=cleanup_consent(self,ids[3])))
         before = self.evidence(old)
         data = self.payload(ids)
         result = self.finish(data)
@@ -295,6 +305,7 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
 
     def test_history_arriving_between_preflight_and_claim_blocks_individual_cleanup(self):
         ids = self.prepare()
+        consent=cleanup_consent(self,ids[0])
         old = self.historical_draft(ids[0])
         other = connect(self.root / 'test.db')
         self.addCleanup(other.close)
@@ -309,7 +320,7 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
         factory = Mock(return_value=self.drive)
         with patch('src.publisher.lifecycle.assert_cleanup_allowed', side_effect=preflight):
             with self.assertRaisesRegex(ValueError, 'MEDIA_HISTORY_RECONCILIATION_REQUIRED'):
-                cleanup_remote(self.conn, ids[0], root=self.root, provider_factory=factory)
+                cleanup_remote(self.conn, ids[0], root=self.root, provider_factory=factory,authorization_id=consent)
         factory.assert_not_called()
         self.assertFalse(self.drive.lookups)
         self.assertFalse(self.drive.deleted)
@@ -317,6 +328,7 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
 
     def test_identity_change_between_preflight_and_claim_fails_closed(self):
         ids = self.prepare()
+        consent=cleanup_consent(self,ids[0])
         other = connect(self.root / 'test.db')
         self.addCleanup(other.close)
         calls = []
@@ -328,14 +340,15 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
                     other.execute("UPDATE publisher_media_assets SET remote_file_id='changed-source' WHERE id=1")
             return result
         with patch('src.publisher.lifecycle.assert_cleanup_allowed', side_effect=preflight):
-            with self.assertRaisesRegex(ValueError, 'MEDIA_IDENTITY_UNPROVEN'):
-                cleanup_remote(self.conn, ids[0], self.drive, self.root)
+            with self.assertRaisesRegex(ValueError, 'CLEANUP_IDENTITY_CHANGED'):
+                cleanup_remote(self.conn, ids[0], self.drive, self.root,authorization_id=consent)
         self.assertFalse(self.drive.lookups)
         self.assertFalse(self.drive.deleted)
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'RESERVED')
 
     def test_history_arriving_after_delete_intent_blocks_delete_and_completion(self):
         ids = self.prepare()
+        consent=cleanup_consent(self,ids[0])
         old = self.historical_draft(ids[0])
         other = connect(self.root / 'test.db')
         self.addCleanup(other.close)
@@ -351,7 +364,7 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
             return result
         with patch('src.publisher.lifecycle._has_cleanup_intent', side_effect=after_intent):
             with self.assertRaisesRegex(ValueError, 'MEDIA_HISTORY_RECONCILIATION_REQUIRED'):
-                cleanup_remote(self.conn, ids[0], self.drive, self.root)
+                cleanup_remote(self.conn, ids[0], self.drive, self.root,authorization_id=consent)
         self.assertEqual(len(self.drive.lookups), 1)
         self.assertFalse(self.drive.deleted)
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'CONSUMED_PENDING_DELETE')
@@ -437,6 +450,7 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
 
     def test_adapter_factory_runs_only_under_validated_write_lock_and_is_skipped_on_replay(self):
         ids = self.prepare()
+        consent=cleanup_consent(self,ids[0])
         other = sqlite3.connect(self.root / 'test.db', timeout=0.01)
         self.addCleanup(other.close)
         created = []
@@ -448,11 +462,11 @@ class PublisherP0ConsumptionIntegrationTests(unittest.TestCase):
             other.rollback()
             created.append(asset['id'])
             return self.drive
-        self.assertTrue(cleanup_remote(self.conn, ids[0], root=self.root, provider_factory=factory))
+        self.assertTrue(cleanup_remote(self.conn, ids[0], root=self.root, provider_factory=factory,authorization_id=consent))
         self.assertEqual(created, [1])
         self.assertEqual(self.drive.deleted, ['remote-0'])
         replay_factory = Mock(side_effect=AssertionError('Consumed local recovery must not construct Drive'))
-        self.assertTrue(cleanup_remote(self.conn, ids[0], root=self.root, provider_factory=replay_factory))
+        self.assertTrue(cleanup_remote(self.conn, ids[0], root=self.root, provider_factory=replay_factory,authorization_id=consent))
         replay_factory.assert_not_called()
         self.assertEqual(self.drive.deleted, ['remote-0'])
 

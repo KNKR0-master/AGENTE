@@ -89,7 +89,9 @@ def remote_history(conn, draft):
                       'tiktok_draft_persisted_at', 'tiktok_draft_id', 'tiktok_draft_url')))
     # Successful domain reconciliation is durable, unlike a listing observation.
     # It permits existing review/consumption, not a new identity's second upload.
-    persisted = draft.get('persistence_status') == 'PERSISTED' and bool(draft.get('confirmed_at'))
+    from src.publisher.persistence_identity import persistence_identity_verified
+    persisted = (draft.get('persistence_status') == 'PERSISTED' and bool(draft.get('confirmed_at'))
+                 and persistence_identity_verified(conn,draft))
     return {'effect': effect, 'identity_mismatch': identity_mismatch, 'persisted': persisted}
 
 

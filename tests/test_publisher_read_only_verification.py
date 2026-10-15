@@ -140,7 +140,7 @@ class ReadOnlyVerificationTests(unittest.TestCase):
         updated = f'{now_local.day} de {months[now_local.month - 1]} de {now_local.year}, {now_local:%H:%M}'
         row = {'caption_text': 'Legenda', 'duration_text': '00:23', 'updated_text': updated}
         for draft_id, rows, expected in (
-            (first, [row], 'REMOTE_EXISTS_CONFIRMED'),
+            (first, [row], 'REMOTE_STATE_UNKNOWN'),
             (second, [row, row], 'REMOTE_MATCH_AMBIGUOUS'),
         ):
             media_path = worker.cache.root / f'{draft_id}.mp4'

@@ -145,7 +145,7 @@ class QueueOrderTests(unittest.TestCase):
         self.service.reorder_batch(result['batch_id'], ids[::-1])
         worker = PublisherWorker(self.root, self.db)
         with patch.object(worker, 'start'), patch.object(worker, 'assert_actions_allowed'), patch.object(worker, 'account_profile', return_value=self.root / 'profiles'), patch.object(worker.profile_ownership, 'state', return_value='SESSION_REQUIRES_VERIFICATION'):
-            execution = worker.enqueue(self.conn, ids, auto_cleanup=True)
+            execution = worker.enqueue(self.conn, ids, auto_cleanup=False)
             while not worker.commands.empty():
                 worker.commands.get_nowait()
             with self.conn:
@@ -153,6 +153,7 @@ class QueueOrderTests(unittest.TestCase):
                 self.conn.execute("UPDATE publisher_execution_items SET status='WAITING_MANUAL' WHERE execution_id=?", (execution,))
                 self.conn.execute("UPDATE publisher_drafts SET status='DRAFT' WHERE batch_id=?", (result['batch_id'],))
                 self.conn.execute("UPDATE publisher_media_assets SET status='AVAILABLE' WHERE id IN (1,2,3)")
+                log(self.conn,ids[-1],'HEADLINE_PREPARATION_FAILED','BLOCKED','HEADLINE_OUTPUT_CADENCE_INVALID')
             worker.resume_execution(self.conn, execution)
         queued = [worker.commands.get_nowait()[1][0] for _ in ids]
         self.assertEqual(queued, ids[::-1])

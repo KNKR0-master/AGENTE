@@ -20,7 +20,7 @@ from src.media_tools import FFProbeError, ensure_ffprobe_available
 from src.store import connect, now_iso
 from src.publisher.service import PublisherService, get_row, log, transition, assert_upload_allowed
 from src.publisher.media import media_provider, TemporaryMediaCache
-from src.publisher.lifecycle import confirm_received, reconcile_received, cleanup_remote
+from src.publisher.lifecycle import confirm_received, cleanup_remote
 from src.publisher.auth import (
     AUTHENTICATED, LOGIN_IN_PROGRESS, NEEDS_LOGIN, NOT_AUTHENTICATED,
     LOGIN_URL, STUDIO_URL, LoginSession, TikTokAuthDetector,
@@ -568,9 +568,9 @@ class StudioPage:
                 text=self.page.locator('body').inner_text(timeout=5000)
                 if ('rascunhos' in text.casefold() and 'todos os computadores' in text.casefold() and
                     self.page.get_by_text(draft['caption'], exact=True).count() >= 1):
-                    evidence('TIKTOK_DRAFT_CONFIRMED','Apos salvar: lista Rascunhos, legenda exata unica e disponibilidade entre computadores')
+                    evidence('SAVE_RESULT_UNCONFIRMED','Lista observada apos Save Draft; legenda/URL generica nao comprovam identidade.')
                     self.after_mutation('SAVE_DRAFT')
-                    return {'durable':True,'tiktok_draft_url':self.page.url,'persisted_at':now_iso()}
+                    raise PreparationError('MANUAL_ACTION_REQUIRED','PERSISTENCE_IDENTITY_REQUIRED: verifique e reconcilie o rascunho; nao repita upload.')
             self.page.wait_for_timeout(500)
         raise PreparationError('MANUAL_ACTION_REQUIRED','Persistencia nao comprovada; nao repetir upload')
 
@@ -663,7 +663,18 @@ class PublisherWorker:
         finally:
             self.profile_leases.clear()
 
+    @staticmethod
+    def assert_execution_cleanup_disabled(conn,command,execution_id):
+        if command in {'reconcile','cleanup-reconciled'}:
+            raise PreparationError('MANUAL_ACTION_REQUIRED','AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION')
+        if execution_id is not None:
+            row=conn.execute('SELECT auto_cleanup FROM publisher_batch_executions WHERE id=?',(execution_id,)).fetchone()
+            if not row or row['auto_cleanup'] != 0:
+                raise PreparationError('MANUAL_ACTION_REQUIRED','AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION')
+
     def enqueue(self, conn, ids, auto_cleanup=False):
+        if auto_cleanup is not False:
+            raise ValueError('AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION')
         self.assert_actions_allowed()
         if self.login_traces:
             raise ValueError('Teste de login isolado; preparacao de drafts bloqueada nesta execucao')
@@ -729,6 +740,8 @@ class PublisherWorker:
             ).fetchone()
             if not execution:
                 raise ValueError('EXECUTION_NOT_FOUND')
+            if execution['auto_cleanup'] != 0:
+                raise ValueError('AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION')
             if execution['status'] != 'PAUSED':
                 raise ValueError('EXECUTION_NOT_RESUMABLE')
             items = conn.execute(
@@ -737,10 +750,9 @@ class PublisherWorker:
             ).fetchall()
             if len(items) != execution['total']:
                 raise ValueError('EXECUTION_ITEM_COUNT_MISMATCH')
-            if not execution['auto_cleanup']:
-                from src.publisher.queue_policy import preupload_preparation_resume_allowed
-                if not preupload_preparation_resume_allowed(conn, execution, items):
-                    raise ValueError('AUTO_CLEANUP_REQUIRED')
+            from src.publisher.queue_policy import preupload_preparation_resume_allowed
+            if not preupload_preparation_resume_allowed(conn, execution, items):
+                raise ValueError('PREUPLOAD_RESUME_NOT_PROVEN_SAFE')
 
             queued = []
             reconcile_ids = []
@@ -851,15 +863,17 @@ class PublisherWorker:
             conn.commit()
         return queued
 
-    def submit(self, command, row_id):
+    def submit(self, command, row_id, *, authorization_id=None):
         if self.login_traces and command == 'review':
             raise ValueError('Teste de login isolado; abertura de drafts bloqueada')
         if command in {'login','review'}:
             self.assert_actions_allowed()
         if command == 'login':
             return self.request_login(int(row_id))
+        if command == 'cleanup' and (type(authorization_id) is not int or authorization_id <= 0):
+            raise ValueError('EXPLICIT_DRIVE_DELETION_AUTHORIZATION_REQUIRED')
         self.start()
-        self.commands.put((command, int(row_id)))
+        self.commands.put((command,(int(row_id),authorization_id) if command == 'cleanup' else int(row_id)))
 
     def request_draft_verification(self, draft_id, timeout=90):
         """Coalesce concurrent reads of one execution item; never enqueue a mutation."""
@@ -1469,8 +1483,10 @@ class PublisherWorker:
             "AND step='SAVE_DRAFT' AND status='OK' ORDER BY id DESC LIMIT 1", (draft_id,),
         ).fetchone()
         duration = None
-        from src.publisher.upload_preparation import reconciliation_source
-        prepared_identity = reconciliation_source(conn, draft)
+        from src.publisher.upload_preparation import upload_source_record
+        source_record = upload_source_record(conn,draft)
+        prepared_identity = (dict(upload_source_id=source_record['id'],source_sha256=source_record['source_sha256'],
+                                  duration=json.loads(source_record['probe_json']).get('duration')) if source_record else None)
         if prepared_identity:
             duration = prepared_identity['duration']
         path = Path(draft.get('temp_path') or '')
@@ -1488,6 +1504,11 @@ class PublisherWorker:
                 observation.get('rows') or [], draft['caption'], save['created_at'] if save else None,
                 duration, listing_complete=observation.get('listing_complete') is True,
             )
+        if assessment['outcome'] == 'REMOTE_EXISTS_CONFIRMED':
+            # Current listing attributes identify a candidate, not its media.
+            assessment.update(outcome='REMOTE_STATE_UNKNOWN',
+                              matched_candidate_fingerprint=None,
+                              blocker_code='MATCH_EVIDENCE_INSUFFICIENT')
         completed = datetime.now(timezone.utc)
         complete = assessment['coverage_status'] == 'COMPLETE'
         match_result = ('UNKNOWN' if assessment['blocker_code'] else
@@ -1504,7 +1525,8 @@ class PublisherWorker:
             remote_effect_checkpoint_id=checkpoint['id'],
             verification_started_at=started, verification_completed_at=completed.isoformat(),
             valid_until=(completed + timedelta(minutes=5)).isoformat(),
-            evidence_payload={'listing_bounds': observation.get('listing_bounds') or {},
+            evidence_payload={'candidate_summaries': observation.get('rows') or [],
+                              'listing_bounds': observation.get('listing_bounds') or {},
                               'observed_duration': duration,
                               **({'upload_source_identity': prepared_identity} if prepared_identity else {}),
                               'current_listing': current_listing,
@@ -1528,6 +1550,9 @@ class PublisherWorker:
                     try:
                         command, row_id = self.commands.get(timeout=.2)
                         execution_id = None
+                        cleanup_authorization_id = None
+                        if command == 'cleanup' and isinstance(row_id,tuple) and len(row_id) == 2:
+                            row_id,cleanup_authorization_id = row_id
                         if command in {'prepare', 'reconcile', 'cleanup-reconciled'}:
                             row_id, execution_id = row_id
                     except queue.Empty:
@@ -1585,152 +1610,9 @@ class PublisherWorker:
                             self.handle_existing_session(playwright, conn, account_id, navigate)
                             continue
                         try:
+                            self.assert_execution_cleanup_disabled(conn,command,execution_id)
                             if command == "login":
                                 self.handle_login(playwright, conn, row_id)
-                            elif command == 'cleanup-reconciled':
-                                draft = get_row(conn, 'publisher_drafts', row_id)
-                                asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
-                                checkpoint = conn.execute(
-                                    "SELECT 1 FROM publisher_execution_logs "
-                                    "WHERE draft_id=? AND step IN ('TIKTOK_DRAFT_RECONCILED','PERSISTED') "
-                                    "AND status IN ('OK','READY_FOR_REVIEW_RECONCILED') LIMIT 1",
-                                    (row_id,),
-                                ).fetchone()
-                                if not (
-                                    draft['status'] == 'READY_FOR_REVIEW' and
-                                    draft['persistence_status'] == 'PERSISTED' and
-                                    asset['status'] == 'RESERVED' and
-                                    checkpoint
-                                ):
-                                    raise PreparationError(
-                                        'MANUAL_ACTION_REQUIRED',
-                                        'Cleanup reconciliado sem checkpoints persistidos suficientes',
-                                    )
-                                conn.execute(
-                                    "UPDATE publisher_execution_items SET status='CLEANUP',error_code=NULL "
-                                    "WHERE execution_id=? AND draft_id=? AND status='PROCESSING'",
-                                    (execution_id, row_id),
-                                )
-                                log(
-                                    conn, row_id, 'IDEMPOTENCY_CHECK', 'DRAFT_ALREADY_PERSISTED',
-                                    'Persistencia local ja confirmada; cleanup sem nova acao TikTok',
-                                )
-                                conn.commit()
-                                if not cleanup_remote(conn, row_id, root=self.root, provider_factory=self.provider_factory):
-                                    raise PreparationError('MANUAL_ACTION_REQUIRED', 'Cleanup remoto pendente; origem preservada')
-                                self.finish_item(conn, row_id, 'SUCCEEDED')
-                                self._queue_pending_execution(conn, execution_id)
-                                continue
-                            elif command == 'reconcile':
-                                draft = get_row(conn, 'publisher_drafts', row_id)
-                                account = get_row(conn, 'publisher_accounts', draft['account_id'])
-                                context = self.context(playwright, account)
-                                self.browser_runtime.verify_auth(
-                                    self.account_profile(account),
-                                    lambda runtime_context: self._verify_runtime_session(account, runtime_context),
-                                )
-                                if len(context.pages) != 1:
-                                    raise PreparationError(
-                                        'MANUAL_ACTION_REQUIRED',
-                                        'Reconciliacao exige a unica pagina existente; nenhuma aba sera criada',
-                                    )
-                                page = context.pages[0]
-                                self.auth_diagnostics.attach_page(account['id'], page)
-                                content_path = urlsplit(page.url).path.rstrip('/')
-                                if content_path != '/tiktokstudio/content':
-                                    page.goto(
-                                        'https://www.tiktok.com/tiktokstudio/content',
-                                        wait_until='domcontentloaded',
-                                        timeout=30000,
-                                    )
-                                self.browser_runtime.verify_auth(
-                                    self.account_profile(account),
-                                    lambda runtime_context: self._verify_runtime_session(account, runtime_context),
-                                )
-                                page_text = page.locator('body').inner_text(timeout=5000)
-                                folded = page_text.casefold()
-                                if 'rascunhos' in folded and 'todos os computadores' not in folded:
-                                    drafts_tab = page.locator(
-                                        '[data-tt="Header_HeaderTabBar_Container"]'
-                                    ).filter(has_text=re.compile(r'^Rascunhos\s+\d+$', re.I))
-                                    if drafts_tab.count() != 1 or not drafts_tab.is_visible():
-                                        raise PreparationError('MANUAL_ACTION_REQUIRED', 'Aba Rascunhos nao identificada de forma unica')
-                                    drafts_tab.click(timeout=10000)
-                                    page.wait_for_timeout(750)
-                                    page_text = page.locator('body').inner_text(timeout=5000)
-                                    folded = page_text.casefold()
-                                if 'rascunhos' not in folded or 'todos os computadores' not in folded:
-                                    raise PreparationError('MANUAL_ACTION_REQUIRED', 'Lista de rascunhos nao comprovada')
-                                draft_rows = page.locator(
-                                    '[data-tt="components_DraftRowLayout_FlexRow"]'
-                                ).evaluate_all(
-                                    """
-                                    els => els.map(el => {
-                                      const content = el.querySelector(
-                                        '[data-tt="components_DraftRowLayout_FlexRow_2"]'
-                                      );
-                                      const updated = el.querySelector(
-                                        '[data-tt="components_DraftRowLayout_FlexRow_3"]'
-                                      );
-                                      const contentLines = (content?.innerText || '')
-                                        .split(/\\r?\\n/).map(x => x.trim()).filter(Boolean);
-                                      return {
-                                        caption_text: contentLines.slice(1).join('\\n'),
-                                        duration_text: contentLines[0] || '',
-                                        updated_text: (updated?.innerText || '').trim(),
-                                        text: (el.innerText || '').trim(),
-                                      };
-                                    }).filter(row => row.caption_text && row.updated_text)
-                                    """
-                                )
-                                checkpoint = conn.execute(
-                                    "SELECT created_at FROM publisher_execution_logs "
-                                    "WHERE draft_id=? AND step='SAVE_DRAFT' AND status='OK' "
-                                    "ORDER BY id DESC LIMIT 1",
-                                    (row_id,),
-                                ).fetchone()
-                                matched_row = select_existing_draft_row(
-                                    draft_rows,
-                                    draft['caption'],
-                                    checkpoint['created_at'] if checkpoint else draft.get('last_execution_at'),
-                                )
-                                evidence_dir = self.root / 'data' / 'publisher' / 'evidence'
-                                evidence_dir.mkdir(parents=True, exist_ok=True)
-                                screenshot = evidence_dir / f"{row_id}-TIKTOK_DRAFT_RECONCILED-{now_iso().replace(':','-')}.png"
-                                try:
-                                    page.screenshot(path=str(screenshot), full_page=True)
-                                    screenshot_value = str(screenshot.relative_to(self.root))
-                                except Exception:
-                                    screenshot_value = None
-                                log(
-                                    conn, row_id, 'TIKTOK_DRAFT_RECONCILED', 'OK',
-                                    'Lista Rascunhos/Todos os computadores e rascunho associado por legenda + atualizacao '
-                                    f"{matched_row['updated_text']}; nenhum upload",
-                                    screenshot_value,
-                                )
-                                conn.commit()
-                                timestamp = now_iso()
-                                checks = {
-                                    'file': True, 'upload': True, 'caption': True,
-                                    'settings': True, 'durable': True, 'reconciled': True,
-                                    'tiktok_draft_url': page.url, 'persisted_at': timestamp,
-                                    'upload_confirmed_at': draft.get('upload_confirmed_at') or timestamp,
-                                    'caption_applied_at': draft.get('caption_applied_at') or timestamp,
-                                }
-                                reconcile_received(conn, row_id, checks)
-                                conn.execute(
-                                    "UPDATE publisher_execution_items SET status='CLEANUP',error_code=NULL "
-                                    "WHERE execution_id=? AND draft_id=?",
-                                    (execution_id, row_id),
-                                )
-                                conn.commit()
-                                draft = get_row(conn, 'publisher_drafts', row_id)
-                                asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
-                                if not cleanup_remote(conn, row_id, root=self.root, provider_factory=self.provider_factory):
-                                    raise PreparationError('MANUAL_ACTION_REQUIRED', 'Cleanup remoto pendente; origem preservada')
-                                self.finish_item(conn, row_id, 'SUCCEEDED')
-                                self._queue_pending_execution(conn, execution_id)
-                                continue
                             elif command == "review":
                                 with self.lock:
                                     page = self.pages.get(row_id)
@@ -1747,7 +1629,8 @@ class PublisherWorker:
                             elif command == 'cleanup':
                                 draft = get_row(conn,'publisher_drafts',row_id)
                                 asset = get_row(conn,'publisher_media_assets',draft['media_asset_id'])
-                                cleanup_remote(conn, row_id, root=self.root, provider_factory=self.provider_factory)
+                                cleanup_remote(conn, row_id, root=self.root, provider_factory=self.provider_factory,
+                                               authorization_id=cleanup_authorization_id)
                             elif command == "release":
                                 with self.lock:
                                     self.pages.pop(row_id, None)
@@ -1759,27 +1642,6 @@ class PublisherWorker:
                                 conn.execute("UPDATE publisher_batch_executions SET status='RUNNING' WHERE id IN (SELECT execution_id FROM publisher_execution_items WHERE draft_id=? AND status='PROCESSING')",(row_id,))
                                 conn.commit()
                                 self.prepare(playwright, conn, row_id)
-                                auto_cleanup = bool(conn.execute(
-                                    'SELECT auto_cleanup FROM publisher_batch_executions WHERE id=?',
-                                    (execution_id,),
-                                ).fetchone()[0])
-                                if auto_cleanup:
-                                    conn.execute(
-                                        "UPDATE publisher_execution_items SET status='CLEANUP' "
-                                        "WHERE execution_id=? AND draft_id=? AND status='PROCESSING'",
-                                        (execution_id, row_id),
-                                    )
-                                    conn.commit()
-                                    draft = get_row(conn, 'publisher_drafts', row_id)
-                                    asset = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
-                                    cleanup_ok = cleanup_remote(
-                                        conn, row_id, root=self.root, provider_factory=self.provider_factory,
-                                    )
-                                    if not cleanup_ok:
-                                        raise PreparationError(
-                                            'MANUAL_ACTION_REQUIRED',
-                                            'Cleanup remoto pendente; origem preservada',
-                                        )
                                 self.finish_item(conn,row_id,'SUCCEEDED')
                         except Exception as exc:
                             code = getattr(exc, "code", "FAILED")

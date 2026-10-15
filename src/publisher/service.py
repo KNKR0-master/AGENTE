@@ -656,6 +656,9 @@ class PublisherService:
         protections_by_account = {row['id']: AccountSafetyGuard(self.conn).snapshot(row['id'])['state'] != 'NORMAL'
                                   for row in self.conn.execute('SELECT DISTINCT account_id id FROM publisher_drafts')}
         for draft in drafts:
+            from src.publisher.persistence_identity import can_confirm_persistence
+            from src.publisher.cleanup_authorization import cleanup_identity_token
+            draft['cleanup_identity_token'] = cleanup_identity_token(self.conn,draft['id']) if draft['media_asset_id'] else None
             draft['headline'] = headlines.read_snapshot(draft)
             draft["checklist"] = json.loads(draft.pop("checklist_json"))
             media = dict(self.conn.execute('SELECT * FROM publisher_media_assets WHERE id=?', (draft['media_asset_id'],)).fetchone()) if draft['media_asset_id'] else None
@@ -686,6 +689,7 @@ class PublisherService:
                     'blocker_code': evidence['blocker_code'],
                     'verified_at': evidence['verification_completed_at'],
                     'current': validity['valid'],
+                    'can_confirm_persistence': can_confirm_persistence(self.conn, draft, evidence['id']),
                     'stale_reason': None if validity['valid'] else validity['reason'],
                     **current_listing_summary(evidence),
                 }

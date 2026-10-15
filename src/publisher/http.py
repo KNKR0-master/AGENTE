@@ -595,6 +595,8 @@ class PublisherAPI:
                                 self.worker.submit("release", row_id)
                         result = {"ok": True}
                     elif action == "prepare":
+                        if data.get('auto_cleanup',False) is not False:
+                            raise ValueError('AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION')
                         ids = data.get('ids', [])
                         if data.get('batch_id') and not ids:
                             ids = [r[0] for r in conn.execute("SELECT id FROM publisher_drafts WHERE batch_id=? AND status='DRAFT'",(int(data['batch_id']),))]
@@ -627,6 +629,12 @@ class PublisherAPI:
                         if action == 'cleanup':
                             from src.publisher.lifecycle import assert_cleanup_allowed
                             assert_cleanup_allowed(conn, data['id'])
+                            from src.publisher.cleanup_authorization import authorize_cleanup
+                            authorization_id = authorize_cleanup(conn,data['id'],
+                                human_confirmed=data.get('human_confirmed'),identity_token=data.get('identity_token'))
+                            result = self.worker.submit(action,data['id'],authorization_id=authorization_id) or {'ok': True}
+                            handler._json(result)
+                            return
                         get_row(conn, "publisher_accounts" if action == "login" else "publisher_drafts", data["id"])
                         result = self.worker.submit(action, data["id"]) or {"ok": True}
                     else:

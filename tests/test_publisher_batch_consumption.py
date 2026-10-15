@@ -44,7 +44,14 @@ class FakeIdentityDrive(fixtures.FakeMedia):
 class BatchConsumptionTests(unittest.TestCase):
     setUp = fixtures.PublisherRemoteTests.setUp
     batch = fixtures.PublisherRemoteTests.batch
-    confirm = fixtures.PublisherRemoteTests.confirm
+    def confirm(self, draft_id):
+        from tests.publisher_security_fixture import confirm_independent_fake_identity
+        confirm_independent_fake_identity(self,draft_id)
+
+    def authorize(self, draft_id):
+        from src.publisher.cleanup_authorization import authorize_cleanup,cleanup_identity_token
+        return authorize_cleanup(self.conn,draft_id,human_confirmed=True,
+                                 identity_token=cleanup_identity_token(self.conn,draft_id))
 
     def prepare(self, count=1, published=None):
         self.drive = FakeIdentityDrive()
@@ -101,7 +108,7 @@ class BatchConsumptionTests(unittest.TestCase):
 
     def test_partially_consumed_batch(self):
         ids = self.prepare(3)
-        self.assertTrue(cleanup_remote(self.conn, ids[0], self.drive, self.root))
+        self.assertTrue(cleanup_remote(self.conn, ids[0], self.drive, self.root, authorization_id=self.authorize(ids[0])))
         result = self.finish(self.payload(ids))
         self.assertEqual((result['counts']['CONSUMED'], result['counts']['ALREADY_CONSUMED']), (2, 1))
         self.assertEqual(len(self.drive.deleted), 3)
@@ -322,13 +329,13 @@ class BatchConsumptionTests(unittest.TestCase):
         with patch('src.publisher.lifecycle._finish_local_cleanup', side_effect=PermissionError('fake busy file')):
             self.finish()
         self.assertEqual(batch_consumption_review(self.conn, self.batch_id)['counts']['local_cleanup_pending'], 1)
-        cleanup_remote(self.conn, ids[0], self.drive, self.root)
+        cleanup_remote(self.conn, ids[0], self.drive, self.root, authorization_id=self.authorize(ids[0]))
         self.assertEqual(batch_consumption_review(self.conn, self.batch_id)['counts']['local_cleanup_pending'], 0)
 
     def test_interrupted_request_with_consumed_checkpoint_recovers_locally(self):
         ids = self.prepare()
         data = self.payload()
-        cleanup_remote(self.conn, ids[0], self.drive, self.root)
+        cleanup_remote(self.conn, ids[0], self.drive, self.root, authorization_id=self.authorize(ids[0]))
         with self.conn:
             log(self.conn, ids[0], REQUEST, 'AUTHORIZED', json.dumps(dict(data, batch_id=self.batch_id)))
             log(self.conn, ids[0], ITEM, 'RUNNING', json.dumps(dict(request_id=data['request_id'], batch_id=self.batch_id,

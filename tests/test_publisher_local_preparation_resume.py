@@ -40,13 +40,14 @@ class LocalPreparationResumeTests(unittest.TestCase):
         self.assertFalse(self.provider.deleted)
 
     def test_local_failure_can_resume_with_cleanup(self):
-        worker, execution, _ = self.paused(auto_cleanup=True)
-        with patch.object(worker, 'start'):
-            self.assertEqual(worker.resume_execution(self.conn, execution), execution)
+        with self.assertRaisesRegex(ValueError,'AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION'):
+            self.paused(auto_cleanup=True)
+        self.assertFalse(self.provider.downloads or self.provider.deleted)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM publisher_batch_executions').fetchone()[0],0)
 
     def test_no_local_failure_does_not_bypass_cleanup_guard(self):
         worker, execution, _ = self.paused(failure=False)
-        with self.assertRaisesRegex(ValueError, 'AUTO_CLEANUP_REQUIRED'):
+        with self.assertRaisesRegex(ValueError, 'PREUPLOAD_RESUME_NOT_PROVEN_SAFE'):
             worker.resume_execution(self.conn, execution)
         self.assertTrue(worker.commands.empty())
 
@@ -54,7 +55,7 @@ class LocalPreparationResumeTests(unittest.TestCase):
         worker, execution, ids = self.paused()
         with self.conn:
             log(self.conn, ids[0], 'UPLOAD_STARTED', 'OK', 'fixture')
-        with self.assertRaisesRegex(ValueError, 'AUTO_CLEANUP_REQUIRED'):
+        with self.assertRaisesRegex(ValueError, 'PREUPLOAD_RESUME_NOT_PROVEN_SAFE'):
             worker.resume_execution(self.conn, execution)
         self.assertEqual(get_row(self.conn, 'publisher_drafts', ids[0])['status'], 'DRAFT')
 
@@ -62,7 +63,7 @@ class LocalPreparationResumeTests(unittest.TestCase):
         worker, execution, ids = self.paused()
         with self.conn:
             self.conn.execute("INSERT INTO account_mutation_ledger(account_id,mutation_key,mutation_type,draft_id,started_at) VALUES (?,'fixture','VIDEO_UPLOAD',?,'now')", (self.account, ids[0]))
-        with self.assertRaisesRegex(ValueError, 'AUTO_CLEANUP_REQUIRED'):
+        with self.assertRaisesRegex(ValueError, 'PREUPLOAD_RESUME_NOT_PROVEN_SAFE'):
             worker.resume_execution(self.conn, execution)
 
     def test_ambiguous_postupload_stays_blocked(self):
@@ -70,18 +71,18 @@ class LocalPreparationResumeTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("UPDATE publisher_drafts SET upload_status='TRANSFER_UNKNOWN' WHERE id=?", (ids[0],))
             self.conn.execute("UPDATE publisher_media_assets SET status='NEEDS_RECONCILIATION' WHERE id=1")
-        with self.assertRaisesRegex(ValueError, 'AUTO_CLEANUP_REQUIRED'):
+        with self.assertRaisesRegex(ValueError, 'PREUPLOAD_RESUME_NOT_PROVEN_SAFE'):
             worker.resume_execution(self.conn, execution)
         with self.conn:
             self.conn.execute('UPDATE publisher_batch_executions SET auto_cleanup=1 WHERE id=?', (execution,))
-        with self.assertRaisesRegex(ValueError, 'PENDING_DRAFT_NOT_PRISTINE'):
+        with self.assertRaisesRegex(ValueError, 'AUTO_CLEANUP_DISABLED_USE_EXPLICIT_CONSUMPTION'):
             worker.resume_execution(self.conn, execution)
 
     def test_stale_failure_from_another_execution_is_not_permission(self):
         worker, execution, ids = self.paused()
         with self.conn:
             self.conn.execute("UPDATE publisher_execution_logs SET created_at='2000-01-01T00:00:00+00:00' WHERE step='HEADLINE_PREPARATION_FAILED'")
-        with self.assertRaisesRegex(ValueError, 'AUTO_CLEANUP_REQUIRED'):
+        with self.assertRaisesRegex(ValueError, 'PREUPLOAD_RESUME_NOT_PROVEN_SAFE'):
             worker.resume_execution(self.conn, execution)
 
     def test_new_local_ready_artifact_does_not_destroy_resume_evidence(self):

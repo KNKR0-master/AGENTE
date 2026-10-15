@@ -17,11 +17,11 @@ BLOCKERS = frozenset({
     'LISTING_ERROR', 'MATCH_EVIDENCE_INSUFFICIENT',
 })
 REMOTE_EFFECT_STEPS = ('UPLOAD_STARTED', 'SAVE_DRAFT', 'TIKTOK_DRAFT_CONFIRMED')
-SOURCES = frozenset({'TIKTOK_STUDIO_DRAFT_LIST', 'TIKTOK_STUDIO_EDITOR', 'TIKTOK_STUDIO_AUTH'})
+SOURCES = frozenset({'TIKTOK_STUDIO_DRAFT_LIST', 'TIKTOK_STUDIO_EDITOR', 'TIKTOK_STUDIO_AUTH', 'INDEPENDENT_REMOTE_IDENTITY'})
 PAYLOAD_KEYS = frozenset({
     'candidate_summaries', 'observed_duration', 'caption_fingerprint',
     'thumbnail_fingerprint', 'listing_bounds', 'pagination_observations',
-    'current_listing', 'page_identity', 'upload_source_identity',
+    'current_listing', 'page_identity', 'upload_source_identity', 'remote_identity_receipt',
 })
 
 

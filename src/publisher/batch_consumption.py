@@ -11,6 +11,7 @@ import re
 import threading
 
 from src.publisher.lifecycle import cleanup_remote
+from src.publisher.cleanup_authorization import authorize_cleanup, cleanup_identity_token
 from src.publisher.media import verify_identity
 from src.publisher.media_history import media_history_blocker, assert_media_history_allowed
 from src.publisher.service import get_row, log
@@ -318,7 +319,12 @@ def finalize_batch_consumption(conn, batch_id, data, provider_factory, root):
                     provider = _IdentityCheckedProvider(
                         provider_factory(current_asset), conn, draft_id, token, current_asset)
                     return provider
+                authorization_id = authorize_cleanup(conn,draft_id,
+                    human_confirmed=data['drive_delete_confirmed'],
+                    identity_token=cleanup_identity_token(conn,draft_id),request_id=request_id,
+                    identity_validator=lambda: _assert_identity(conn,batch_id,draft_id,token))
                 ok = cleanup_remote(conn, draft_id, root=root, provider_factory=checked_provider,
+                                    authorization_id=authorization_id,
                                     identity_validator=lambda: _assert_identity(conn, batch_id, draft_id, token))
                 current = get_row(conn, 'publisher_media_assets', asset['id'])
                 status = 'CONSUMED' if ok and current['status'] == 'CONSUMED' else 'FAILED'

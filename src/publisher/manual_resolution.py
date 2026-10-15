@@ -55,6 +55,15 @@ def resolve_draft(conn, draft_id, data):
             # Generic transition/reset remains closed to every ambiguous draft.
             conn.execute("UPDATE publisher_drafts SET status='ARCHIVED',updated_at=? WHERE id=?", (now_iso(), draft['id']))
             conn.execute("UPDATE publisher_media_assets SET status='AVAILABLE',updated_at=? WHERE id=?", (now_iso(), media['id']))
+        if decision in {'CONFIRM_EXISTS', 'ABANDON'}:
+            item_status = 'SUCCEEDED' if decision == 'CONFIRM_EXISTS' else 'FAILED'
+            item_error = None if decision == 'CONFIRM_EXISTS' else 'ADMINISTRATIVELY_CLOSED_REMOTE_UNCONFIRMED'
+            conn.execute('UPDATE publisher_execution_items SET status=?,error_code=? WHERE execution_id=? AND draft_id=?',
+                         (item_status,item_error,context['execution_id'],draft['id']))
+            if not conn.execute("SELECT 1 FROM publisher_execution_items WHERE execution_id=? AND status NOT IN ('SUCCEEDED','FAILED')",
+                                (context['execution_id'],)).fetchone():
+                conn.execute("UPDATE publisher_batch_executions SET status='COMPLETED',finished_at=? WHERE id=?",
+                             (now_iso(),context['execution_id']))
         after = get_row(conn, 'publisher_drafts', draft['id'])
         media_after = get_row(conn, 'publisher_media_assets', media['id'])
         reuse_blocker = media_history_blocker(conn, media_after, account_id=draft['account_id'], purpose='reserve')
@@ -66,6 +75,8 @@ def resolve_draft(conn, draft_id, data):
                      previous_media_state=media['status'], resulting_media_state=media_after['status'],
                      remote_may_exist_acknowledged=data.get('acknowledge_remote_may_exist') is True,
                      reuse_authorized=False, reuse_blocker=reuse_blocker,
+                     local_task_closed=decision in {'CONFIRM_EXISTS','ABANDON'},
+                     persistence_confirmed=decision == 'CONFIRM_EXISTS', drive_deletion_authorized=False,
                      observed_at=now_iso())
         log(conn, draft['id'], 'MANUAL_RESOLUTION', after['status'], json.dumps(audit, ensure_ascii=True))
     return {'draft_id': draft['id'], 'status': after['status'], 'media_status': media_after['status'],

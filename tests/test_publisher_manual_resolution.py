@@ -48,7 +48,12 @@ class ManualResolutionTests(unittest.TestCase):
         self.assertTrue(audit['human_confirmed'])
         self.assertFalse(self.provider.deleted)
         self.assertFalse(self.provider.downloads)
+        # This fixture has two pending items: close only the selected task.
         self.assertEqual(self.conn.execute('SELECT status FROM publisher_batch_executions WHERE id=?', (execution_id,)).fetchone()[0], 'PAUSED')
+        self.assertEqual(self.conn.execute('SELECT status,error_code FROM publisher_execution_items WHERE execution_id=? AND draft_id=?',(execution_id,draft_id)).fetchone()[1],'ADMINISTRATIVELY_CLOSED_REMOTE_UNCONFIRMED')
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publisher_execution_items WHERE execution_id=? AND status='WAITING_MANUAL'",(execution_id,)).fetchone()[0],1)
+        self.assertTrue(audit['local_task_closed'])
+        self.assertFalse(audit['persistence_confirmed'] or audit['drive_deletion_authorized'] or audit['reuse_authorized'])
 
     def test_missing_confirmation_ack_or_stale_checkpoint_cannot_release(self):
         draft_id, _, data = self.prepare_resolution()
@@ -79,17 +84,15 @@ class ManualResolutionTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publisher_execution_logs WHERE step='MANUAL_RESOLUTION'").fetchone()[0], 1)
 
     def test_strong_fresh_evidence_reconciles_without_cleanup(self):
-        draft_id, execution_id, data = self.prepare_resolution(decision='CONFIRM_EXISTS')
-        with self.conn:
-            self.conn.execute("UPDATE publisher_drafts SET upload_status='TRANSFER_CONFIRMED',processing_status='MEDIA_READY_FOR_EDIT',checklist_json=? WHERE id=?",
-                              (json.dumps(dict.fromkeys(('file', 'upload', 'caption', 'settings'), True)), draft_id))
-        data['evidence_id'] = self.record(draft_id, execution_id, outcome='REMOTE_EXISTS_CONFIRMED',
-                                        coverage_status='COMPLETE', candidate_count=1, matched_candidate_fingerprint='unique-fixture')
-        result = resolve_draft(self.conn, draft_id, data)
-        self.assertEqual(result['status'], 'READY_FOR_REVIEW')
-        self.assertEqual(result['media_status'], 'RESERVED')
-        self.assertEqual(get_row(self.conn, 'publisher_drafts', draft_id)['persistence_status'], 'PERSISTED')
-        self.assertFalse(self.provider.deleted)
+        from tests.publisher_security_fixture import uncertain,trusted_observation
+        draft_id,execution_id,data=self.prepare_resolution(decision='CONFIRM_EXISTS')
+        context=uncertain(self,draft_id)
+        data.update(checkpoint_id=context['checkpoint'],evidence_id=trusted_observation(self,draft_id,context))
+        result=resolve_draft(self.conn,draft_id,data)
+        self.assertEqual(result['status'],'READY_FOR_REVIEW')
+        self.assertEqual(result['media_status'],'RESERVED')
+        self.assertEqual(get_row(self.conn,'publisher_drafts',draft_id)['persistence_status'],'PERSISTED')
+        self.assertFalse(self.provider.deleted or self.provider.downloads)
 
     def test_unknown_ambiguous_and_absence_cannot_be_promoted(self):
         draft_id, execution_id, data = self.prepare_resolution(decision='CONFIRM_EXISTS')

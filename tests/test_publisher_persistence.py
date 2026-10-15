@@ -21,9 +21,15 @@ class PersistenceTests(unittest.TestCase):
     batch = PublisherRemoteTests.batch
     confirm = PublisherRemoteTests.confirm
 
+    def cleanup(self, conn, draft, *args, **kwargs):
+        return cleanup_remote(conn,draft,*args,authorization_id=getattr(self,'authorizations',{}).get(draft),**kwargs)
+
     def persisted(self):
         draft = self.batch()[0]
         self.confirm(draft)
+        from tests.publisher_security_fixture import cleanup_consent
+        if not hasattr(self, 'authorizations'): self.authorizations={}
+        self.authorizations[draft]=cleanup_consent(self,draft)
         return draft
 
     def temp_file(self, draft):
@@ -52,26 +58,18 @@ class PersistenceTests(unittest.TestCase):
             start.assert_not_called()
 
     def test_reconcile_received_persists_without_upload(self):
-        draft = self.batch()[0]
-        with self.conn:
-            self.conn.execute(
-                "UPDATE publisher_drafts SET status='MANUAL_ACTION_REQUIRED',upload_status='TRANSFER_CONFIRMED',processing_status='MEDIA_READY_FOR_EDIT' WHERE id=?",
-                (draft,),
-            )
-            self.conn.execute(
-                "UPDATE publisher_media_assets SET status='NEEDS_RECONCILIATION' WHERE id=1"
-            )
-            log(self.conn, draft, 'TIKTOK_DRAFT_RECONCILED', 'OK', 'fixture', 'evidence/reconciled.png')
-        checks = {
-            'file': True, 'upload': True, 'caption': True, 'settings': True, 'durable': True,
-            'tiktok_draft_url': 'https://www.tiktok.com/tiktokstudio/content',
-        }
-        self.assertTrue(reconcile_received(self.conn, draft, checks))
-        row = get_row(self.conn, 'publisher_drafts', draft)
-        self.assertEqual(row['status'], 'READY_FOR_REVIEW')
-        self.assertEqual(row['persistence_status'], 'PERSISTED')
-        self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'RESERVED')
-        self.assertTrue(reconcile_received(self.conn, draft, checks))
+        from tests.publisher_security_fixture import uncertain,trusted_observation,CHECKS
+        draft=self.batch()[0];context=uncertain(self,draft)
+        with self.assertRaisesRegex(ValueError,'PERSISTENCE_IDENTITY_EVIDENCE_REQUIRED'):
+            reconcile_received(self.conn,draft,CHECKS)
+        evidence=trusted_observation(self,draft,context)
+        self.assertTrue(reconcile_received(self.conn,draft,CHECKS,evidence_id=evidence))
+        row=get_row(self.conn,'publisher_drafts',draft)
+        self.assertEqual(row['status'],'READY_FOR_REVIEW')
+        self.assertEqual(row['persistence_status'],'PERSISTED')
+        self.assertEqual(get_row(self.conn,'publisher_media_assets',1)['status'],'RESERVED')
+        self.assertTrue(reconcile_received(self.conn,draft,CHECKS,evidence_id=evidence))
+        self.assertFalse(self.provider.downloads or self.provider.deleted)
 
     def test_existing_draft_row_uses_checkpoint_time_when_caption_is_duplicated(self):
         rows = [
@@ -103,15 +101,15 @@ class PersistenceTests(unittest.TestCase):
 
     def test_cleanup_success_and_idempotence(self):
         draft = self.persisted(); path = self.temp_file(draft)
-        self.assertTrue(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertTrue(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertFalse(path.exists())
-        self.assertTrue(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertTrue(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertEqual(self.provider.deleted, ['remote-0'])
         self.assertFalse(self.provider.downloads)
 
     def test_404_after_delete_is_success(self):
         draft = self.persisted(); self.temp_file(draft)
-        self.assertTrue(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertTrue(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertEqual(self.provider.deleted, ['remote-0'])
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'CONSUMED')
 
@@ -119,7 +117,7 @@ class PersistenceTests(unittest.TestCase):
         draft = self.persisted()
         self.provider.deleted.append('remote-0')
         with self.assertRaisesRegex(ValueError, 'MANUAL_ACTION_REQUIRED'):
-            cleanup_remote(self.conn, draft, self.provider, self.root)
+            self.cleanup(self.conn, draft, self.provider, self.root)
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'RESERVED')
         self.assertFalse(self.conn.execute(
             "SELECT 1 FROM publisher_execution_logs WHERE draft_id=? AND step='REMOTE_DELETE_PENDING'", (draft,)
@@ -130,32 +128,32 @@ class PersistenceTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("UPDATE publisher_media_assets SET remote_file_id='missing-asset' WHERE id=1")
         self.provider.deleted.append('missing-asset')
-        with self.assertRaisesRegex(ValueError, 'MANUAL_ACTION_REQUIRED'):
-            cleanup_remote(self.conn, draft, self.provider, self.root)
+        with self.assertRaisesRegex(ValueError, 'MEDIA_HISTORY_RECONCILIATION_REQUIRED'):
+            self.cleanup(self.conn, draft, self.provider, self.root)
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'RESERVED')
 
     def test_404_with_unpersisted_draft_is_not_cleanup_success(self):
         draft = self.batch()[0]
         self.provider.deleted.append('remote-0')
         with self.assertRaisesRegex(ValueError, 'PERSISTED_CHECKPOINT_REQUIRED'):
-            cleanup_remote(self.conn, draft, self.provider, self.root)
+            self.cleanup(self.conn, draft, self.provider, self.root)
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'RESERVED')
 
     def test_sqlite_failure_after_remote_delete_reconciles_without_retry(self):
         draft = self.persisted(); self.temp_file(draft)
         with patch('src.publisher.lifecycle._mark_consumed', side_effect=sqlite3.OperationalError('simulated commit failure')):
-            self.assertFalse(cleanup_remote(self.conn, draft, self.provider, self.root))
+            self.assertFalse(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertEqual(self.provider.deleted, ['remote-0'])
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'CONSUMED_PENDING_DELETE')
-        self.assertTrue(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertTrue(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertEqual(self.provider.deleted, ['remote-0'])
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'CONSUMED')
 
     def test_consumed_asset_with_missing_temp_is_idempotent(self):
         draft = self.persisted()
-        self.assertTrue(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertTrue(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertFalse(get_row(self.conn, 'publisher_media_assets', 1)['status'] == 'CONSUMED_PENDING_DELETE')
-        self.assertTrue(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertTrue(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertEqual(self.provider.deleted, ['remote-0'])
 
     def test_concurrent_cleanup_deletes_once(self):
@@ -164,7 +162,7 @@ class PersistenceTests(unittest.TestCase):
         draft=self.persisted()
         def finish():
             conn=connect(self.root/'test.db')
-            try:return cleanup_remote(conn,draft,self.provider,self.root)
+            try:return self.cleanup(conn,draft,self.provider,self.root)
             finally:conn.close()
         with ThreadPoolExecutor(max_workers=2) as pool:
             results=list(pool.map(lambda _:finish(),range(2)))
@@ -179,19 +177,19 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(self.provider.deleted,['remote-0'])
             return original(target,*args,**kwargs)
         with patch.object(Path,'unlink',observed):
-            self.assertTrue(cleanup_remote(self.conn,draft,self.provider,self.root))
+            self.assertTrue(self.cleanup(self.conn,draft,self.provider,self.root))
         self.assertFalse(path.exists())
 
     def test_failure_preserves_temp_pending_and_restart_retry(self):
         draft = self.persisted(); path = self.temp_file(draft)
         self.provider.fail_delete = True
-        self.assertFalse(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertFalse(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertTrue(path.exists())
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'CONSUMED_PENDING_DELETE')
         recover_sessions(self.conn)
         self.assertEqual(get_row(self.conn, 'publisher_drafts', draft)['persistence_status'], 'PERSISTED')
         self.provider.fail_delete = False
-        self.assertTrue(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertTrue(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertFalse(self.provider.downloads)
 
     def test_crash_after_remote_delete_before_database_commit(self):
@@ -201,11 +199,11 @@ class PersistenceTests(unittest.TestCase):
             raise SystemExit('simulated process crash')
         self.provider.delete_remote = crash
         with self.assertRaises(SystemExit):
-            cleanup_remote(self.conn, draft, self.provider, self.root)
+            self.cleanup(self.conn, draft, self.provider, self.root)
         self.assertTrue(path.exists())
         self.assertEqual(get_row(self.conn, 'publisher_media_assets', 1)['status'], 'CONSUMED_PENDING_DELETE')
         recover_sessions(self.conn)
-        self.assertTrue(cleanup_remote(self.conn, draft, self.provider, self.root))
+        self.assertTrue(self.cleanup(self.conn, draft, self.provider, self.root))
         self.assertEqual(len(self.provider.deleted), 1)
 
     def test_crash_after_save_before_local_confirmation_blocks_upload(self):
@@ -217,7 +215,7 @@ class PersistenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'UPLOAD_RECONCILIATION_REQUIRED'):
             assert_upload_allowed(self.conn, draft)
         with self.assertRaises(ValueError):
-            cleanup_remote(self.conn, draft, self.provider, self.root)
+            self.cleanup(self.conn, draft, self.provider, self.root)
         self.assertFalse(self.provider.deleted)
 
     def test_crash_before_cleanup_preserves_reserved(self):
@@ -232,7 +230,7 @@ class PersistenceTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("UPDATE publisher_drafts SET status='PREPARING' WHERE id=?", (draft,))
         with self.assertRaisesRegex(ValueError, 'UPLOAD_IN_PROGRESS'):
-            cleanup_remote(self.conn, draft, self.provider, self.root)
+            self.cleanup(self.conn, draft, self.provider, self.root)
         self.assertFalse(self.provider.deleted)
 
     def test_cache_preservation_survives_orphan_cleanup(self):
@@ -251,8 +249,9 @@ class PersistenceTests(unittest.TestCase):
         page.locator.return_value.inner_text.return_value = 'Rascunhos todos os computadores Legenda'
         page.get_by_text.return_value.count.return_value = 1
         adapter = StudioPage(page, {'durable_confirmation_validated': True})
-        result = adapter.confirm_durable({'caption': 'Legenda'}, MagicMock())
-        self.assertTrue(result['durable'])
+        with self.assertRaisesRegex(PreparationError,'PERSISTENCE_IDENTITY_REQUIRED'):
+            adapter.confirm_durable({'caption': 'Legenda'}, MagicMock())
+        self.assertTrue(adapter.save_attempted)
         button.click.assert_called_once()
         page.goto.assert_not_called()
         self.assertNotIn('Publicar', str(page.get_by_role.call_args_list))
@@ -274,8 +273,9 @@ class PersistenceTests(unittest.TestCase):
         mapping={'validated':True,'durable_confirmation_validated':True,
                  'file_input':{'selector':'input[type=file]'},'caption':{'selector':'[contenteditable="true"]'}}
         adapter=StudioPage(page,mapping)
-        result=adapter.prepare({'caption':'Legenda','media_asset_id':1},{},Path('fixture.mp4'),MagicMock())
-        self.assertTrue(result['durable'])
+        with self.assertRaisesRegex(PreparationError,'PERSISTENCE_IDENTITY_REQUIRED'):
+            adapter.prepare({'caption':'Legenda','media_asset_id':1},{},Path('fixture.mp4'),MagicMock())
+        self.assertTrue(adapter.transfer_confirmed)
         upload.set_input_files.assert_called_once_with('fixture.mp4')
         caption.fill.assert_called_once_with('Legenda')
         save.click.assert_called_once()
@@ -298,8 +298,9 @@ class PersistenceTests(unittest.TestCase):
                  'file_input':{'selector':'input[type=file]'},'caption':{'selector':'[contenteditable="true"]'}}
         adapter=StudioPage(page,mapping)
         evidence=MagicMock()
-        result=adapter.prepare({'caption':'Legenda','media_asset_id':1},{},Path('fixture.mp4'),evidence)
-        self.assertTrue(result['durable'])
+        with self.assertRaisesRegex(PreparationError,'PERSISTENCE_IDENTITY_REQUIRED'):
+            adapter.prepare({'caption':'Legenda','media_asset_id':1},{},Path('fixture.mp4'),evidence)
+        self.assertTrue(adapter.transfer_confirmed)
         self.assertEqual(upload.count.call_count,2)
         page.wait_for_timeout.assert_called_once_with(500)
 
@@ -442,10 +443,12 @@ class PersistenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'EXPLICIT_MEDIA_CONSUMPTION_CONFIRMATION_REQUIRED'):
                 api.post(handler,'/api/publisher/cleanup')
             submit.assert_not_called()
-            body=json.dumps({'id':draft,'human_confirmed':True}).encode()
+            from src.publisher.cleanup_authorization import cleanup_identity_token
+            body=json.dumps({'id':draft,'human_confirmed':True,'identity_token':cleanup_identity_token(self.conn,draft)}).encode()
             handler.headers['Content-Length']=str(len(body));handler.rfile=io.BytesIO(body)
             api.post(handler,'/api/publisher/cleanup')
-            submit.assert_called_once_with('cleanup',draft)
+            self.assertEqual(submit.call_args.args,('cleanup',draft))
+            self.assertGreater(submit.call_args.kwargs['authorization_id'],0)
         from src.publisher.functional_probe import run_probe
         with self.assertRaisesRegex(ValueError, 'PROBE_MUTATIONS_RETIRED'):
             run_probe(None, None, 'upload', {})

@@ -5,40 +5,50 @@ from src.publisher.service import get_row, log, transition
 from src.publisher.diagnostics import safe_error
 from src.publisher.media import verify_identity
 from src.publisher.media_history import assert_media_history_allowed, MediaHistoryBlocked
+from src.publisher.cleanup_authorization import assert_cleanup_authorized, CleanupAuthorizationBlocked
 from src.store import now_iso
 
 
 def confirm_received(conn, draft_id, checks):
+    """Save/transfer observations never constitute a unique persisted identity."""
+    from src.publisher.persistence_identity import persistence_identity_verified
     draft = get_row(conn, 'publisher_drafts', draft_id)
     if draft.get('persistence_status') == 'PERSISTED':
-        return True
-    if not all(checks.get(k) is True for k in ('file','upload','caption','settings','durable')):
-        raise ValueError('Checkpoint TikTok incompleto; origem preservada')
-    if not checks.get('tiktok_draft_url'):
-        raise ValueError('Referencia persistente do TikTok ausente')
+        return persistence_identity_verified(conn, draft)
+    observed = dict(checks)
+    observed['durable'] = False
     with conn:
-        evidence = conn.execute("SELECT 1 FROM publisher_execution_logs WHERE draft_id=? AND step='TIKTOK_DRAFT_CONFIRMED' AND screenshot_path IS NOT NULL", (draft_id,)).fetchone()
-        conn.execute('UPDATE publisher_drafts SET confirmed_at=?,tiktok_draft_id=?,tiktok_draft_url=? WHERE id=?',
-                     (now_iso(),checks.get('tiktok_draft_id'),checks['tiktok_draft_url'],draft_id))
-        if not evidence:
-            transition(conn,draft_id,'MANUAL_ACTION_REQUIRED',error='TikTok recebido, mas evidencia ausente; origem preservada',checklist=checks)
-            conn.execute("UPDATE publisher_media_assets SET status='RECEIVED_NEEDS_REVIEW',consumed_by_draft_id=?,updated_at=? WHERE id=?",(draft_id,now_iso(),draft['media_asset_id']))
-            return False
-        conn.execute("""UPDATE publisher_drafts SET persistence_status='PERSISTED',
-          upload_confirmed_at=COALESCE(upload_confirmed_at,?),caption_applied_at=COALESCE(caption_applied_at,?),
-          tiktok_draft_persisted_at=COALESCE(tiktok_draft_persisted_at,?) WHERE id=?""",
-          (checks.get('upload_confirmed_at') or now_iso(),checks.get('caption_applied_at') or now_iso(),checks.get('persisted_at') or now_iso(),draft_id))
-        transition(conn,draft_id,'READY_FOR_REVIEW',checklist=checks)
-        conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?",
+        conn.execute("UPDATE publisher_drafts SET status='MANUAL_ACTION_REQUIRED',persistence_status='UNCONFIRMED',"
+                     "checklist_json=?,error_code='PERSISTENCE_IDENTITY_REQUIRED',updated_at=? WHERE id=?",
+                     (json.dumps(observed,sort_keys=True),now_iso(),draft_id))
+        conn.execute("UPDATE publisher_media_assets SET status='NEEDS_RECONCILIATION',updated_at=? WHERE id=?",
                      (now_iso(),draft['media_asset_id']))
-        log(conn,draft_id,'PERSISTED','READY_FOR_REVIEW_PERSISTED','Persistencia confirmada; consumo exige acao explicita')
-    return True
+        log(conn,draft_id,'PERSISTENCE_IDENTITY_PENDING','PENDING',
+            'Identidade persistente nao comprovada; origem preservada. Nenhum retry autorizado.')
+    return False
 
 
 def reconcile_received(conn, draft_id, checks, *, evidence_id=None, caller_transaction=False):
-    """Persist a draft already visible in Studio without another upload."""
+    """Validate proof and promote atomically, without another upload."""
+    if caller_transaction and not conn.in_transaction:
+        raise ValueError('RECONCILIATION_TRANSACTION_REQUIRED')
+    owns = not conn.in_transaction
+    with conn if owns else nullcontext():
+        if owns:
+            conn.execute('BEGIN IMMEDIATE')
+        return _reconcile_received_locked(conn, draft_id, checks, evidence_id=evidence_id)
+
+
+def _reconcile_received_locked(conn, draft_id, checks, *, evidence_id):
     draft = get_row(conn, 'publisher_drafts', draft_id)
     if draft.get('persistence_status') == 'PERSISTED':
+        from src.publisher.persistence_identity import persistence_identity_verified
+        if not persistence_identity_verified(conn,draft):
+            raise ValueError('PERSISTENCE_IDENTITY_REQUIRED')
+        if evidence_id is not None:
+            audit = conn.execute("SELECT message FROM publisher_execution_logs WHERE draft_id=? AND step='PERSISTENCE_IDENTITY_CONFIRMED' AND status='OK' ORDER BY id DESC LIMIT 1",(draft_id,)).fetchone()
+            if not audit or json.loads(audit['message']).get('evidence_id') != evidence_id:
+                raise ValueError('PERSISTENCE_REMOTE_PROOF_REPLAYED')
         return True
     if draft.get('upload_status') != 'TRANSFER_CONFIRMED' or draft.get('processing_status') != 'MEDIA_READY_FOR_EDIT':
         raise ValueError('TRANSFER_CHECKPOINT_REQUIRED')
@@ -48,44 +58,22 @@ def reconcile_received(conn, draft_id, checks, *, evidence_id=None, caller_trans
         raise ValueError('Checkpoint TikTok incompleto; origem preservada')
     if not checks.get('tiktok_draft_url'):
         raise ValueError('Referencia persistente do TikTok ausente')
-    evidence = conn.execute(
-        "SELECT 1 FROM publisher_execution_logs WHERE draft_id=? "
-        "AND step='TIKTOK_DRAFT_RECONCILED' AND screenshot_path IS NOT NULL",
-        (draft_id,),
-    ).fetchone()
-    if evidence_id is not None:
-        from src.publisher.reconciliation_evidence import evaluate_reconciliation_evidence_validity
-        record = conn.execute('SELECT * FROM publisher_reconciliation_evidence WHERE id=?', (evidence_id,)).fetchone()
-        validity = evaluate_reconciliation_evidence_validity(
-            conn, evidence_id, draft_id=draft_id, media_asset_id=draft['media_asset_id'],
-            account_id=draft['account_id'], execution_id=record['execution_id'] if record else None,
-        )
-        evidence = record and record['outcome'] == 'REMOTE_EXISTS_CONFIRMED' and validity['valid']
-    if not evidence:
-        raise ValueError('RECONCILIATION_EVIDENCE_REQUIRED')
+    from src.publisher.persistence_identity import verify_persistence_evidence
+    if evidence_id is None:
+        raise ValueError('PERSISTENCE_IDENTITY_EVIDENCE_REQUIRED')
+    proof = verify_persistence_evidence(conn, draft, evidence_id)
     timestamp = now_iso()
-    with nullcontext() if caller_transaction else conn:
-        conn.execute(
-            """UPDATE publisher_drafts SET confirmed_at=COALESCE(confirmed_at,?),
-              tiktok_draft_id=COALESCE(tiktok_draft_id,?),
-              tiktok_draft_url=?,persistence_status='PERSISTED',
-              upload_confirmed_at=COALESCE(upload_confirmed_at,?),
-              caption_applied_at=COALESCE(caption_applied_at,?),
-              tiktok_draft_persisted_at=COALESCE(tiktok_draft_persisted_at,?),
-              checklist_json=?,error_code=NULL,status='READY_FOR_REVIEW',updated_at=?
-              WHERE id=?""",
-            (timestamp, checks.get('tiktok_draft_id'), checks['tiktok_draft_url'],
-             checks.get('upload_confirmed_at') or timestamp,
-             checks.get('caption_applied_at') or timestamp,
-             checks.get('persisted_at') or timestamp,
-             json.dumps(checks, ensure_ascii=True, sort_keys=True), timestamp, draft_id),
-        )
-        conn.execute(
-            "UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?",
-            (timestamp, draft['media_asset_id']),
-        )
-        log(conn, draft_id, 'PERSISTED', 'READY_FOR_REVIEW_RECONCILED',
-            'Rascunho existente confirmado no Studio; nenhum upload foi repetido')
+    remote_id = proof['receipt']['remote_draft_id']
+    observed = dict(checks, tiktok_draft_id=remote_id)
+    conn.execute("UPDATE publisher_drafts SET status='READY_FOR_REVIEW',persistence_status='PERSISTED',"
+                 "confirmed_at=?,tiktok_draft_persisted_at=?,upload_confirmed_at=COALESCE(upload_confirmed_at,?),"
+                 "caption_applied_at=COALESCE(caption_applied_at,?),checklist_json=?,tiktok_draft_id=?,"
+                 "tiktok_draft_url=?,error_code=NULL,updated_at=? WHERE id=?",
+                 (timestamp,timestamp,timestamp,timestamp,json.dumps(observed,sort_keys=True),remote_id,
+                  checks['tiktok_draft_url'],timestamp,draft_id))
+    conn.execute("UPDATE publisher_media_assets SET status='RESERVED',updated_at=? WHERE id=?",
+                 (timestamp,draft['media_asset_id']))
+    log(conn,draft_id,'PERSISTENCE_IDENTITY_CONFIRMED','OK',json.dumps(proof,sort_keys=True))
     return True
 
 
@@ -165,7 +153,7 @@ def assert_cleanup_allowed(conn, draft_id, *, expected_draft=None, expected_asse
     return draft, asset
 
 
-def cleanup_remote(conn, draft_id, provider=None, root=None, *, identity_validator=None, provider_factory=None):
+def cleanup_remote(conn, draft_id, provider=None, root=None, *, identity_validator=None, provider_factory=None, authorization_id=None):
     """Finalize one persisted media asset with crash-safe, 404-aware idempotency.
 
     The remote call is made while an IMMEDIATE SQLite transaction is held. A
@@ -175,6 +163,7 @@ def cleanup_remote(conn, draft_id, provider=None, root=None, *, identity_validat
     if identity_validator:
         identity_validator()
     draft, asset = assert_cleanup_allowed(conn, draft_id)
+    assert_cleanup_authorized(conn,draft_id,authorization_id)
 
     def cleanup_provider():
         nonlocal provider
@@ -196,12 +185,15 @@ def cleanup_remote(conn, draft_id, provider=None, root=None, *, identity_validat
             if identity_validator:
                 identity_validator()
             assert_cleanup_allowed(conn, draft_id, expected_draft=draft, expected_asset=asset)
+            assert_cleanup_authorized(conn,draft_id,authorization_id)
             current = get_row(conn, 'publisher_media_assets', asset['id'])
             if current['status'] == 'RESERVED':
                 # A 404 before the intent is committed remains ambiguous and
                 # must never be promoted to successful cleanup.
                 if _remote_state(cleanup_provider(), current) == 'NOT_FOUND':
                     raise ValueError('MANUAL_ACTION_REQUIRED')
+                assert_cleanup_allowed(conn,draft_id,expected_draft=draft,expected_asset=asset)
+                assert_cleanup_authorized(conn,draft_id,authorization_id)
                 timestamp = now_iso()
                 conn.execute(
                     "UPDATE publisher_media_assets SET status='CONSUMED_PENDING_DELETE',consumed_by_draft_id=?,updated_at=? WHERE id=?",
@@ -222,21 +214,30 @@ def cleanup_remote(conn, draft_id, provider=None, root=None, *, identity_validat
             if identity_validator:
                 identity_validator()
             assert_cleanup_allowed(conn, draft_id, expected_draft=draft, expected_asset=asset)
+            assert_cleanup_authorized(conn,draft_id,authorization_id)
             current = get_row(conn, 'publisher_media_assets', draft['media_asset_id'])
             if current['status'] == 'CONSUMED':
                 pass
             elif current['status'] != 'CONSUMED_PENDING_DELETE' or not _has_cleanup_intent(conn, draft_id):
                 raise ValueError('MANUAL_ACTION_REQUIRED')
             elif _remote_state(cleanup_provider(), current) == 'PRESENT':
+                if identity_validator:
+                    identity_validator()
+                assert_cleanup_allowed(conn,draft_id,expected_draft=draft,expected_asset=asset)
+                assert_cleanup_authorized(conn,draft_id,authorization_id)
                 provider.delete_remote(current)
                 if _remote_state(provider, current) != 'NOT_FOUND':
                     raise ValueError('REMOTE_DELETE_NOT_CONFIRMED')
+                assert_cleanup_allowed(conn,draft_id,expected_draft=draft,expected_asset=asset)
+                assert_cleanup_authorized(conn,draft_id,authorization_id)
                 _mark_consumed(conn, draft_id, current['id'])
             else:
                 # This is the crash-recovery branch: intent + persisted draft +
                 # identity + 404 means the prior delete already took effect.
+                assert_cleanup_allowed(conn,draft_id,expected_draft=draft,expected_asset=asset)
+                assert_cleanup_authorized(conn,draft_id,authorization_id)
                 _mark_consumed(conn, draft_id, current['id'])
-    except MediaHistoryBlocked:
+    except (MediaHistoryBlocked, CleanupAuthorizationBlocked):
         # A safety block is not a failed remote delete or a completed cleanup.
         # Propagate its explicit reason without rewriting historical evidence.
         raise
