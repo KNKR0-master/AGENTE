@@ -207,7 +207,12 @@ class QueueBrowserTests(unittest.TestCase):
         draft = snapshot['drafts'][0]
         draft.update(status='DRAFT', media_status='AVAILABLE', persistence_status='UNCONFIRMED')
         draft['queue_capabilities'] = {'remote_effect_possible': False}
-        draft['queue_display'] = draft_queue_presentation(draft, local_preparation_error='HEADLINE_OUTPUT_CADENCE_INVALID')
+        draft['queue_display'] = draft_queue_presentation(draft, local_preparation_error='HEADLINE_PROCESS_TIMEOUT')
+        draft['preparation_diagnostic'] = dict(error_code='HEADLINE_PROCESS_TIMEOUT',
+            failed_stage='encode', failure_log_id=973, failed_at='2026-10-15T00:07:51+00:00',
+            latest_execution=dict(execution_id=11, execution_status='PAUSED',
+                item_status='WAITING_MANUAL', item_error_code='MANUAL_ACTION_REQUIRED'),
+            remote_effect_possible=False, remote_checkpoints=[], stage_timings=[])
         snapshot['drafts'] = [draft]
         snapshot['executions'] = [{'id': 11, 'batch_id': 24, 'status': 'PAUSED', 'total': 1}]
         snapshot['execution_items'] = [{'execution_id': 11, 'draft_id': draft['id'],
@@ -227,7 +232,17 @@ class QueueBrowserTests(unittest.TestCase):
                     self.assertNotIn('Verifica\u00e7\u00e3o manual necess\u00e1ria', page.locator('.queue-batch-warning').inner_text())
                     details = page.locator('summary', has_text='Detalhes t\u00e9cnicos da prepara\u00e7\u00e3o')
                     details.click()
-                    self.assertIn('HEADLINE_OUTPUT_CADENCE_INVALID', details.locator('..').inner_text())
+                    self.assertIn('HEADLINE_PROCESS_TIMEOUT', details.locator('..').inner_text())
+                    item.get_by_text('Detalhes', exact=True).click()
+                    diagnostic=item.locator('[data-preparation-diagnostic]')
+                    self.assertTrue(diagnostic.is_visible())
+                    self.assertIn('Codificação FFmpeg',diagnostic.inner_text())
+                    self.assertIn('HEADLINE_PROCESS_TIMEOUT',diagnostic.inner_text())
+                    self.assertIn('WAITING_MANUAL',diagnostic.inner_text())
+                    self.assertIn('Nenhum início de upload',diagnostic.inner_text())
+                    item.get_by_text('Detalhes técnicos', exact=True).click()
+                    self.assertIn('Estado do Draft: DRAFT',item.inner_text())
+                    self.assertIn('Erro próprio do Draft: nenhum',item.inner_text())
                     self.assertEqual([request for request in QueueFixtureHandler.requests if request[0] == 'POST'], [])
                     page.screenshot(path=str(ROOT / 'data/publisher/qa/h3b-local-preparation-queue.png'), full_page=True)
                 finally:

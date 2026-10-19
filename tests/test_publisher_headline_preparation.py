@@ -157,6 +157,28 @@ class HeadlinePreparationTests(unittest.TestCase):
         self.assertEqual(get_row(self.conn,'publisher_drafts',ids[0])['upload_status'],'NOT_STARTED')
         self.assertFalse(self.conn.execute('SELECT 1 FROM account_mutation_ledger').fetchone())
 
+    def test_real_encode_timeout_projects_stage_and_recovers_locally(self):
+        self.configure(); ids=self.batch(); draft_id=ids[0]; execution=self.enqueue(ids)
+        before=headlines.read_snapshot(get_row(self.conn,'publisher_drafts',draft_id))
+        self.renderer.encode_timeout=.001
+        with self.assertRaises(PreparationError):self.worker.prepare(None,self.conn,draft_id)
+        self.assertTrue(restore_pre_upload_failure(self.conn,draft_id))
+        self.worker.finish_item(self.conn,draft_id,'WAITING_MANUAL','MANUAL_ACTION_REQUIRED')
+        row=next(d for d in self.service.snapshot()['drafts'] if d['id']==draft_id)
+        self.assertEqual(row['preparation_diagnostic']['failed_stage'],'encode')
+        self.assertEqual(row['preparation_diagnostic']['error_code'],'HEADLINE_PROCESS_TIMEOUT')
+        self.assertFalse(row['preparation_diagnostic']['remote_effect_possible'])
+        self.assertFalse(self.uploads)
+        self.assertFalse(self.conn.execute('SELECT 1 FROM account_mutation_ledger').fetchone())
+        with patch.object(self.worker,'start'):
+            self.worker.resume_execution(self.conn,execution)
+        self.renderer.encode_timeout=600
+        prepared=self.local_prepare(draft_id)
+        self.assertEqual(prepared.kind,'HEADLINE_DERIVED')
+        self.assertEqual(headlines.read_snapshot(get_row(self.conn,'publisher_drafts',draft_id)),before)
+        self.assertFalse(self.uploads)
+        self.assertIsNone(next(d for d in self.service.snapshot()['drafts'] if d['id']==draft_id)['preparation_diagnostic']['error_code'])
+
     def test_ambiguous_transfer_retains_exact_source_and_blocks_retry(self):
         self.configure();draft=self.batch()[0];self.enqueue([draft]);self.ambiguous=True
         with self.assertRaises(PreparationError):self.worker.prepare(None,self.conn,draft)

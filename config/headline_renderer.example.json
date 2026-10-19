@@ -1,6 +1,7 @@
 {
   "enabled": false,
   "timeout_seconds": 120,
+  "encode_timeout_seconds": 600,
   "ffmpeg_path": null,
   "ffprobe_path": null,
   "classic_font_ref": "classic",

@@ -71,6 +71,93 @@ class HeadlineRendererTests(unittest.TestCase):
         self.assertTrue(reused['reused'])
         self.assertEqual(reused['id'], result['id'])
 
+    def test_encode_deadline_separate_from_validation_and_timeout_recoverable(self):
+        events = []
+        renderer = HeadlineRenderer(ROOT, self.inputs, self.root/'budget-artifacts',
+            {'fixture': FONT}, timeout=30, encode_timeout=.001)
+        renderer.stage_observer = events.append
+        original = sha256(self.silent)
+        with self.assertRaisesRegex(RenderError, 'HEADLINE_PROCESS_TIMEOUT'):
+            renderer.render(self.conn, 2, snapshot(), self.silent)
+        failed = dict(self.conn.execute('SELECT * FROM publisher_derived_media_artifacts').fetchone())
+        self.assertEqual(failed['state'], 'FAILED')
+        self.assertIsNone(failed['local_path'])
+        self.assertTrue(any(e['stage']=='encode' and e['error_code']=='HEADLINE_PROCESS_TIMEOUT' for e in events))
+        self.assertNotIn(str(self.silent), json.dumps(events))
+        renderer.encode_timeout = 600
+        calls = []
+        def checked_run(args, **kwargs):
+            calls.append((list(args), kwargs.get('timeout')))
+            return run(args, **kwargs)
+        with patch('src.publisher.headline_renderer.run', side_effect=checked_run):
+            artifact = renderer.render(self.conn, 2, snapshot(), self.silent)
+        self.assertEqual(artifact['state'], 'READY')
+        self.assertEqual(sha256(self.silent), original)
+        self.assertEqual(artifact['render_spec_hash'], snapshot()['render_spec_hash'])
+        self.assertEqual(next(t for a,t in calls if '-filter_complex' in a), 600)
+        self.assertEqual(next(t for a,t in calls if 'null' in a), 30)
+        self.assertEqual(self.conn.execute("SELECT state FROM publisher_derived_media_artifacts WHERE id=?", (failed['id'],)).fetchone()[0], 'FAILED')
+        # A process budget is not an output-identity change; validated cache stays usable.
+        renderer.encode_timeout = .001
+        self.assertTrue(renderer.render(self.conn, 2, snapshot(), self.silent)['reused'])
+
+    def test_encode_budget_remains_bounded(self):
+        for value in (0, -1, 601):
+            with self.assertRaisesRegex(RenderError, 'HEADLINE_PROCESS_LIMIT_INVALID'):
+                HeadlineRenderer(ROOT, self.inputs, self.root/'invalid-budget',
+                    {'fixture': FONT}, encode_timeout=value)
+
+    def test_video_parallelism_bounded_and_preview_filter_deadlines_preserved(self):
+        with patch('src.publisher.headline_renderer.os.cpu_count', return_value=32):
+            renderer = HeadlineRenderer(ROOT, self.inputs, self.root/'bounded-parallel', {'fixture': FONT})
+        self.assertEqual(renderer.identity['encoder_threads'], 4)
+        commands = []
+        def checked_run(args, **kwargs):
+            if '-filter_complex' in args: commands.append((list(args), kwargs['timeout']))
+            return run(args, **kwargs)
+        with patch('src.publisher.headline_renderer.run', side_effect=checked_run):
+            renderer.render(self.conn, 3, snapshot(), self.short)
+            renderer.render(self.conn, 3, snapshot(), self.short, kind='preview')
+        video, preview = commands
+        self.assertEqual(video[0][video[0].index('-threads:v')+1], '4')
+        self.assertEqual(video[0][video[0].index('-filter_complex_threads')+1], '1')
+        self.assertEqual(video[1], 600)
+        self.assertNotIn('-threads:v', preview[0])
+        self.assertEqual(preview[0][preview[0].index('-threads')+1], '1')
+        self.assertEqual(preview[1], 120)
+        with patch('src.publisher.headline_renderer.os.cpu_count', return_value=None):
+            fallback = HeadlineRenderer(ROOT, self.inputs, self.root/'unknown-cpu', {'fixture': FONT})
+        self.assertEqual(fallback.identity['encoder_threads'], 1)
+        self.assertNotEqual(fallback.version, renderer.version)
+
+    def test_parallelism_invalidates_legacy_cache_preserves_snapshot_source_and_old_artifact(self):
+        import hashlib
+        from src.publisher.headlines import canonical
+        headline = snapshot(); before = copy.deepcopy(headline)
+        with patch('src.publisher.headline_renderer.os.cpu_count', return_value=1):
+            original = HeadlineRenderer(ROOT, self.inputs, self.root/'legacy-parallel', {'fixture': FONT})
+        old = original.render(self.conn, 4, headline, self.silent)
+        legacy_identity = {k:v for k,v in original.identity.items() if k!='encoder_threads'}
+        legacy_version = hashlib.sha256(canonical(legacy_identity).encode()).hexdigest()
+        legacy_key = hashlib.sha256(canonical([4, old['source_sha256'], old['render_spec_hash'], legacy_version, 'video']).encode()).hexdigest()
+        with self.conn:
+            self.conn.execute('UPDATE publisher_derived_media_artifacts SET cache_key=?,renderer_version=? WHERE id=?',
+                (legacy_key, legacy_version, old['id']))
+        with patch('src.publisher.headline_renderer.os.cpu_count', return_value=4):
+            optimized = HeadlineRenderer(ROOT, self.inputs, self.root/'legacy-parallel', {'fixture': FONT})
+        new = optimized.render(self.conn, 4, headline, self.silent)
+        self.assertFalse(new['reused'])
+        self.assertNotEqual(new['id'], old['id'])
+        self.assertNotEqual(new['renderer_version'], legacy_version)
+        self.assertEqual(new['source_sha256'], old['source_sha256'])
+        self.assertEqual(new['render_spec_hash'], old['render_spec_hash'])
+        self.assertEqual(new['layout_json'], old['layout_json'])
+        self.assertEqual(headline, before)
+        self.assertEqual(sha256(self.silent), old['source_sha256'])
+        self.assertEqual(sha256(old['local_path']), old['output_sha256'])
+        self.assertEqual(self.conn.execute('SELECT state FROM publisher_derived_media_artifacts WHERE id=?', (old['id'],)).fetchone()[0], 'READY')
+        self.assertTrue(optimized.render(self.conn, 4, headline, self.silent)['reused'])
+
     def test_real_audio_preserved(self):
         result = self.render(self.audio)
         self.assertEqual(len(json.loads(result['probe_json'])['audio']), 1)

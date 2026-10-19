@@ -63,7 +63,13 @@ No new font, imaging dependency or rendering service is used.
 
 ## Encoding and validation policy v1
 
-Video: MP4, libx264, medium, CRF 18, yuv420p, one encoder thread, faststart.
+Video: MP4, libx264, medium, CRF 18, yuv420p, faststart. The video encoder requests
+at most four threads, capped by `os.cpu_count()` with a one-thread fallback
+when the CPU count is unknown. Filter graphs and preview encoding stay at one
+thread. The effective video thread count participates in renderer/cache identity;
+artifacts from the former one-thread policy are never silently reused.
+The full-video encode deadline remains separately bounded at 600 seconds;
+frame/decode validation and preview retain their previous process deadlines.
 CRF 18 is the quality-oriented single-generation overlay policy, deliberately
 favoring visual retention over bitrate targeting; it is not a lossless claim.
 Changing this policy requires a renderer version/cache identity change.

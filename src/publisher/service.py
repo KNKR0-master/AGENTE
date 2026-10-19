@@ -18,7 +18,7 @@ from src.publisher.folder_catalog import (
     set_container_auto_create,
 )
 from src.publisher.account_safety import AccountSafetyGuard, AccountProtectionBlocked, init_account_safety
-from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation, queue_preparation_context, local_cancel_blocker
+from src.publisher.queue_policy import batch_queue_capabilities, draft_queue_capabilities, draft_queue_presentation, queue_preparation_context, queue_preparation_diagnostic, local_cancel_blocker
 from src.publisher.media_history import assert_media_history_allowed, MediaHistoryBlocked
 from src.publisher.queue_presentation import (
     HIDDEN_ITEM_SQL, change_visibility, history_visibility_counts,
@@ -665,6 +665,7 @@ class PublisherService:
             blocked = protections_by_account[draft['account_id']]
             draft['queue_capabilities'] = draft_queue_capabilities(self.conn, draft, media, account_blocked=blocked)
             draft['queue_display'] = draft_queue_presentation(draft, media, **queue_preparation_context(self.conn, draft['id']))
+            draft['preparation_diagnostic'] = queue_preparation_diagnostic(self.conn, draft)
             checkpoint = self.conn.execute(
                 "SELECT id FROM publisher_execution_logs WHERE draft_id=? AND step IN "
                 "('UPLOAD_STARTED','SAVE_DRAFT','TIKTOK_DRAFT_CONFIRMED') ORDER BY id DESC LIMIT 1",

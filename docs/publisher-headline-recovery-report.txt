@@ -1,0 +1,155 @@
+PUBLISHER - INCIDENTE P1 HEADLINE / RELATORIO FINAL
+
+PUBLISHER_ONLY_SCOPE=true
+INCIDENT_BATCH_ID=12
+INCIDENT_DRAFT_ID=50
+INCIDENT_EXECUTION_ID=15
+INCIDENT_MEDIAASSET_ID=855
+ORIGINAL_ERROR_CODE=HEADLINE_PROCESS_TIMEOUT
+ORIGINAL_ERROR_MESSAGE=Preparacao local bloqueada: HEADLINE_PROCESS_TIMEOUT (log 976; codigo original no log 973)
+ROOT_CAUSE_CONFIRMED=true; subprocesso de encode encerrado pelo deadline compartilhado de 120 s
+FAILURE_STAGE=FFMPEG_ENCODE
+DRAFT_STATE=DRAFT; error_code=NULL; persistence_status=UNCONFIRMED
+EXECUTION_STATE=PAUSED
+EXECUTION_ITEM_STATE=WAITING_MANUAL; error_code=MANUAL_ACTION_REQUIRED
+UI_STATUS_ROOT_CAUSE=Fila lia HEADLINE_PREPARATION_FAILED; detalhes liam estado/erro/checklist do Draft restaurado
+DRAFT_EXECUTION_STATUS_DIVERGENCE_EXPLAINED=true
+UPLOAD_STARTED=false; nenhum checkpoint registrado
+REMOTE_EFFECT_EVIDENCE=NONE_FOUND; logs, ledger, upload_sources, reconciliacao e historico da identidade consultados
+PREUPLOAD_RECOVERY_ELIGIBLE=true no contrato operacional consultado; nenhuma retomada executada
+VIDEO_DURATION=24.171587 s (container); 24.133333 s (video)
+SOURCE_RESOLUTION=1080x1920
+SOURCE_FPS=VFR; nominal 30/1; media 10845/362; 723 frames
+TOTAL_PREPARATION_TIME=150 s entre inicio/fim da execucao; janela local de render 121 s
+DOWNLOAD_TIME=NOT_INSTRUMENTED; escrita local observada por 6.035 s, sem equivaler ao download total
+FFMPEG_RENDER_TIME=TIMEOUT_AT_120_SECONDS; janela de eventos 121 s
+VALIDATION_TIME=NOT_REACHED_IN_INCIDENT
+BOTTLENECK=Encode libx264 medium CRF 18, uma thread, interrompido no limite de 120 s
+REDUNDANT_PROCESSING_FOUND=false; uma tentativa/artifact, nenhuma duplicacao do par source/spec
+CACHE_REUSE_VALIDATED=true; somente sinteticamente, cache valido/invalido e identidade
+PERFORMANCE_OPTIMIZATION_IMPLEMENTED=false; prazo de encode corrigido, sem alegacao de ganho de velocidade
+FIX_IMPLEMENTED=true; encode_timeout_seconds separado, default/maximo 600 s; demais limites preservados
+ERROR_UI_IMPROVED=true; tentativa, etapa, codigo, log, evidencia remota e estado proprio do Draft separados
+FILES_CHANGED=14; lista abaixo
+TARGETED_TESTS_PASSED=96
+TARGETED_TESTS_FAILED=0
+TARGETED_TESTS_ERRORS=0
+PERFORMANCE_BEFORE=SINTETICO: FAILED HEADLINE_PROCESS_TIMEOUT; total 123.000 s; encode 120.094 s
+PERFORMANCE_AFTER=SINTETICO: READY; total 597.562 s; encode 479.953 s; decode 19.547 s; frames origem 27.687 s; frames derivado 61.484 s
+DRAFT50_UNCHANGED=true
+EXECUTION15_UNCHANGED=true
+MEDIAASSET855_UNCHANGED=true
+ORIGINAL_WORKTREE_UNCHANGED=true
+INTEGRATION_WORKTREE_UNCHANGED=true
+OPERATIONAL_DB_WRITES=0
+TIKTOK_REMOTE_ACTIONS=0
+DRIVE_REMOTE_WRITES=0
+ANALYTICS_CODE_CHANGED=false
+COMMIT_CREATED=false
+FULL_REGRESSION_PENDING=true
+FINAL_DECISION=FIX_VALIDATED
+READY_FOR_SEPARATE_VALIDATION=true
+
+EVIDENCIAS E LIMITES
+
+Identidade e isolamento
+- Operacional: feature/publisher-queue-operational-ux, HEAD 29d72b1459b0dd110e0cb68919b87dd795f78b63.
+- Runtime-info: PID 20500, instance_id a4f797da-8a5f-44ce-88d5-409d7f1048c1, iniciado 2026-10-12T01:21:42.482264+00:00. CommandLine aponta para dashboard_server.py do checkout operacional.
+- O codigo nomeia a thread como publisher-studio. O log historico nao persiste identificador individual da thread; a correlacao do processo e atual, com runtime iniciado antes do incidente.
+- renderer_version recalculado no operacional coincide exatamente com o artifact historico: 3143a3e35533087d79d03d5eea3c90e03adc9488c45b9451b1a39d6975dcee01.
+- Ferramentas efetivas do renderer: FFmpeg/ffprobe do Stremio, FFmpeg 4.4.1-Jellyfin. O binario do PATH nao foi assumido como renderer efetivo. Nenhuma mudanca de binario, GPU, preset, CRF, threads ou pipeline de filtros foi aplicada.
+- Correcao apenas em C:/Users/Usuario/Documents/publisher-wt-headline-recovery, branch feature/publisher-headline-recovery, a partir desse mesmo HEAD. Nenhum commit, merge, cherry-pick, push ou tag.
+- SQLite operacional data/agent.db aberto com URI mode=ro e PRAGMA query_only=ON, em transacoes curtas. A verificacao final acrescentou authorizer que recusa escrita; total_changes=0. Nao foi usado immutable sobre runtime ativo, nem copiado somente o arquivo principal ignorando eventual WAL.
+
+Identidade da midia
+- Os IDs fornecidos resolvem para APARELHO_ABDOMINAL_G2C4A2_2009_1789944645173.mp4. O nome no relato termina em 1789944615173.mp4; essa diferenca foi mantida explicita, sem trocar a midia baseada apenas no nome.
+- MediaAsset 855, provider google_drive, source_account cecilia. Somente Draft 50 existe para essa identidade canonica no historico consultado.
+- Fonte preservada: data/publisher/temp/job_50_32_95ktf/APARELHO_ABDOMINAL_G2C4A2_2009_1789944645173.mp4, 14.142.209 bytes.
+- SHA256 fonte: 74767397100aa4b54de5790673b908d8a38ffee8bcfa22b72cbff889c5d206a6; confere com o artifact historico.
+- Snapshot congelado: headline habilitada, preset 5/v1, texto TA MUITO BARATO! (com acento no snapshot original), render_spec_hash 6ff53372563b6a9dbd2a9012be2d925954eda92a8e5afb32767a1f01e26aea8f. Nenhuma edicao do snapshot.
+- Fonte H.264 High/yuv420p, audio AAC LC 44100 Hz stereo. Frames decodificados: 723; intervalos em time_base 1/15360: 720 x 512 ticks, 1 x 814, 1 x 722. VFR confirmado pelos timestamps, sem inferir CFR de r_frame_rate.
+
+Linha do tempo do incidente (14/10/2026, America/Sao_Paulo)
+21:05:22 - log 970, DRAFT -> PREPARING; inicio Execution 15.
+21:05:39 - last_execution_at do Draft; nao e timer exclusivo de download.
+21:05:43.412 a 21:05:49.447 - criacao/escrita da fonte local.
+21:05:50 - log 971 DOWNLOADED; JIT validado.
+21:05:50 - log 972 HEADLINE_RENDER_STARTED; artifact 8fdddd26f8894f0483e654056b3da064 criado.
+21:05:51.788 - criacao de output.partial.
+21:07:49.553 - ultima escrita observada no parcial.
+21:07:51 - log 973 HEADLINE_PREPARATION_FAILED / HEADLINE_PROCESS_TIMEOUT.
+21:07:52 - logs 974/975/976; execucao pausada e encerramento da tentativa.
+
+Causa comprovada
+- O prazo configurado de 120 s era reutilizado para encode e validacao. headline_tools.run mata somente o subprocesso possuido quando esse prazo termina e emite HEADLINE_PROCESS_TIMEOUT.
+- O parcial preservado tem 15.728.688 bytes, nao tem moov e nao passa no ffprobe (moov atom not found). Nao existe video.mp4 final, READY, upload source ou hash de derivado validado. O encode foi interrompido antes de finalizar MP4; a validacao posterior nao foi alcancada.
+- O artifact historico esta FAILED com o mesmo codigo; nao houve segundo artifact do mesmo source/spec.
+- O stderr e o traceback originais do renderer nao foram persistidos: o runner anterior os sanitiza/descarta. A mensagem conservada e o codigo citado, complementado pelo log 976. Nao se afirma uma causa adicional de codec, FFmpeg bug, carga da CPU ou defeito de fonte sem prova.
+- O total historico exato por metadados, layout, hashing, persistencia e resolucao de origem nao foi instrumentado. A janela de 121 s inclui essas atividades e o encode limitado a 120 s. Nao foi rebaixada a qualidade para completar o video.
+
+Divergencia da interface
+- restore_pre_upload_failure restaura Draft para DRAFT, limpa error_code e devolve MediaAsset a AVAILABLE somente no caminho local admitido. O erro detalhado permanece no log; finish_item deixa o item WAITING_MANUAL/MANUAL_ACTION_REQUIRED e a execucao PAUSED.
+- A mensagem de falha vinha de queue_preparation_context/draft_queue_presentation (log de auditoria); DRAFT, sem erro e checkpoints {} vinham de publisher_drafts.status, error_code e checklist_json.
+- blockers/warnings eram do preflight, e em um grupo de execucao nem eram consultados: o frontend substituia ausencia por listas vazias. Eles nao eram o historico da Execution. O novo detalhe usa preflight:null nesse caso e nomeia draft_checklist separadamente.
+- Pausado vinha do estado da Execution. Zero prontos/um aguardando vinha do resumo batch_review, que classificava qualquer Draft local DRAFT como queued. Agora falha local vigente conta em attention, sem modificar as entidades historicas.
+- O novo diagnostico e uma projecao em leitura, com tentativa mais recente, estado/erro do item, etapa quando registrada, log original, horarios, tempos e evidencias remotas. Para incidentes antigos sem telemetria, a UI informa etapa historica nao registrada, em vez de inventar um estagio.
+- HEADLINE_RENDER_STARTED limpa somente a projecao do erro antigo ao iniciar nova preparacao. Nao apaga auditoria nem concede permissao de retomada. O snapshot continua congelado.
+
+Seguranca e recuperacao
+- Nenhum UPLOAD_STARTED, TRANSFER_CONFIRMED, UPLOAD_CONFIRMED, SAVE_DRAFT, TIKTOK_DRAFT_CONFIRMED ou outro checkpoint remoto pertinente encontrado para a identidade examinada; ledger, reconciliacao e upload_sources vazios. Upload e processamento NOT_STARTED, nenhum confirmed_at.
+- A consulta pura do contrato operacional retornou preupload_preparation_resume_allowed=true e local_cancel_blocker=None. Isso nao executou nem autorizou uma acao operacional nesta tarefa.
+- O botao existente Retomar preparacao validada continua sujeito aos mesmos guards. Nenhum guard de upload, retomada, cancelamento, consumo ou limpeza foi relaxado.
+- Para outra headline, o texto explica cancelamento local elegivel e novo Draft. Nao ha caminho para editar snapshot congelado.
+- A integracao P0 continua separada e nao implantada. Esta validacao nao substitui a validacao integrada e nao declara prontidao operacional.
+
+Correcao e instrumentacao
+- Novo encode_timeout_seconds com default/maximo de 600 s somente para encode de video. Cancelamento cooperativo continua verificando o evento durante a espera e mata somente o filho possuido.
+- timeout_seconds permanece 120 s para decode/frame validation e preview; o probe de metadados preserva seu limite anterior de 30 s. Nao existe novo retry automatico.
+- HEADLINE_STAGE registra apenas etapa, tempo, codigo sanitizado e prazo, sem caminho local, texto da headline ou stderr bruto. Cobertura: metadados, layout, encode, validacao do output, decodificacao, frames/cadencia e persistencia.
+- Revalidacoes existentes em render, preparacao e fronteira de upload foram preservadas. Elas protegem integridade; nao foram removidas como suposta redundancia. O incidente nao chegou a essas revalidacoes.
+- Identidade/versionamento do output e chave de cache permanecem iguais: alterar apenas um prazo nao invalida um derivado comprovadamente valido. Nenhum cache READY existia para o incidente real.
+
+Benchmark reproduzivel, exclusivamente sintetico
+- Comando na worktree: python -B scripts/benchmark_publisher_headline_recovery.py --output data/publisher/qa/headline-recovery-benchmark.json
+- Gerador: testsrc2 1080x1920/30, 24.1 s, ruido deterministico alls=10/allf=t/all_seed=12345, seno 44100 Hz stereo; fonte sintetica com 545.291.239 bytes e 723 frames. Esta e uma carga de stress, nao uma copia do video real.
+- Mesma fonte SHA256 6bdc4c5772ec061f55356f5d371fa9a2a2f3bc27c5768a0859ce1d769c7d0597 e mesmo render-spec 7b55f50238f548965925126027baba00997cfa9f9b409cef4f958fb5c7bf969f nas duas rodadas.
+- Mesmo binario, medium/CRF18, uma thread, filtros, audio e validacao. Somente o deadline do encode muda de 120 para 600 s. READY exige validar dimensoes, codec, duracao, audio, todos os frames e timestamps.
+- Antes: falha em 123.000 s totais, encode interrompido em 120.094 s. Depois: READY em 597.562 s totais, encode 479.953 s, decode 19.547 s, leitura de frames origem 27.687 s e derivado 61.484 s.
+- Os 108.718 s medidos de decode/frame probes nao incluem todo o overhead de hashing, metadados e persistencia. Testes de regressao em paralelo podem afetar os tempos da rodada posterior; nao ha alegacao de aceleracao nem estimativa do tempo futuro do video real.
+- Uma rodada exploratoria anterior teve coletor invalido e nao fundamenta esta conclusao. O coletor foi corrigido antes do benchmark acima.
+- A mudanca resolve o corte prematuro demonstrado e continua finita; videos/cargas que excederem 600 s continuam falhando de modo seguro. O Draft 50 nao foi renderizado novamente e seu sucesso real posterior nao foi afirmado.
+
+Validacao direcionada
+- 19 testes: tests.test_publisher_local_preparation_resume e tests.test_publisher_posting_review, 63.982 s, OK.
+- 76 testes: tests.test_publisher_headline_renderer, tests.test_publisher_headline_preparation e tests.test_publisher_headline_timing, 205.907 s, OK.
+- 1 teste visual: QueueBrowserTests.test_local_headline_failure_is_not_remote_uncertainty, 5.775 s, OK; servidor local de fixture e perfil Chrome temporario, nenhum POST operacional.
+- Total distinto: 96 aprovados; zero falhas, erros ou skips na validacao final. O teste alterado por ultimo para cobrir MediaAsset em reconciliacao tambem foi reexecutado isoladamente e passou; nao foi contado duas vezes.
+- A rodada visual inicial encontrou uma referencia de formatacao de horario fora do escopo; foi corrigida e a regressao final passou. Nao existem falhas conhecidas escondidas no resultado final.
+- AST Python, node --check dashboard/publisher.js e git diff --check aprovados. Nenhuma execucao da suite completa de 839 testes.
+- Verificacao por hash: arquivos rastreados/nao ignorados dos checkouts operacional e P0, fonte real e parcial preservados. Comparacao em leitura dos registros protegidos, incluindo Drafts 44/49/50/51/52 e MediaAssets 855/924/929/926, retornou igualdade integral.
+
+Arquivos alterados/criados (codigo, testes e este relatorio)
+- config/headline_renderer.example.json
+- dashboard/publisher.js
+- src/publisher/headline_configuration.py
+- src/publisher/headline_renderer.py
+- src/publisher/posting_review.py
+- src/publisher/queue_policy.py
+- src/publisher/service.py
+- src/publisher/upload_preparation.py
+- tests/test_publisher_headline_preparation.py
+- tests/test_publisher_headline_renderer.py
+- tests/test_publisher_local_preparation_resume.py
+- tests/test_publisher_queue_browser.py
+- scripts/benchmark_publisher_headline_recovery.py
+- docs/publisher-headline-recovery-report.txt
+
+Artifacts de evidencia locais (ignorados pelo Git, somente na worktree isolada)
+- data/publisher/qa/headline-recovery-benchmark.json
+- data/publisher/qa/headline-recovery-media-tests.log
+- data/publisher/qa/headline-recovery-media-tests.json
+- data/publisher/qa/headline-recovery-browser-final.log
+- data/publisher/qa/h3b-local-preparation-queue.png
+- data/publisher/qa/headline-recovery-integrity.json
+
+FIX_VALIDATED significa causa de timeout comprovada e correcao local validada sinteticamente. Nao significa implantacao, retomada do lote real, confirmacao de TikTok ou conclusao da integracao P0.

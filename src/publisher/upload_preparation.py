@@ -100,6 +100,11 @@ def prepare_upload_source(conn, draft, source_path, renderer_factory, cancel_eve
     artifact, renderer = None, None
     if snapshot['enabled']:
         renderer = renderer_factory()
+        def record_stage(event):
+            with conn:
+                log(conn, draft['id'], 'HEADLINE_STAGE',
+                    'BLOCKED' if event['error_code'] else 'OK', canonical(event))
+        renderer.stage_observer = record_stage
         # The owning worker serializes preparations. This is reached only before
         # any upload effect, never from an ambiguous transfer/reconciliation path.
         with conn:

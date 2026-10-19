@@ -1,8 +1,9 @@
 import unittest
+import json
 from unittest.mock import patch
 
 from tests import test_publisher_remote as remote
-from src.publisher.queue_policy import draft_queue_presentation, queue_preparation_context
+from src.publisher.queue_policy import draft_queue_presentation, queue_preparation_context, queue_preparation_diagnostic
 from src.publisher.service import get_row, log
 from src.publisher.worker import PublisherWorker
 
@@ -118,6 +119,48 @@ class LocalPreparationResumeTests(unittest.TestCase):
         unknown = draft_queue_presentation({**base, 'upload_status': 'TRANSFER_UNKNOWN'}, local_preparation_error='HEADLINE_OUTPUT_CADENCE_INVALID')
         self.assertEqual(unknown['label'], 'Envio a verificar')
         self.assertNotIn('LOCAL_PREPARATION_FAILURE', unknown.values())
+
+    def test_attempt_diagnostic_and_batch_attention_do_not_rewrite_draft(self):
+        _, execution, ids = self.paused()
+        draft_id = ids[0]
+        with self.conn:
+            log(self.conn, draft_id, 'HEADLINE_RENDER_STARTED', 'OK', 'fixture')
+            log(self.conn, draft_id, 'HEADLINE_STAGE', 'BLOCKED', json.dumps(dict(
+                stage='encode', seconds=120.01, timeout_seconds=120, error_code='HEADLINE_PROCESS_TIMEOUT')))
+            log(self.conn, draft_id, 'HEADLINE_PREPARATION_FAILED', 'BLOCKED', 'HEADLINE_PROCESS_TIMEOUT')
+        before = get_row(self.conn, 'publisher_drafts', draft_id)
+        changes = self.conn.total_changes
+        snapshot = self.service.snapshot()
+        draft = next(d for d in snapshot['drafts'] if d['id']==draft_id)
+        diagnostic = draft['preparation_diagnostic']
+        self.assertEqual(draft['status'], 'DRAFT')
+        self.assertIsNone(draft['error_code'])
+        self.assertEqual(diagnostic['error_code'], 'HEADLINE_PROCESS_TIMEOUT')
+        self.assertEqual(diagnostic['failed_stage'], 'encode')
+        self.assertEqual(diagnostic['latest_execution']['execution_id'], execution)
+        self.assertEqual(diagnostic['latest_execution']['item_status'], 'WAITING_MANUAL')
+        self.assertFalse(diagnostic['remote_effect_possible'])
+        self.assertFalse(diagnostic['upload_started_recorded'])
+        self.assertTrue(diagnostic['failure_log_id'])
+        summary = snapshot['batches'][0]['review_summary']
+        self.assertEqual((summary['attention'], summary['queued']), (1, 0))
+        self.assertEqual(get_row(self.conn, 'publisher_drafts', draft_id), before)
+        self.assertEqual(self.conn.total_changes, changes)
+        self.assertTrue(queue_preparation_diagnostic(self.conn,
+            {**before, 'media_status':'NEEDS_RECONCILIATION'})['remote_effect_possible'])
+        with self.conn:
+            log(self.conn, draft_id, 'TRANSFER_CONFIRMED', 'OK', 'fixture')
+        draft = next(d for d in self.service.snapshot()['drafts'] if d['id']==draft_id)
+        self.assertTrue(draft['preparation_diagnostic']['remote_effect_possible'])
+
+    def test_new_attempt_clears_previous_failure_projection_without_deleting_audit(self):
+        _, _, ids = self.paused()
+        with self.conn:
+            log(self.conn, ids[0], 'HEADLINE_RENDER_STARTED', 'OK', 'fixture resumed')
+        draft = next(d for d in self.service.snapshot()['drafts'] if d['id']==ids[0])
+        self.assertIsNone(draft['preparation_diagnostic']['error_code'])
+        self.assertFalse(queue_preparation_context(self.conn, ids[0])['local_preparation_error'])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM publisher_execution_logs WHERE step='HEADLINE_PREPARATION_FAILED'").fetchone()[0], 1)
 
 
 if __name__ == '__main__':

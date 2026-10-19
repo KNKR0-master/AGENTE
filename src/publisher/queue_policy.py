@@ -1,7 +1,7 @@
 """Local queue actions; the worker remains the authority for remote mutations."""
 
 from datetime import datetime
-
+import json
 from src.publisher import headlines
 from src.publisher.media_history import media_history_blocker
 
@@ -72,7 +72,7 @@ def queue_preparation_context(conn, draft_id):
     ).fetchone())
     latest = conn.execute(
         "SELECT step,message FROM publisher_execution_logs WHERE draft_id=? AND step IN "
-        "('HEADLINE_PREPARATION_FAILED','HEADLINE_ARTIFACT_READY','UPLOAD_SOURCE_ORIGINAL') "
+        "('HEADLINE_PREPARATION_FAILED','HEADLINE_RENDER_STARTED','HEADLINE_ARTIFACT_READY','UPLOAD_SOURCE_ORIGINAL') "
         "ORDER BY id DESC LIMIT 1", (draft_id,),
     ).fetchone()
     code = str(latest['message']) if latest and latest['step'] == 'HEADLINE_PREPARATION_FAILED' else ''
@@ -98,6 +98,67 @@ def queue_preparation_context(conn, draft_id):
             'local_cancelled': bool(conn.execute("SELECT 1 FROM publisher_execution_logs WHERE draft_id=? "
                                                 "AND step='BATCH_CANCELLED' LIMIT 1", (draft_id,)).fetchone()),
             'local_preparation_error': code if code.startswith('HEADLINE_') and code.replace('_', '').isalnum() else ''}
+
+
+def queue_preparation_diagnostic(conn, draft):
+    """Read-only attempt evidence; does not grant recovery or rewrite Draft state."""
+    draft_id = draft['id']
+    item = conn.execute(
+        'SELECT i.execution_id,i.status item_status,i.error_code item_error_code,'
+        'e.status execution_status,e.started_at,e.finished_at '
+        'FROM publisher_execution_items i JOIN publisher_batch_executions e ON e.id=i.execution_id '
+        'WHERE i.draft_id=? ORDER BY i.execution_id DESC LIMIT 1', (draft_id,),
+    ).fetchone()
+    context = queue_preparation_context(conn, draft_id)
+    failure = conn.execute(
+        "SELECT id,created_at FROM publisher_execution_logs WHERE draft_id=? "
+        "AND step='HEADLINE_PREPARATION_FAILED' ORDER BY id DESC LIMIT 1", (draft_id,),
+    ).fetchone() if context['local_preparation_error'] else None
+    if failure and item and failure['created_at'] < item['started_at']:
+        failure = None
+    started = conn.execute(
+        "SELECT id,created_at FROM publisher_execution_logs WHERE draft_id=? "
+        "AND step='HEADLINE_RENDER_STARTED' ORDER BY id DESC LIMIT 1", (draft_id,),
+    ).fetchone()
+    stages = []
+    if started:
+        for row in conn.execute(
+            "SELECT id,status,message FROM publisher_execution_logs WHERE draft_id=? "
+            "AND step='HEADLINE_STAGE' AND id>? ORDER BY id", (draft_id, started['id']),
+        ):
+            try:
+                event = json.loads(row['message'])
+                if event.get('stage') not in {
+                    'source_metadata', 'layout', 'encode', 'output_metadata',
+                    'output_validation', 'decode_validation', 'frame_probe', 'cadence_validation',
+                    'artifact_persistence',
+                }:
+                    continue
+                stages.append(dict(log_id=row['id'], status=row['status'],
+                    stage=event['stage'], seconds=event.get('seconds'),
+                    timeout_seconds=event.get('timeout_seconds')))
+            except (ValueError, TypeError, AttributeError):
+                continue
+    failed_stage = next((s['stage'] for s in reversed(stages) if s['status'] == 'BLOCKED'), None)
+    remote_logs = [dict(row) for row in conn.execute(
+        "SELECT id,step,status,created_at FROM publisher_execution_logs WHERE draft_id=? "
+        "AND UPPER(step) IN ('UPLOAD_STARTED','TRANSFER_CONFIRMED','UPLOAD_CONFIRMED',"
+        "'UPLOAD','UPLOADED','SAVE_DRAFT','TIKTOK_DRAFT_CONFIRMED','TEST_FINAL_RESULT') ORDER BY id",
+        (draft_id,),
+    )]
+    remote_possible = bool(context['remote_checkpoint'] or remote_logs
+        or draft.get('upload_status') not in (None, 'NOT_STARTED') or draft.get('confirmed_at')
+        or draft.get('processing_status') not in (None, 'NOT_STARTED')
+        or draft.get('media_status') in ('NEEDS_RECONCILIATION', 'CONSUMED_PENDING_DELETE', 'CONSUMED')
+        or draft.get('persistence_status') == 'PERSISTED')
+    return dict(latest_execution=dict(item) if item else None,
+        error_code=context['local_preparation_error'] if failure else None,
+        failure_log_id=failure['id'] if failure else None,
+        failed_at=failure['created_at'] if failure else None,
+        preparation_started_at=started['created_at'] if started else None,
+        failed_stage=failed_stage if failure else None, stage_timings=stages,
+        remote_effect_possible=remote_possible, remote_checkpoints=remote_logs,
+        upload_started_recorded=any(row['step'].upper() == 'UPLOAD_STARTED' for row in remote_logs))
 
 
 def preupload_preparation_resume_allowed(conn, execution, items):

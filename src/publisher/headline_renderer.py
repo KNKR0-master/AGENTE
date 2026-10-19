@@ -2,8 +2,10 @@
 from fractions import Fraction
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
+import time
 import uuid
 
 import fontTools
@@ -15,7 +17,7 @@ from src.publisher.headline_layout import layout, filters
 from src.publisher.headline_tools import RenderError, capabilities, probe, resolve_ffmpeg, run, sha256
 from src.publisher.headline_timing import frame_timeline, validate_frame_timeline
 
-POLICY = dict(version='headline-renderer-1', codec='libx264', preset='medium', crf=18,
+POLICY = dict(version='headline-renderer-1', codec='libx264', preset='medium', crf=18, encoder_threads=4,
               pixel_format='yuv420p', audio='copy-aac-otherwise-aac-192k',
               cadence='decoded-presentation-frames-v2', encoder_time_base='source',
               layout='individual-line-centering-rounded-background-v2',
@@ -77,7 +79,7 @@ def validate_output(source, output, kind):
 
 
 class HeadlineRenderer:
-    def __init__(self, root, input_root, artifact_root, fonts, *, ffmpeg=None, ffprobe=None, timeout=120, cancel_event=None):
+    def __init__(self, root, input_root, artifact_root, fonts, *, ffmpeg=None, ffprobe=None, timeout=120, encode_timeout=600, cancel_event=None):
         self.root = Path(root)
         self.input_root = Path(input_root).resolve()
         self.artifact_root = Path(artifact_root).resolve()
@@ -93,14 +95,33 @@ class HeadlineRenderer:
         if not self.ffprobe:
             raise RenderError('HEADLINE_FFPROBE_UNAVAILABLE')
         self.timeout = timeout
+        if not 0 < encode_timeout <= 600:
+            raise RenderError('HEADLINE_PROCESS_LIMIT_INVALID')
+        self.encode_timeout = encode_timeout
         self.cancel_event = cancel_event
-        self.identity = {**POLICY, **capabilities(self.ffmpeg), 'ffprobe_sha256': sha256(self.ffprobe)}
+        self.stage_observer = None
+        self.identity = {**POLICY, **capabilities(self.ffmpeg), 'ffprobe_sha256': sha256(self.ffprobe),
+                         'encoder_threads': min(POLICY['encoder_threads'], max(1, os.cpu_count() or 1))}
         self.version = hashlib.sha256(canonical(self.identity).encode()).hexdigest()
+
+    def measured(self, stage, operation, *args, **kwargs):
+        """Emit bounded, path-free timings on the owning preparation thread."""
+        started = time.monotonic()
+        code = None
+        try:
+            return operation(*args, **kwargs)
+        except Exception as exc:
+            code = exc.code if isinstance(exc, RenderError) else 'HEADLINE_RENDER_FAILED'
+            raise
+        finally:
+            if self.stage_observer:
+                self.stage_observer(dict(stage=stage, seconds=round(time.monotonic()-started, 4),
+                    error_code=code, timeout_seconds=kwargs.get('timeout')))
 
     def presentation_timeline(self, path, time_base=None):
         if time_base is None:
             time_base = probe(self.ffprobe, path, cancel_event=self.cancel_event)['video']['time_base']
-        data = json.loads(run([self.ffprobe, '-v', 'error', '-select_streams', 'v:0',
+        data = json.loads(self.measured('frame_probe', run, [self.ffprobe, '-v', 'error', '-select_streams', 'v:0',
                                '-show_frames', '-show_entries',
                                'frame=best_effort_timestamp,pkt_duration', '-of', 'json', path],
                               timeout=self.timeout, limit=8 * 1024 * 1024, cancel_event=self.cancel_event))
@@ -112,11 +133,11 @@ class HeadlineRenderer:
     def validate_file(self, source, source_path, output_path, kind):
         if not output_path.is_file() or not output_path.stat().st_size:
             raise RenderError('HEADLINE_OUTPUT_INVALID')
-        output = probe(self.ffprobe, output_path, cancel_event=self.cancel_event)
-        validate_output(source, output, kind)
-        run([self.ffmpeg, '-v', 'error', '-xerror', '-i', output_path, '-f', 'null', '-'], timeout=self.timeout, cancel_event=self.cancel_event)
+        output = self.measured('output_metadata', probe, self.ffprobe, output_path, cancel_event=self.cancel_event)
+        self.measured('output_validation', validate_output, source, output, kind)
+        self.measured('decode_validation', run, [self.ffmpeg, '-v', 'error', '-xerror', '-i', output_path, '-f', 'null', '-'], timeout=self.timeout, cancel_event=self.cancel_event)
         if kind == 'video':
-            validate_frame_timeline(
+            self.measured('cadence_validation', validate_frame_timeline,
                 self.presentation_timeline(source_path, source['video']['time_base']),
                 self.presentation_timeline(output_path, output['video']['time_base']))
         return output
@@ -136,7 +157,7 @@ class HeadlineRenderer:
         if not source_path.is_file():
             raise RenderError('HEADLINE_LOCAL_SOURCE_REQUIRED')
         source_hash = sha256(source_path)
-        source = probe(self.ffprobe, source_path, cancel_event=self.cancel_event)
+        source = self.measured('source_metadata', probe, self.ffprobe, source_path, cancel_event=self.cancel_event)
         if source['duration'] <= 0 or any(d <= 0 or d % 2 for d in source['display']):
             raise RenderError('HEADLINE_MEDIA_UNSUPPORTED')
         key = hashlib.sha256(canonical([draft_id, source_hash, snapshot['render_spec_hash'], self.version, kind]).encode()).hexdigest()
@@ -161,7 +182,7 @@ class HeadlineRenderer:
         partial = workspace / 'output.partial'
         final = workspace / ('preview.png' if kind == 'preview' else 'video.mp4')
         try:
-            plan = layout(snapshot['text'], snapshot['preset']['spec'], source['display'], self.fonts, workspace)
+            plan = self.measured('layout', layout, snapshot['text'], snapshot['preset']['spec'], source['display'], self.fonts, workspace)
             graph = filters(plan, workspace)
             args = [self.ffmpeg, '-nostdin', '-hide_banner', '-v', 'error', '-y', '-i', source_path,
                     '-filter_complex_threads', '1', '-filter_complex', graph, '-map', '[out]', '-map_metadata', '-1',
@@ -174,23 +195,30 @@ class HeadlineRenderer:
                 args += ['-ss', str(timestamp), '-frames:v', '1', '-an', '-c:v', 'png', '-f', 'image2']
             else:
                 args += ['-map', '0:a?', '-c:v', 'libx264', '-preset', POLICY['preset'], '-crf', str(POLICY['crf']), '-pix_fmt', 'yuv420p',
+                         '-threads:v', str(self.identity['encoder_threads']),
                          '-enc_time_base:v', source['video']['time_base']]
                 for index, audio in enumerate(source['audio']):
                     args += [f'-c:a:{index}', 'copy' if audio['codec_name'] == 'aac' else 'aac']
                     if audio['codec_name'] != 'aac':
                         args += [f'-b:a:{index}', '192k']
                 args += ['-movflags', '+faststart', '-f', 'mp4']
-            run([*args, partial], cwd=workspace, timeout=self.timeout, cancel_event=self.cancel_event)
+            # Encoding a full HD clip can exceed the validation-process budget.
+            # Keep its own finite deadline and the same cooperative cancellation.
+            self.measured('encode', run, [*args, partial], cwd=workspace,
+                          timeout=self.encode_timeout if kind == 'video' else self.timeout,
+                          cancel_event=self.cancel_event)
             output = self.validate_file(source, source_path, partial, kind)
             if sha256(source_path) != source_hash:
                 raise RenderError('HEADLINE_SOURCE_CHANGED')
             if self.cancel_event is not None and self.cancel_event.is_set():
                 raise RenderError('HEADLINE_PREPARATION_CANCELLED')
-            digest = sha256(partial)
-            partial.replace(final)
-            with conn:
-                conn.execute("UPDATE publisher_derived_media_artifacts SET state='READY',local_path=?,output_sha256=?,probe_json=?,layout_json=?,ready_at=? WHERE id=?",
-                             (str(final), digest, canonical(output), canonical(plan), now_iso(), artifact_id))
+            def persist_artifact():
+                digest = sha256(partial)
+                partial.replace(final)
+                with conn:
+                    conn.execute("UPDATE publisher_derived_media_artifacts SET state='READY',local_path=?,output_sha256=?,probe_json=?,layout_json=?,ready_at=? WHERE id=?",
+                                 (str(final), digest, canonical(output), canonical(plan), now_iso(), artifact_id))
+            self.measured('artifact_persistence', persist_artifact)
             return {**dict(conn.execute('SELECT * FROM publisher_derived_media_artifacts WHERE id=?', (artifact_id,)).fetchone()), 'reused': False}
         except Exception as exc:
             code = exc.code if isinstance(exc, RenderError) else 'HEADLINE_RENDER_FAILED'

@@ -3,6 +3,7 @@
 import json
 
 from src.publisher.service import get_row, log, transition
+from src.publisher.queue_policy import queue_preparation_context
 
 
 def posting_eligibility(conn, draft, media):
@@ -50,6 +51,8 @@ def batch_review(conn, batch_id):
             category = 'processing'
         elif eligible:
             category = 'prepared'
+        elif status == 'DRAFT' and queue_preparation_context(conn, draft['id'])['local_preparation_error']:
+            category = 'attention'
         elif status == 'DRAFT' and draft['upload_status'] == 'NOT_STARTED':
             category = 'queued'
         else:

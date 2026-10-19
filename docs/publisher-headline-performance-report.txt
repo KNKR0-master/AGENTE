@@ -1,0 +1,122 @@
+PUBLISHER - OTIMIZACAO FINAL DE PERFORMANCE DA HEADLINE
+
+ENCODER_CURRENT_CONFIGURATION=Stremio FFmpeg 4.4.1-Jellyfin; libx264 medium CRF18 yuv420p; video_threads=min(4, logical_cpu_count)
+SINGLE_THREAD_ROOT_CAUSE=Politica -threads 1 explicitamente codificada desde 9f642da; nao imposta pelo hardware
+HARDWARE_ACCELERATION_AVAILABLE=true; NVENC inicializado na GTX 1060; nao utilizado na otimizacao
+BASELINE_ENCODE_TIME=23.625s
+OPTIMIZED_ENCODE_TIME=9.032s
+BASELINE_TOTAL_TIME=31.500s
+OPTIMIZED_TOTAL_TIME=16.016s
+MEASURED_SPEEDUP=2.616x encode; 1.967x total; amostra sintetica VFR de 6s em 1080x1920
+QUALITY_PRESERVED=true nas amostras; SSIM 0.998015 -> 0.998014; PSNR 49.160443 -> 49.156824 dB
+AUDIO_PRESERVED=true; payload AAC e timestamps de pacotes identicos
+FRAME_COUNT_PRESERVED=true; 180/180 frames
+VFR_TIMESTAMPS_PRESERVED=true; todos os timestamps normalizados exatos
+ARTIFACT_IDENTITY_SAFE=true; threads efetivas incluidas na identidade/versionamento; cache legado nao reutilizado
+OPTIMIZATION_IMPLEMENTED=true; paralelismo limitado somente no encoder de video
+FILES_CHANGED=5 nesta etapa; 17 no conjunto pendente com a correcao anterior
+TARGETED_TESTS_PASSED=98
+TARGETED_TESTS_FAILED=0
+TARGETED_TESTS_ERRORS=0
+PREVIOUS_TIMEOUT_FIX_PRESERVED=true
+DRAFT50_UNCHANGED=true
+OPERATIONAL_DB_WRITES=0
+TIKTOK_REMOTE_ACTIONS=0
+DRIVE_REMOTE_WRITES=0
+COMMIT_CREATED=false
+FULL_REGRESSION_PENDING=true
+READY_FOR_INTEGRATION_AUDIT=true
+
+ESCOPO E PRESERVACAO
+- Trabalho somente em C:/Users/Usuario/Documents/publisher-wt-headline-recovery, branch feature/publisher-headline-recovery; HEAD permanece 29d72b1459b0dd110e0cb68919b87dd795f78b63, sem commit.
+- A conferência inicial, executada em paralelo com a leitura do anexo, consultou apenas metadados Git do diretorio padrao. Apos a leitura do limite de escopo, nenhum novo acesso ao checkout operacional ou a integracao P0 foi realizado.
+- Nenhuma conexao ao banco operacional nesta etapa. Draft 50, Execution 15, MediaAsset 855, snapshots e artifacts reais nao foram acessados ou alterados. A declaracao de preservacao refere-se as acoes desta tarefa, sem nova consulta proibida aos registros reais.
+- Os 14 arquivos anteriores foram copiados para data/publisher/qa/headline-performance/prior-files e seus hashes registrados em prior-files.json antes de editar. Doze permanecem identicos byte a byte.
+- Nos outros dois arquivos, preservaram-se as funcionalidades anteriores: renderer recebeu somente import os, politica/identidade de threads e -threads:v; o arquivo de testes recebeu dois testes novos, sem mudar nenhum dos 42 testes anteriores (comparacao AST).
+- Queue, diagnosticos de erro, retomada, guards, configuracao de timeout e relatorio anterior permanecem identicos. Nenhum arquivo de Analytics foi alterado.
+- Nenhum upload, Save Draft, OAuth, write/exclusao Drive, reinicio, deploy, commit, merge, cherry-pick, push ou tag.
+
+DIAGNOSTICO DO ENCODER
+- Executavel efetivo: C:/Users/Usuario/AppData/Local/Programs/Stremio/ffmpeg.exe; ffprobe irmao no mesmo diretorio, resolvidos pela configuracao da worktree. Nao se substituiu pelo FFmpeg do PATH.
+- FFmpeg 4.4.1-Jellyfin; SHA256 15a908a1cbacbcdf0463b6094b909c0d776117d91ad9b4aa2724506543bb59b5.
+- CPU Intel Core i5-7400, quatro nucleos fisicos/quatro processadores logicos, memoria fisica 17.129.988.096 bytes.
+- O limite era explicito no codigo (-threads 1), introduzido no commit 9f642da1adf1e13ced22eb7db2bc9d979db0d015, feat(publisher): add deterministic headline renderer. A documentacao de politica tambem especificava uma thread. Nao era uma limitacao descoberta pelo FFmpeg, nem um erro de configuracao da CPU.
+- A evidencia historica vincula o renderer a uma politica de determinismo; nao foi encontrada justificativa tecnica de que uma unica thread seja obrigatoria para preservar a cadencia. As validacoes atuais foram mantidas e aprovadas com quatro threads.
+- GPU NVIDIA GeForce GTX 1060 6GB, driver 582.53. h264_nvenc e listado pelo binario atual e uma inicializacao real sintetica produziu tres frames H.264/yuv420p, 1080x1920, 0.1s, sem erro. Disponibilidade nao foi inferida somente da lista de encoders.
+- NVENC nao foi adotado: o ganho exigido foi obtido com uma mudanca pequena no encoder atual, mantendo preset e CRF. O probe nao equivale a validar um pipeline GPU completo de headline/qualidade/VFR. Nao ha alegacao de speedup GPU.
+
+DESENHO DOS EXPERIMENTOS
+- Alternativas de performance: libx264 medium CRF18 com duas ou quatro threads, contra baseline de uma thread. O unico experimento adicional foi a inicializacao NVENC acima; nenhum preset ou outro executavel foi experimentado.
+- Primeiro, duas amostras curtas de 1.2s/36 frames, ambas 1080x1920: testsrc2 CFR e testsrc2 com ruido deterministico leve (alls=2, allf=t, seed=12345) mais duas pequenas descontinuidades VFR. Seno de 440 Hz, AAC stereo 48000 Hz.
+- Cada configuracao foi rodada duas vezes por amostra, na ordem 1,2,4,4,2,1. Doze renders completos; fontes identicas dentro de cada comparacao. Cada trial usa SQLite em memoria e artifact novo: nao existe ganho por reutilizacao de cache.
+- A melhor configuracao curta foi quatro threads. Apenas ela e o baseline foram comparados na amostra maior de 6s/180 frames VFR, cinco vezes a duracao curta, em 1080x1920. Nao se repetiu o stress anterior de 24.1s/ruido intenso.
+- Binarios, medium/CRF18, pixel format, filtros, tipografia, fonte, audio, time base, hashes e validacoes permaneceram comparaveis. Somente a contagem de threads do encoder de video mudou.
+- Os benchmarks terminaram antes de iniciar a suite de regressao. Carga externa do computador nao foi controlada; medias curtas e a rodada maior nao constituem uma previsao de latencia para todo conteudo real.
+
+AMOSTRAS CURTAS - MEDIAS DE DUAS RODADAS, SEGUNDOS
+Amostra        Threads   Encode       Total
+plain-cfr            1     2.7580     4.4920
+plain-cfr            2     2.0470     3.6095
+plain-cfr            4     1.6095     3.1170
+textured-vfr         1     3.3670     5.3980
+textured-vfr         2     2.7030     4.8280
+textured-vfr         4     2.0780     4.0860
+
+Todas as rodadas passaram na validacao completa de derivado. Na amostra CFR, SSIM=0.998308 para as tres configuracoes. Na VFR curta, SSIM=0.998060 para as tres. Audio e timestamps de pacotes identicos; erro de offset A/V=0 em todos os trials.
+
+AMOSTRA MAIOR - MESMA FONTE SINTETICA
+- Source SHA256: 059f2803c6e2ac823f023f647459ba6b5eea7305b3462c595181f9e1fd89551e; 13815951 bytes. Render-spec: 7b55f50238f548965925126027baba00997cfa9f9b409cef4f958fb5c7bf969f.
+- Encoder baseline/otimizado: 23.625s / 9.032s; speedup 2.616x, reducao de 61.77%.
+- Total baseline/otimizado: 31.500s / 16.016s; speedup 1.967x, reducao de 49.16%.
+- Throughput de encode: 7.619 -> 19.929 frames/s.
+- MP4: 7741086 -> 7706771 bytes (reducao de 0.443%).
+- CPU media do processo de encode, normalizada pelos quatro processadores: 13.23% -> 33.99%. CPU acumulada nativa: 12.50000s -> 12.28125s.
+- CPU obtida por GetProcessTimes dos filhos possuidos, sem enumerar processos de outros aplicativos. Picos aproximados foram amostrados a cada 50ms. As porcentagens nao sao utilizacao global do host e incluem decode/filtros realizados pelo processo FFmpeg. GPU nao foi usada no candidato escolhido.
+- Tempo de hashing instrumentado: 0.188s em cada configuracao. Decode + probes completos de frames: 5.469s -> 5.625s. Fonte/output metadata: 0.374s -> 0.343s. Layout: 1.797s -> 0.812s. Persistencia: 0.062s -> 0.063s. A diferenca de layout nao foi uma otimizacao implementada; ha variabilidade de execucao. O ganho principal e de encode, nao de remocao de validacao.
+- Breakdown de hashing pode sobrepor o tempo de persistencia, pois esse estagio ja inclui hash do output. Nao somar esses valores como etapas independentes. Nos primeiros resultados curtos, probes posteriores de auditoria aparecem apos artifact_persistence; nao estao incluidos no total e sao excluidos do rateio. O runner final encerra o observador ao fim do render.
+
+QUALIDADE, AUDIO E TEMPORALIDADE
+- Referencia de qualidade: a mesma fonte e o mesmo filtro de headline, com o mesmo font/layout, salvos sem perda em FFV1/NUT. SSIM/PSNR comparam todos os frames por ordem de apresentacao. A normalizacao de PTS e usada apenas nessa medicao de pixels; a validacao temporal real continua independente, com todos os timestamps de origem.
+- Baseline: SSIM 0.998015 / PSNR 49.160443 dB. Otimizado: SSIM 0.998014 / PSNR 49.156824 dB. Diferencas: -0.000001 SSIM e -0.003619 dB, dentro da margem de equivalencia utilizada (0.0001 SSIM / 0.1 dB). Nenhum preset, CRF ou filtro foi reduzido para obter velocidade.
+- A comparacao visual referencia/baseline/otimizado em quality-comparison.png foi inspecionada: posicionamento, tipografia e bordas preservados nas amostras. Isso nao significa pixels ou bitstream identicos, nem uma medicao com midia real.
+- Payload AAC hash identico e lista completa de PTS/DTS/duracao/tamanho dos pacotes identica a fonte. Erro no offset inicial entre audio e video: 0.0s.
+- Os 180 frames e todos os timestamps normalizados sao EXATAMENTE iguais a fonte nas duas configuracoes (max_timestamp_error_seconds=0). A extensao terminal calculada difere da fonte em 1/60s nas duas configuracoes, comportamento de muxer/ultimo frame ja coberto pela regra temporal existente. A tolerancia nao foi alterada. Nao houve nova diferenca temporal introduzida pela otimizacao.
+- Duracao do container de origem: 6.018s; baseline: 6.002s; otimizado: 6.002s. Baseline e otimizado tem a mesma duracao, preservando o contrato de validacao existente.
+
+IMPLEMENTACAO E IDENTIDADE
+- encoder_threads=4 na politica, efetivamente min(4, max(1, os.cpu_count() ou 1)). Nao existe contagem automatica ilimitada; CPU desconhecida usa uma thread.
+- -threads:v aplica o paralelismo somente ao video. -filter_complex_threads 1 e a configuracao generica anterior de uma thread continuam presentes; preview permanece com uma thread. Nenhuma mudanca na politica de audio.
+- O valor efetivo de encoder_threads entra em self.identity antes do calculo SHA256 da versao. Cache incorpora essa versao, source hash e render-spec hash. Alteracoes de bitstream entre uma/quatro threads nao podem reutilizar um artifact incompativel.
+- Teste sintetico de cache legado confirmou nova geracao com a politica atual; artifact legado READY, arquivo e hash foram preservados. Source, snapshot congelado e layout permanecem iguais. Cache valido com a politica atual continua reutilizavel.
+- Timeout de encode continua separado, default/maximo 600s. Limites de preview, decode, frames, cancelamento e regras pre-upload permanecem iguais. Nenhuma validacao removida, nenhum fallback silencioso ao original, nenhum novo retry.
+
+TESTES E VERIFICACOES
+- 98/98 testes aprovados em 325.200s, zero falhas, erros ou skips. Incluem os 96 anteriores e dois novos testes, sem enfraquecer os anteriores.
+- Modulos: tests.test_publisher_headline_renderer; tests.test_publisher_headline_preparation; tests.test_publisher_headline_timing; tests.test_publisher_local_preparation_resume; tests.test_publisher_posting_review; QueueBrowserTests.test_local_headline_failure_is_not_remote_uncertainty.
+- SQLite de testes foi interceptado para aceitar somente :memory: e bancos na pasta QA isolada; 154 conexoes permitidas e nenhuma operacional. Conexoes Python fora de loopback foram bloqueadas durante os testes.
+- Cobertura: codec/dimensoes, audio e PCM->AAC, CFR/VFR, frames/timestamps, cache valido/invalido/legado, source e snapshot congelados, falha antes de upload, cancelamento/reinicio, retomada local e bloqueio por transferencia/ledger, diagnostico da Queue em navegador isolado.
+- AST Python, node --check dashboard/publisher.js, git diff --check e comparacao dos arquivos anteriores aprovados. Suite Publisher completa nao executada. Integracao P0 e runtime real nao foram auditados de novo.
+
+ARQUIVOS DESTA ETAPA (5)
+1. src/publisher/headline_renderer.py - unica alteracao funcional: paralelismo do encoder/identidade.
+2. tests/test_publisher_headline_renderer.py - dois testes novos.
+3. docs/publisher-headline-renderer.md - politica documentada.
+4. scripts/benchmark_publisher_headline_performance.py - benchmark sintetico controlado, biblioteca padrao, sem psutil/Pillow.
+5. docs/publisher-headline-performance-report.txt - este relatorio.
+
+REPRODUCAO NA WORKTREE ISOLADA
+python -B scripts/benchmark_publisher_headline_performance.py --directory "$env:TEMP\publisher-headline-performance-final" --phase short
+python -B scripts/benchmark_publisher_headline_performance.py --directory "$env:TEMP\publisher-headline-performance-final" --phase long --winner 4
+O segundo comando executa apenas baseline + vencedor. Fonte e artifacts do benchmark ficam no diretorio TEMP proprio; resultados copiados nesta execucao para data/publisher/qa/headline-performance.
+
+EVIDENCIAS LOCAIS
+- short-results.json e long-results.json: tempos, CPU, hashes, tamanhos, probes e qualidade de cada trial.
+- hardware-probe.json: inicializacao NVENC e probe dos tres frames.
+- temporal-audit.json: comparacao exata dos timestamps de todos os 180 frames.
+- cost-breakdown.json: custo de hashing, metadados, layout, encode e validacao.
+- targeted-tests.log e targeted-tests.json: regressao final e isolamento SQLite.
+- quality-comparison.png e quality-frame-0/1/2.png: comparacao visual sintetica.
+- prior-files.json e prior-files/: preservacao da correcao anterior.
+
+DECISAO
+Otimizacao de paralelismo implementada e validada; pronta para auditoria de integracao separada. Os ganhos declarados sao comparacoes da mesma midia sintetica, nao uma comparacao indevida com os 597.562s do stress anterior de outro conteudo/duracao. Nenhuma promessa de latencia do Draft real foi feita. Nenhum commit ou deploy.

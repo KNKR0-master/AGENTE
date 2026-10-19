@@ -30,7 +30,8 @@ def create_renderer(root, input_root, cancel_event=None):
     return HeadlineRenderer(root, input_root, artifact_root(root), fonts,
         ffmpeg=asset_path(root, data['ffmpeg_path']) if data.get('ffmpeg_path') else None,
         ffprobe=asset_path(root, data['ffprobe_path']) if data.get('ffprobe_path') else None,
-        timeout=data.get('timeout_seconds', 120), cancel_event=cancel_event)
+        timeout=data.get('timeout_seconds', 120),
+        encode_timeout=data.get('encode_timeout_seconds', 600), cancel_event=cancel_event)
 
 
 def classic_font(root):
