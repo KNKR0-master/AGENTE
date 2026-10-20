@@ -109,7 +109,9 @@ class GoogleDriveMediaProvider:
         item = self.get_remote_metadata(file_id)
         return bool(item and not item.get("trashed", False))
 
-    def download_temporary(self, asset, directory):
+    def download_temporary(self, asset, directory, *, cancel_event=None):
+        if cancel_event is not None and cancel_event.is_set():
+            raise ValueError('LOCAL_PREPARATION_CANCELLED')
         from googleapiclient.http import MediaIoBaseDownload
         item = self.get_metadata(asset["remote_file_id"])
         verify_identity(asset, item)
@@ -119,6 +121,8 @@ class GoogleDriveMediaProvider:
             downloader = MediaIoBaseDownload(output, request, chunksize=4 * 1024 * 1024)
             done = False
             while not done:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ValueError('LOCAL_PREPARATION_CANCELLED')
                 _, done = downloader.next_chunk()
                 if output.tell() > int(asset["size_bytes"]):
                     raise ValueError("Download excedeu o tamanho indexado")

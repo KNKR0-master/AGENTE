@@ -23,7 +23,9 @@ class HeadlineFixtureServer(ThreadingHTTPServer):
         path = urlsplit(handler.path).path
         read_only = (
             handler.command == 'GET'
-            and re.fullmatch(r'/api/publisher/headline-presets/\d+/swatch', path)
+            and (re.fullmatch(r'/api/publisher/headline-presets/\d+/swatch', path)
+                 or path in ('/api/publisher', '/api/publisher/products/workspace',
+                             '/api/publisher/local-preparations'))
         ) or (
             handler.command == 'POST'
             and path == '/api/publisher/library-batches/preflight'

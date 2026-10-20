@@ -160,6 +160,9 @@ class Handler(SimpleHTTPRequestHandler):
             self._integration_error(exc)
 
     def _api_get(self, path: str, query: dict) -> None:
+        if path.startswith('/api/publisher/local-preparations'):
+            PUBLISHER.get(self, query, path)
+            return
         if path.startswith('/api/publisher/accounts/') and path.endswith('/auth-diagnostics'):
             PUBLISHER.get_auth_diagnostics(self, path)
             return
@@ -1168,6 +1171,11 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        if hasattr(PUBLISHER, '_local_manager'):
+            try:
+                PUBLISHER._local_manager.shutdown()
+            except Exception as exc:
+                print(f"Publisher local preparation shutdown warning: {type(exc).__name__}", flush=True)
         if not PUBLISHER.drive_poller.stop():
             print("Publisher Drive poller did not stop within grace period", flush=True)
         try:

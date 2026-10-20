@@ -34,9 +34,8 @@ class FakeMedia:
 
 class PublisherRemoteTests(unittest.TestCase):
     def setUp(self):
-        qa=Path(__file__).resolve().parents[1]/'data/publisher/qa'
-        qa.mkdir(parents=True,exist_ok=True)
-        self.temp=tempfile.TemporaryDirectory(dir=qa)
+        # The gate owns a short, per-process TEMP root and its SQLite allowlist.
+        self.temp=tempfile.TemporaryDirectory(prefix='pr-')
         self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         self.profile_root=self.root/'browser-profiles'

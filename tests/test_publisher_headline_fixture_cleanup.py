@@ -181,6 +181,9 @@ class HeadlineFixtureDisconnectTests(unittest.TestCase):
     def test_controlled_browser_close_records_abandoned_read_not_delivery(self):
         for method, path in (
             ('GET', '/api/publisher/headline-presets/2/swatch?version=1'),
+            ('GET', '/api/publisher'),
+            ('GET', '/api/publisher/products/workspace?scope=current'),
+            ('GET', '/api/publisher/local-preparations'),
             ('POST', '/api/publisher/library-batches/preflight'),
         ):
             with self.subTest(method=method):
@@ -203,11 +206,15 @@ class HeadlineFixtureDisconnectTests(unittest.TestCase):
                 handler.server.assert_no_request_errors()
 
     def test_required_response_disconnect_before_close_is_not_success(self):
-        handler = self.handler()
-        with self.assertRaises(ConnectionAbortedError):
-            handler.reply({'ok': True})
-        self.assertFalse(handler.response_delivered)
-        self.assertFalse(handler.server.expected_client_disconnects)
+        for path in ('/api/publisher/headline-presets/2/swatch?version=1',
+                     '/api/publisher', '/api/publisher/products/workspace',
+                     '/api/publisher/local-preparations'):
+            with self.subTest(path=path):
+                handler = self.handler(path=path)
+                with self.assertRaises(ConnectionAbortedError):
+                    handler.reply({'ok': True})
+                self.assertFalse(handler.response_delivered)
+                self.assertFalse(handler.server.expected_client_disconnects)
 
     def test_required_successful_response_still_reports_delivery(self):
         handler = self.handler()
@@ -218,17 +225,25 @@ class HeadlineFixtureDisconnectTests(unittest.TestCase):
         self.assertFalse(handler.server.expected_client_disconnects)
 
     def test_other_transport_errors_are_not_classified_as_expected(self):
-        handler = self.handler(winerror=10054)
-        handler.server.client_closing.set()
-        with self.assertRaises(ConnectionAbortedError):
-            handler.reply({'ok': True})
-        self.assertFalse(handler.response_delivered)
-        self.assertFalse(handler.server.expected_client_disconnects)
+        for path in ('/api/publisher/headline-presets/2/swatch?version=1',
+                     '/api/publisher', '/api/publisher/products/workspace',
+                     '/api/publisher/local-preparations'):
+            with self.subTest(path=path):
+                handler = self.handler(winerror=10054, path=path)
+                handler.server.client_closing.set()
+                with self.assertRaises(ConnectionAbortedError):
+                    handler.reply({'ok': True})
+                self.assertFalse(handler.response_delivered)
+                self.assertFalse(handler.server.expected_client_disconnects)
 
     def test_mutating_route_disconnect_is_not_classified_as_expected(self):
-        handler = self.handler(method='POST', path='/api/publisher/library-batches')
-        handler.server.client_closing.set()
-        with self.assertRaises(ConnectionAbortedError):
-            handler.reply({'id': 1})
-        self.assertFalse(handler.response_delivered)
-        self.assertFalse(handler.server.expected_client_disconnects)
+        for path in ('/api/publisher/library-batches', '/api/publisher',
+                     '/api/publisher/products/workspace',
+                     '/api/publisher/local-preparations'):
+            with self.subTest(path=path):
+                handler = self.handler(method='POST', path=path)
+                handler.server.client_closing.set()
+                with self.assertRaises(ConnectionAbortedError):
+                    handler.reply({'id': 1})
+                self.assertFalse(handler.response_delivered)
+                self.assertFalse(handler.server.expected_client_disconnects)

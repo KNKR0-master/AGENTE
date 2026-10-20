@@ -341,5 +341,6 @@ const PublisherHeadlines = (() => {
   for(const [selector,keys] of [['[data-bulk-text]',null],['[data-bulk-style]',['preset_id']],['[data-bulk-size]',['size']]])box.querySelector(selector).onclick=()=>task(async()=>{const value=readSelection(box);if(keys?.includes('size'))value.size=box.querySelector('[data-headline-size]').value;if(!confirmBulk(value,ids.map(id=>state.drafts.find(d=>d.id===id)),keys))return;const patch=keys?Object.fromEntries(keys.filter(k=>value[k]!==undefined).map(k=>[k,value[k]])):value;await api('/headlines/bulk',{ids,patch});await refresh();notice('Headlines dos rascunhos atualizadas.');});
  }
  function summary(draft){const h=draft.headline;return h?.enabled?`<p>Headline: ${esc(h.template?.name||h.text)}</p><small>Estilo: ${esc(h.preset?.name||'Não configurado')}</small>`:'<p>Sem headline</p>';}
- return {init,render,inspect,edit,renderSelection,selectionPayload,summary,productEdited,catalogFailed};
+ return {init,render,inspect,edit,renderSelection,selectionPayload,summary,productEdited,catalogFailed,
+         selectionControls,bindSelection,readSelection};
 })();

@@ -241,6 +241,8 @@ def init_publisher(conn):
     headlines.init_headlines(conn)
     from src.publisher.upload_preparation import init_upload_preparation
     init_upload_preparation(conn)
+    from src.publisher.local_preparation import init_local_preparation
+    init_local_preparation(conn)
     init_queue_presentation(conn)
     conn.execute("INSERT OR IGNORE INTO publisher_migrations(name,applied_at) VALUES ('queue_presentation_v1',?)", (now_iso(),))
     init_account_safety(conn)
@@ -779,6 +781,9 @@ class PublisherService:
 
     def assert_media_available(self, asset, draft_id=None, *, account_id=None):
         assert_media_history_allowed(self.conn, asset, draft_id=draft_id, account_id=account_id, purpose='reserve')
+        from src.publisher.local_preparation import active_local_preparation
+        if active_local_preparation(self.conn, asset['remote_file_id']):
+            raise ValueError('LOCAL_MEDIA_BUSY')
         if asset['status'] not in {'AVAILABLE', 'RESERVED', 'FAILED'}:
             raise ValueError(f"Midia indisponivel: {asset['status']}")
         if self.conn.execute("SELECT 1 FROM content_items WHERE google_drive_file_id=? AND status IN ('PUBLISHED','QUEUED','SENT_TO_PHONE') LIMIT 1",(asset['remote_file_id'],)).fetchone():
@@ -1042,6 +1047,10 @@ class PublisherService:
                 if action:
                     blocker["safe_fix_action"] = action
                 blockers.append(blocker)
+
+            from src.publisher.local_preparation import active_local_preparation
+            if active_local_preparation(self.conn, file_id):
+                item_blocker('LOCAL_MEDIA_BUSY', 'A preparação local desta mídia ainda está em andamento')
 
             if item is None:
                 item_blocker("MEDIA_NOT_IN_INVENTORY", "Arquivo não encontrado no inventário")

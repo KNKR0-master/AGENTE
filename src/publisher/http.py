@@ -3,6 +3,7 @@ import getpass
 import os
 import re
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,18 @@ class PublisherAPI:
         # H2 is explicitly injected in isolated fixtures only. No operational
         # migration, source download, or renderer startup is performed here.
         self.headline_renderer = None
+        self._local_manager_lock = threading.Lock()
+
+    def local_preparations(self):
+        # Independent coordinator: never submit commands to the Studio worker.
+        # __new__-based isolated API fixtures may inject their own coordinator.
+        if not hasattr(self, '_local_manager_lock'):
+            self._local_manager_lock = threading.Lock()
+        with self._local_manager_lock:
+            if not hasattr(self, '_local_manager'):
+                from src.publisher.local_preparation import LocalPreparationManager
+                self._local_manager = LocalPreparationManager(self.root, self.db)
+            return self._local_manager
 
     def runtime_info(self, handler):
         handler._json(
@@ -70,6 +83,8 @@ class PublisherAPI:
         with closing(connect(self.db)) as conn:
             init_publisher(conn)
             recover_sessions(conn)
+        from src.publisher.local_preparation import recover_local_preparations
+        recover_local_preparations(self.root, self.db)
         self.worker.cache.clean_orphans()
         self.drive_reauth.hydrate()
 
@@ -252,6 +267,18 @@ class PublisherAPI:
         return result
 
     def get(self, handler, query, path="/api/publisher"):
+        if path.startswith('/api/publisher/local-preparations'):
+            manager = self.local_preparations()
+            video = re.fullmatch(r'/api/publisher/local-preparations/([a-f0-9]{32})/video', path)
+            if video:
+                if set(query) - {'download'}:
+                    raise ValueError('LOCAL_REQUEST_INVALID')
+                manager.serve_video(handler, video[1], query.get('download', ['0'])[0] == '1')
+            elif path == '/api/publisher/local-preparations':
+                handler._json(manager.list(), no_store=True)
+            else:
+                raise ValueError('LOCAL_ROUTE_INVALID')
+            return
         swatch_match = re.fullmatch(r'/api/publisher/headline-presets/(\d+)/swatch', path)
         if swatch_match:
             from src.publisher.headlines import list_presets
@@ -471,6 +498,22 @@ class PublisherAPI:
                 if length > 1024*1024:
                     raise ValueError("Requisicao muito grande")
                 data = json.loads(handler.rfile.read(length) or b"{}")
+                if path.startswith('/api/publisher/local-preparations'):
+                    if not isinstance(data, dict):
+                        raise ValueError('LOCAL_REQUEST_INVALID')
+                    if path == '/api/publisher/local-preparations/review':
+                        from src.publisher.local_preparation import review
+                        with closing(connect(self.db)) as conn:
+                            result = review(conn, data)
+                    elif path == '/api/publisher/local-preparations':
+                        result = self.local_preparations().enqueue(data)
+                    else:
+                        local_action = re.fullmatch(r'/api/publisher/local-preparations/([a-f0-9]{32})/(retry|cancel|remove)', path)
+                        if not local_action or not isinstance(data, dict) or set(data) - {'human_confirmed'}:
+                            raise ValueError('LOCAL_REQUEST_INVALID')
+                        result = self.local_preparations().action(local_action[1], local_action[2], data)
+                    handler._json(result, no_store=True)
+                    return
                 if path == '/api/publisher/headline-preview/compare':
                     from src.publisher.headline_previews import comparison_request
                     with closing(sqlite3.connect(Path(self.db).resolve().as_uri() + '?mode=ro', uri=True)) as conn:
